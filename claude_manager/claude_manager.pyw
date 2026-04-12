@@ -111,13 +111,14 @@ class StatusIndicator(QWidget):
             painter.setBrush(QColor(0, brightness, int(brightness * 0.4)))
             painter.drawEllipse(center, 4.5, 4.5)
         else:
-            # Красная точка с легкой пульсацией
-            glow_alpha = int(30 * pulse)
+            # Красная точка с плавной пульсацией
+            glow_radius = 5.0 + 2.5 * pulse
+            glow_alpha = int(50 * pulse)
             painter.setBrush(QColor(255, 50, 50, glow_alpha))
             painter.setPen(Qt.NoPen)
-            painter.drawEllipse(center, 5.5, 5.5)
+            painter.drawEllipse(center, glow_radius, glow_radius)
 
-            # Основная красная точка
+            # Основная красная точка с пульсацией яркости
             brightness = int(180 + 75 * pulse)
             painter.setBrush(QColor(brightness, 50, 50))
             painter.drawEllipse(center, 4.5, 4.5)
@@ -178,7 +179,7 @@ class StyledButton(QPushButton):
     def _update_style(self):
         # Плавный переход к тусклому оранжевому
         base_r, base_g, base_b = 60, 60, 65
-        hover_r, hover_g, hover_b = 180, 100, 30  # Тусклый оранжевый
+        hover_r, hover_g, hover_b = 60, 140, 200  # Темнее голубой
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -232,6 +233,21 @@ class StyledComboBox(QComboBox):
                 color: rgb(200, 200, 200);
                 selection-background-color: rgb(50, 50, 55);
             }
+            QComboBox QAbstractItemView::item {
+                min-height: 30px;
+            }
+            QComboBox QAbstractItemView QScrollBar:vertical {
+                width: 8px;
+                background: rgba(20, 20, 25, 200);
+                border-radius: 4px;
+            }
+            QComboBox QAbstractItemView QScrollBar::handle:vertical {
+                background: rgba(80, 200, 255, 150);
+                border-radius: 4px;
+            }
+            QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {
+                background: rgba(80, 200, 255, 200);
+            }
         """)
 
     def enterEvent(self, event):
@@ -255,7 +271,7 @@ class StyledComboBox(QComboBox):
     def _update_style(self):
         # Плавный переход к тусклому оранжевому
         base_r, base_g, base_b = 60, 60, 65
-        hover_r, hover_g, hover_b = 180, 100, 30  # Тусклый оранжевый
+        hover_r, hover_g, hover_b = 60, 140, 200  # Темнее голубой
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -366,12 +382,35 @@ class ClaudeManager(QMainWindow):
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
 
-        # Заголовок
+        # Заголовок с иконкой
+        title_layout = QHBoxLayout()
+        title_layout.setAlignment(Qt.AlignCenter)
+        title_layout.setSpacing(10)
+
+        # Иконка
+        icon_label = QLabel()
+        icon_paths = [
+            os.path.join(os.path.dirname(__file__), "icon.png"),
+            os.path.join(os.path.dirname(sys.executable), "icon.png"),
+            "icon.png"
+        ]
+
+        for icon_path in icon_paths:
+            if os.path.exists(icon_path):
+                icon_pixmap = QPixmap(icon_path)
+                if not icon_pixmap.isNull():
+                    icon_label.setPixmap(icon_pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                break
+
+        title_layout.addWidget(icon_label)
+
+        # Текст заголовка
         title = QLabel("CLAUDE CODE MANAGER")
         title.setFont(QFont("Segoe UI", 18, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: rgb(255, 140, 0);")
-        main_layout.addWidget(title)
+        title.setStyleSheet("color: rgb(140, 140, 145);")
+        title_layout.addWidget(title)
+
+        main_layout.addLayout(title_layout)
 
         # Секция Omniroute
         omniroute_frame = QFrame()
@@ -435,6 +474,7 @@ class ClaudeManager(QMainWindow):
         self.model_combo = StyledComboBox()
         self.model_combo.addItems(self.settings["models"])
         self.model_combo.setCurrentText(self.settings["selected_model"])
+        self.model_combo.setMaxVisibleItems(4)  # Показывать только 4 модели, остальные через скролл
         model_layout.addWidget(self.model_combo, 1)
 
         claude_layout.addLayout(model_layout)
@@ -565,16 +605,14 @@ class ClaudeManager(QMainWindow):
                 line-height: 1.4;
             }
             QScrollBar:vertical {
-                background: rgba(30, 30, 35, 200);
-                width: 10px;
-                border-radius: 5px;
+                background: transparent;
+                width: 0px;
             }
             QScrollBar::handle:vertical {
-                background: rgba(80, 80, 85, 200);
-                border-radius: 5px;
+                background: transparent;
             }
             QScrollBar::handle:vertical:hover {
-                background: rgba(100, 100, 105, 200);
+                background: transparent;
             }
         """)
         console_layout.addWidget(self.console)
