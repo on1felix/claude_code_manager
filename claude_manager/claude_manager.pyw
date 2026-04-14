@@ -40,7 +40,8 @@ def load_settings():
         ],
         "selected_model": "kr/claude-sonnet-4.5",
         "omniroute_path": "C:\\Users\\danii\\AppData\\Roaming\\npm\\omniroute.cmd",
-        "working_directory": ""
+        "working_directory": "",
+        "auth_token": ""
     }
 
 def save_settings(settings):
@@ -492,6 +493,66 @@ class ClaudeManager(QMainWindow):
 
         claude_layout.addLayout(model_btn_layout)
 
+        # Токен авторизации
+        token_layout = QHBoxLayout()
+
+        token_label = QLabel("Токен:")
+        token_label.setFont(QFont("Segoe UI", 10))
+        token_label.setStyleSheet("color: rgb(180, 180, 180);")
+        token_layout.addWidget(token_label)
+
+        self.token_input = QLineEdit()
+        self.token_input.setPlaceholderText("sk-xxxxxxxx...")
+        self.token_input.setText(self.settings.get("auth_token", ""))
+        self.token_input.setEchoMode(QLineEdit.Password)
+        self.token_input.setFont(QFont("Segoe UI", 9))
+        # Если токен уже сохранен, делаем поле только для чтения
+        if self.settings.get("auth_token", ""):
+            self.token_input.setReadOnly(True)
+            self.token_input.setStyleSheet("""
+                QLineEdit {
+                    background-color: rgba(20, 20, 25, 200);
+                    color: rgb(200, 200, 200);
+                    border: 1px solid rgb(60, 60, 65);
+                    border-radius: 4px;
+                    padding: 6px;
+                }
+            """)
+        else:
+            self.token_input.setStyleSheet("""
+                QLineEdit {
+                    background-color: rgba(30, 30, 35, 200);
+                    color: rgb(200, 200, 200);
+                    border: 1px solid rgb(60, 60, 65);
+                    border-radius: 4px;
+                    padding: 6px;
+                }
+            """)
+        token_layout.addWidget(self.token_input, 1)
+
+        self.btn_toggle_token = StyledButton("Показать")
+        self.btn_toggle_token.setMaximumWidth(100)
+        self.btn_toggle_token.clicked.connect(self.toggle_token_visibility)
+        token_layout.addWidget(self.btn_toggle_token)
+
+        self.btn_save_token = StyledButton("Сохранить")
+        self.btn_save_token.setMaximumWidth(100)
+        self.btn_save_token.clicked.connect(self.save_token)
+        # Если токен уже сохранен, скрываем кнопку сохранить
+        if self.settings.get("auth_token", ""):
+            self.btn_save_token.hide()
+        token_layout.addWidget(self.btn_save_token)
+
+        self.btn_edit_token = StyledButton("Изменить")
+        self.btn_edit_token.setMaximumWidth(100)
+        self.btn_edit_token.clicked.connect(self.edit_token)
+        # Если токен не сохранен, скрываем кнопку изменить
+        if not self.settings.get("auth_token", ""):
+            self.btn_edit_token.hide()
+        token_layout.addWidget(self.btn_edit_token)
+
+        claude_layout.addLayout(token_layout)
+
         # Выбор рабочей директории
         dir_layout = QHBoxLayout()
 
@@ -784,6 +845,57 @@ class ClaudeManager(QMainWindow):
         self.project_input.setText("")
         self.log("Папка проекта очищена", "info")
 
+    def save_token(self):
+        """Сохраняет токен в настройки"""
+        token = self.token_input.text().strip()
+        if not token:
+            self.log("Токен не может быть пустым", "warning")
+            return
+
+        self.settings["auth_token"] = token
+        save_settings(self.settings)
+        self.log("Токен сохранен", "success")
+
+        # Делаем поле только для чтения, темнее и переключаем кнопки
+        self.token_input.setReadOnly(True)
+        self.token_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 6px;
+            }
+        """)
+        self.btn_save_token.hide()
+        self.btn_edit_token.show()
+
+    def edit_token(self):
+        """Разрешает редактирование токена"""
+        self.token_input.setReadOnly(False)
+        self.token_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 6px;
+            }
+        """)
+        self.token_input.setFocus()
+        self.btn_edit_token.hide()
+        self.btn_save_token.show()
+        self.log("Режим редактирования токена", "info")
+
+    def toggle_token_visibility(self):
+        """Переключает видимость токена"""
+        if self.token_input.echoMode() == QLineEdit.Password:
+            self.token_input.setEchoMode(QLineEdit.Normal)
+            self.btn_toggle_token.setText("Скрыть")
+        else:
+            self.token_input.setEchoMode(QLineEdit.Password)
+            self.btn_toggle_token.setText("Показать")
+
     def launch_claude(self):
         """Запускает Claude Code с выбранной моделью"""
         model = self.model_combo.currentText()
@@ -816,7 +928,7 @@ class ClaudeManager(QMainWindow):
         # Устанавливаем переменные окружения и запускаем
         env = os.environ.copy()
         env["ANTHROPIC_BASE_URL"] = "http://localhost:20128/v1"
-        env["ANTHROPIC_AUTH_TOKEN"] = "sk-06340d8b007fcd14-c7771a-22e7ae57"
+        env["ANTHROPIC_AUTH_TOKEN"] = self.settings.get("auth_token", "")
         env["ANTHROPIC_API_KEY"] = ""
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         env["ANTHROPIC_MODEL"] = model
