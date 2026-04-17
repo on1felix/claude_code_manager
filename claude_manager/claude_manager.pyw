@@ -8,8 +8,8 @@ import sys, subprocess, os, threading, time, json, socket, math
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
-                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog)
-from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve
+                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate)
+from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap
 from PySide6.QtCore import QPointF, QRectF
 
@@ -34,9 +34,7 @@ def load_settings():
         pass
     return {
         "models": [
-            "kr/claude-sonnet-4.5",
-            "cx/gpt-5.3-codex-xhigh",
-            "gh/claude-opus-4.6"
+            "kr/claude-sonnet-4.5"
         ],
         "selected_model": "kr/claude-sonnet-4.5",
         "omniroute_path": "C:\\Users\\danii\\AppData\\Roaming\\npm\\omniroute.cmd",
@@ -297,6 +295,42 @@ class StyledComboBox(QComboBox):
         """)
 
 # ============================================================
+# МОДЕЛЬ ДЛЯ КОМБОБОКСА С КАСТОМНЫМИ ЦВЕТАМИ
+# ============================================================
+
+class ModelListModel(QAbstractListModel):
+    def __init__(self, models, parent=None):
+        super().__init__(parent)
+        self._models = models
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._models)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+
+        model_name = self._models[index.row()]
+
+        if role == Qt.DisplayRole:
+            return model_name
+        elif role == Qt.BackgroundRole:
+            # Базовая модель - темный фон
+            if model_name == "kr/claude-sonnet-4.5":
+                return QColor(20, 20, 25)
+            else:
+                return QColor(30, 30, 35)
+        elif role == Qt.ForegroundRole:
+            return QColor(200, 200, 200)
+
+        return None
+
+    def update_models(self, models):
+        self.beginResetModel()
+        self._models = models
+        self.endResetModel()
+
+# ============================================================
 # ДИАЛОГ ДОБАВЛЕНИЯ МОДЕЛИ
 # ============================================================
 
@@ -473,7 +507,9 @@ class ClaudeManager(QMainWindow):
         model_layout.addWidget(model_label)
 
         self.model_combo = StyledComboBox()
-        self.model_combo.addItems(self.settings["models"])
+        # Используем кастомную модель для отображения с разными цветами фона
+        self.model_list_model = ModelListModel(self.settings["models"])
+        self.model_combo.setModel(self.model_list_model)
         self.model_combo.setCurrentText(self.settings["selected_model"])
         self.model_combo.setMaxVisibleItems(4)  # Показывать только 4 модели, остальные через скролл
         model_layout.addWidget(self.model_combo, 1)
@@ -963,16 +999,25 @@ class ClaudeManager(QMainWindow):
             model_name = dialog.get_model_name()
             if model_name and model_name not in self.settings["models"]:
                 self.settings["models"].append(model_name)
-                self.model_combo.addItem(model_name)
+                # Обновляем модель данных
+                self.model_list_model.update_models(self.settings["models"])
                 save_settings(self.settings)
                 self.log(f"Добавлена модель: {model_name}", "success")
 
     def remove_model(self):
         """Удаляет выбранную модель"""
         current_model = self.model_combo.currentText()
+
+        # Запрещаем удаление базовой модели
+        if current_model == "kr/claude-sonnet-4.5":
+            self.log("Нельзя удалить базовую модель", "warning")
+            return
+
         if len(self.settings["models"]) > 1:
+            current_index = self.model_combo.currentIndex()
             self.settings["models"].remove(current_model)
-            self.model_combo.removeItem(self.model_combo.currentIndex())
+            # Обновляем модель данных
+            self.model_list_model.update_models(self.settings["models"])
             save_settings(self.settings)
             self.log(f"Удалена модель: {current_model}", "success")
         else:
