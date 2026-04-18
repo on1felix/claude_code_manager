@@ -8,7 +8,7 @@ import sys, subprocess, os, threading, time, json, socket, math
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
-                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate)
+                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox)
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap
 from PySide6.QtCore import QPointF, QRectF
@@ -176,9 +176,173 @@ class StyledButton(QPushButton):
                 self._update_style()
 
     def _update_style(self):
-        # Плавный переход к тусклому оранжевому
+        # Плавный переход к голубому
         base_r, base_g, base_b = 60, 60, 65
-        hover_r, hover_g, hover_b = 60, 140, 200  # Темнее голубой
+        hover_r, hover_g, hover_b = 60, 140, 200  # Голубой
+
+        r = int(base_r + (hover_r - base_r) * self._hover_progress)
+        g = int(base_g + (hover_g - base_g) * self._hover_progress)
+        b = int(base_b + (hover_b - base_b) * self._hover_progress)
+
+        bg_alpha = int(200 + 20 * self._hover_progress)
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(40, 40, 45, {bg_alpha});
+                color: rgb(200, 200, 200);
+                border: 2px solid rgb({r}, {g}, {b});
+                border-radius: 6px;
+                padding: 8px;
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(30, 30, 35, 200);
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(30, 30, 35, 150);
+                color: rgb(100, 100, 100);
+                border: 2px solid rgb(40, 40, 45);
+            }}
+        """)
+
+# ============================================================
+# КНОПКА С ЗЕЛЕНЫМ ЭФФЕКТОМ (ДЛЯ ЗАПУСКА)
+# ============================================================
+
+class GreenButton(QPushButton):
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.setMinimumHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover_progress = 0.0
+        self._hover_timer = QTimer()
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+        self._is_hovered = False
+        self.setMouseTracking(True)
+
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(40, 40, 45, 200);
+                color: rgb(200, 200, 200);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 6px;
+                padding: 8px;
+            }
+            QPushButton:pressed {
+                background-color: rgba(30, 30, 35, 200);
+            }
+            QPushButton:disabled {
+                background-color: rgba(30, 30, 35, 150);
+                color: rgb(100, 100, 100);
+                border: 2px solid rgb(40, 40, 45);
+            }
+        """)
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        if self._is_hovered and self.isEnabled():
+            if self._hover_progress < 1.0:
+                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._update_style()
+        else:
+            if self._hover_progress > 0.0:
+                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._update_style()
+
+    def _update_style(self):
+        # Плавный переход к зеленому
+        base_r, base_g, base_b = 60, 60, 65
+        hover_r, hover_g, hover_b = 50, 180, 100  # Зеленый
+
+        r = int(base_r + (hover_r - base_r) * self._hover_progress)
+        g = int(base_g + (hover_g - base_g) * self._hover_progress)
+        b = int(base_b + (hover_b - base_b) * self._hover_progress)
+
+        bg_alpha = int(200 + 20 * self._hover_progress)
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(40, 40, 45, {bg_alpha});
+                color: rgb(200, 200, 200);
+                border: 2px solid rgb({r}, {g}, {b});
+                border-radius: 6px;
+                padding: 8px;
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(30, 30, 35, 200);
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(30, 30, 35, 150);
+                color: rgb(100, 100, 100);
+                border: 2px solid rgb(40, 40, 45);
+            }}
+        """)
+
+# ============================================================
+# КНОПКА С КРАСНЫМ ЭФФЕКТОМ (ДЛЯ УДАЛЕНИЯ)
+# ============================================================
+
+class RedButton(QPushButton):
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.setMinimumHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover_progress = 0.0
+        self._hover_timer = QTimer()
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+        self._is_hovered = False
+        self.setMouseTracking(True)
+
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(40, 40, 45, 200);
+                color: rgb(200, 200, 200);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 6px;
+                padding: 8px;
+            }
+            QPushButton:pressed {
+                background-color: rgba(30, 30, 35, 200);
+            }
+            QPushButton:disabled {
+                background-color: rgba(30, 30, 35, 150);
+                color: rgb(100, 100, 100);
+                border: 2px solid rgb(40, 40, 45);
+            }
+        """)
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        if self._is_hovered and self.isEnabled():
+            if self._hover_progress < 1.0:
+                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._update_style()
+        else:
+            if self._hover_progress > 0.0:
+                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._update_style()
+
+    def _update_style(self):
+        # Плавный переход к красному
+        base_r, base_g, base_b = 60, 60, 65
+        hover_r, hover_g, hover_b = 200, 60, 60  # Красный
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -339,12 +503,18 @@ class AddModelDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Добавить модель")
         self.setModal(True)
-        self.setFixedSize(400, 150)
+        self.setFixedSize(450, 180)
+
+        # Устанавливаем иконку для диалога
+        if parent and parent.windowIcon():
+            self.setWindowIcon(parent.windowIcon())
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
 
         label = QLabel("Введите название модели:")
-        label.setFont(QFont("Segoe UI", 10))
+        label.setFont(QFont("Segoe UI", 11))
         label.setStyleSheet("color: rgb(200, 200, 200);")
         layout.addWidget(label)
 
@@ -357,18 +527,24 @@ class AddModelDialog(QDialog):
                 color: rgb(200, 200, 200);
                 border: 1px solid rgb(60, 60, 65);
                 border-radius: 4px;
-                padding: 8px;
+                padding: 10px;
+            }
+            QLineEdit:focus {
+                border: 1px solid rgb(60, 140, 200);
             }
         """)
         layout.addWidget(self.input)
 
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
 
-        btn_ok = StyledButton("Добавить")
+        btn_ok = GreenButton("Добавить")
+        btn_ok.setMinimumHeight(35)
         btn_ok.clicked.connect(self.accept)
         btn_layout.addWidget(btn_ok)
 
         btn_cancel = StyledButton("Отмена")
+        btn_cancel.setMinimumHeight(35)
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
@@ -381,6 +557,65 @@ class AddModelDialog(QDialog):
         return self.input.text().strip()
 
 # ============================================================
+# ДИАЛОГ ПОДТВЕРЖДЕНИЯ УДАЛЕНИЯ
+# ============================================================
+
+class ConfirmDeleteDialog(QDialog):
+    def __init__(self, model_name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Подтверждение удаления")
+        self.setModal(True)
+        self.setFixedSize(450, 200)
+
+        # Устанавливаем иконку для диалога
+        if parent and parent.windowIcon():
+            self.setWindowIcon(parent.windowIcon())
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        # Иконка предупреждения
+        warning_label = QLabel("⚠")
+        warning_label.setFont(QFont("Segoe UI", 32))
+        warning_label.setStyleSheet("color: rgb(255, 170, 0);")
+        warning_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(warning_label)
+
+        # Текст вопроса
+        question_label = QLabel("Вы уверены, что хотите удалить модель?")
+        question_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        question_label.setStyleSheet("color: rgb(200, 200, 200);")
+        question_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(question_label)
+
+        # Название модели
+        model_label = QLabel(model_name)
+        model_label.setFont(QFont("Segoe UI", 10))
+        model_label.setStyleSheet("color: rgb(150, 150, 150);")
+        model_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(model_label)
+
+        # Кнопки
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        btn_yes = RedButton("Да, удалить")
+        btn_yes.setMinimumHeight(35)
+        btn_yes.clicked.connect(self.accept)
+        btn_layout.addWidget(btn_yes)
+
+        btn_no = StyledButton("Отмена")
+        btn_no.setMinimumHeight(35)
+        btn_no.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_no)
+
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+        self.setStyleSheet("QDialog { background-color: rgb(20, 20, 25); }")
+
+# ============================================================
 # ГЛАВНОЕ ОКНО
 # ============================================================
 
@@ -390,7 +625,7 @@ class ClaudeManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Claude Code Manager")
-        self.setFixedSize(700, 750)
+        self.setFixedSize(700, 800)  # Увеличил высоту с 750 до 800
 
         # Устанавливаем иконку - ищем в разных местах
         icon_paths = [
@@ -434,16 +669,27 @@ class ClaudeManager(QMainWindow):
             if os.path.exists(icon_path):
                 icon_pixmap = QPixmap(icon_path)
                 if not icon_pixmap.isNull():
-                    icon_label.setPixmap(icon_pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    icon_label.setPixmap(icon_pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                 break
 
         title_layout.addWidget(icon_label)
 
-        # Текст заголовка
-        title = QLabel("CLAUDE CODE MANAGER")
-        title.setFont(QFont("Segoe UI", 18, QFont.Bold))
-        title.setStyleSheet("color: rgb(140, 140, 145);")
-        title_layout.addWidget(title)
+        # Текст заголовка с шиммером
+        self.title = QLabel()
+        self.title.setFont(QFont("Consolas", 17, QFont.Bold))
+        self.title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        # Сразу устанавливаем HTML чтобы не было прыжков
+        text = "CLAUDE CODE MANAGER"
+        html = ''.join([f'<span style="color: rgb(140, 140, 145);">{char}</span>' for char in text])
+        self.title.setText(html)
+        self.title.setFixedHeight(30)
+        title_layout.addWidget(self.title)
+
+        # Таймер для шиммера
+        self._shimmer_offset = -0.3
+        self._shimmer_timer = QTimer()
+        self._shimmer_timer.timeout.connect(self._animate_shimmer)
+        self._shimmer_timer.start(30)
 
         main_layout.addLayout(title_layout)
 
@@ -452,7 +698,7 @@ class ClaudeManager(QMainWindow):
         omniroute_frame.setStyleSheet("""
             QFrame {
                 background-color: rgba(30, 30, 35, 200);
-                border: 1px solid rgb(60, 60, 65);
+                border: 2px solid rgb(60, 60, 65);
                 border-radius: 8px;
             }
         """)
@@ -476,10 +722,19 @@ class ClaudeManager(QMainWindow):
 
         omniroute_layout.addLayout(header_layout)
 
-        # Кнопка запуска Omniroute
-        self.btn_omniroute = StyledButton("Запустить Omniroute")
-        self.btn_omniroute.clicked.connect(self.toggle_omniroute)
-        omniroute_layout.addWidget(self.btn_omniroute)
+        # Кнопки управления Omniroute
+        omniroute_btn_layout = QHBoxLayout()
+
+        self.btn_start_omniroute = GreenButton("Запустить Omniroute")
+        self.btn_start_omniroute.clicked.connect(self.start_omniroute)
+        omniroute_btn_layout.addWidget(self.btn_start_omniroute)
+
+        self.btn_stop_omniroute = RedButton("Остановить Omniroute")
+        self.btn_stop_omniroute.clicked.connect(self.stop_omniroute)
+        self.btn_stop_omniroute.setEnabled(False)
+        omniroute_btn_layout.addWidget(self.btn_stop_omniroute)
+
+        omniroute_layout.addLayout(omniroute_btn_layout)
 
         main_layout.addWidget(omniroute_frame)
 
@@ -488,7 +743,7 @@ class ClaudeManager(QMainWindow):
         claude_frame.setStyleSheet("""
             QFrame {
                 background-color: rgba(30, 30, 35, 200);
-                border: 1px solid rgb(60, 60, 65);
+                border: 2px solid rgb(60, 60, 65);
                 border-radius: 8px;
             }
         """)
@@ -519,11 +774,11 @@ class ClaudeManager(QMainWindow):
         # Кнопки управления моделями
         model_btn_layout = QHBoxLayout()
 
-        btn_add_model = StyledButton("Добавить модель")
+        btn_add_model = GreenButton("Добавить модель")
         btn_add_model.clicked.connect(self.add_model)
         model_btn_layout.addWidget(btn_add_model)
 
-        btn_remove_model = StyledButton("Удалить модель")
+        btn_remove_model = RedButton("Удалить модель")
         btn_remove_model.clicked.connect(self.remove_model)
         model_btn_layout.addWidget(btn_remove_model)
 
@@ -662,7 +917,7 @@ class ClaudeManager(QMainWindow):
         claude_layout.addLayout(project_layout)
 
         # Кнопка запуска Claude Code
-        self.btn_claude = StyledButton("Запустить Claude Code")
+        self.btn_claude = GreenButton("Запустить Claude Code")
         self.btn_claude.clicked.connect(self.launch_claude)
         self.btn_claude.setEnabled(False)
         claude_layout.addWidget(self.btn_claude)
@@ -744,21 +999,54 @@ class ClaudeManager(QMainWindow):
         # Определяем цвет в зависимости от уровня
         if level == "success":
             color = "#00ff64"  # Зеленый
-            prefix = "✓"
+            prefix = "●"  # Цветная точка
         elif level == "error":
             color = "#ff3232"  # Красный
-            prefix = "✗"
+            prefix = "●"  # Цветная точка
         elif level == "warning":
             color = "#ffaa00"  # Оранжевый
-            prefix = "⚠"
+            prefix = "●"  # Цветная точка
         else:  # info
             color = "#b4b4b4"  # Серый
-            prefix = "•"
+            prefix = "●"  # Цветная точка
 
         formatted_message = f'<span style="color: #888;">[{timestamp}]</span> <span style="color: {color};">{prefix} {message}</span>'
         self.console.append(formatted_message)
         # Прокручиваем вниз
         self.console.moveCursor(QTextCursor.End)
+
+    def _animate_shimmer(self):
+        """Анимирует шиммер слева направо"""
+        # Двигаем волну слева направо
+        self._shimmer_offset += 0.015  # Средняя скорость
+
+        # Когда волна прошла весь текст, ждем 2 секунды и начинаем снова
+        if self._shimmer_offset > 1.3:
+            self._shimmer_offset = -0.3
+            # Пауза 2 секунды
+            self._shimmer_timer.stop()
+            QTimer.singleShot(2000, lambda: self._shimmer_timer.start(30))
+
+        # Создаем HTML с градиентом
+        text = "CLAUDE CODE MANAGER"
+        html = ""
+
+        for i, char in enumerate(text):
+            # Позиция символа (0.0 - 1.0)
+            pos = i / len(text)
+
+            # Расстояние от волны
+            distance = abs(pos - self._shimmer_offset)
+
+            # Яркость (волна шириной 0.2)
+            if distance < 0.2:
+                brightness = int(140 + 70 * (1 - distance / 0.2))
+            else:
+                brightness = 140
+
+            html += f'<span style="color: rgb({brightness}, {brightness}, {brightness + 5});">{char}</span>'
+
+        self.title.setText(html)
 
     def check_status_async(self):
         """Проверяет статус в фоновом потоке"""
@@ -785,51 +1073,52 @@ class ClaudeManager(QMainWindow):
         if is_running:
             self.status_label.setText("Подключен")
             self.status_label.setStyleSheet("color: rgb(0, 255, 100);")
-            self.btn_omniroute.setText("Остановить Omniroute")
+            self.btn_start_omniroute.setEnabled(False)
+            self.btn_stop_omniroute.setEnabled(True)
             self.btn_claude.setEnabled(True)
         else:
             self.status_label.setText("Не запущен")
             self.status_label.setStyleSheet("color: rgb(255, 50, 50);")
-            self.btn_omniroute.setText("Запустить Omniroute")
+            self.btn_start_omniroute.setEnabled(True)
+            self.btn_stop_omniroute.setEnabled(False)
             self.btn_claude.setEnabled(False)
 
-    def toggle_omniroute(self):
-        """Запускает или останавливает Omniroute"""
-        if check_omniroute_status():
-            # Остановка
-            self.log("Остановка Omniroute...", "info")
-            try:
-                # Убиваем процесс по имени
-                subprocess.run(["taskkill", "/F", "/IM", "node.exe", "/FI", "WINDOWTITLE eq omniroute*"],
-                              capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                # Альтернативный способ - убить все node процессы с omniroute
-                subprocess.run(["taskkill", "/F", "/IM", "node.exe"],
-                              capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                self.omniroute_process = None
-                self.log("Omniroute остановлен", "success")
-                # Принудительная проверка статуса
-                time.sleep(0.5)
-                self.check_status_async()
-            except Exception as e:
-                self.log(f"Ошибка остановки: {e}", "error")
-        else:
-            # Запуск
-            try:
-                omniroute_path = self.settings.get("omniroute_path", "omniroute.cmd")
-                self.log(f"Запуск Omniroute...", "info")
+    def start_omniroute(self):
+        """Запускает Omniroute"""
+        self.log("Запуск Omniroute...", "info")
+        try:
+            omniroute_path = self.settings.get("omniroute_path", "omniroute.cmd")
 
-                # Запускаем в отдельном окне
-                self.omniroute_process = subprocess.Popen(
-                    omniroute_path,
-                    shell=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                )
-                self.log("Ожидание подключения...", "info")
-                # Ждем запуска в фоне
-                threading.Thread(target=self._wait_for_omniroute, daemon=True).start()
-            except Exception as e:
-                error_msg = f"Ошибка запуска: {e}"
-                self.log(error_msg, "error")
+            # Запускаем в отдельном окне
+            self.omniroute_process = subprocess.Popen(
+                omniroute_path,
+                shell=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            self.log("Ожидание подключения...", "info")
+            # Ждем запуска в фоне
+            threading.Thread(target=self._wait_for_omniroute, daemon=True).start()
+        except Exception as e:
+            error_msg = f"Ошибка запуска: {e}"
+            self.log(error_msg, "error")
+
+    def stop_omniroute(self):
+        """Останавливает Omniroute"""
+        self.log("Остановка Omniroute...", "info")
+        try:
+            # Убиваем процесс по имени
+            subprocess.run(["taskkill", "/F", "/IM", "node.exe", "/FI", "WINDOWTITLE eq omniroute*"],
+                          capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            # Альтернативный способ - убить все node процессы с omniroute
+            subprocess.run(["taskkill", "/F", "/IM", "node.exe"],
+                          capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.omniroute_process = None
+            self.log("Omniroute остановлен", "success")
+            # Принудительная проверка статуса
+            time.sleep(0.5)
+            self.check_status_async()
+        except Exception as e:
+            self.log(f"Ошибка остановки: {e}", "error")
 
     def _wait_for_omniroute(self):
         """Ожидает запуска Omniroute"""
@@ -1014,12 +1303,17 @@ class ClaudeManager(QMainWindow):
             return
 
         if len(self.settings["models"]) > 1:
-            current_index = self.model_combo.currentIndex()
-            self.settings["models"].remove(current_model)
-            # Обновляем модель данных
-            self.model_list_model.update_models(self.settings["models"])
-            save_settings(self.settings)
-            self.log(f"Удалена модель: {current_model}", "success")
+            # Показываем кастомный диалог подтверждения
+            dialog = ConfirmDeleteDialog(current_model, self)
+            result = dialog.exec()
+
+            if result == QDialog.Accepted:
+                current_index = self.model_combo.currentIndex()
+                self.settings["models"].remove(current_model)
+                # Обновляем модель данных
+                self.model_list_model.update_models(self.settings["models"])
+                save_settings(self.settings)
+                self.log(f"Удалена модель: {current_model}", "success")
         else:
             self.log("Нельзя удалить последнюю модель", "warning")
 
