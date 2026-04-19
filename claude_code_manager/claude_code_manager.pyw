@@ -47,7 +47,7 @@ def load_settings():
             "kr/claude-sonnet-4.5"
         ],
         "selected_model": "kr/claude-sonnet-4.5",
-        "omniroute_path": "C:\\Users\\danii\\AppData\\Roaming\\npm\\omniroute.cmd",
+        "omniroute_path": "omniroute",
         "working_directory": "",
         "auth_token": ""
     }
@@ -1959,9 +1959,9 @@ class ClaudeManager(QMainWindow):
         """Запускает Omniroute"""
         self.log("Запуск Omniroute...", "info")
         try:
-            omniroute_path = self.settings.get("omniroute_path", "omniroute.cmd")
+            omniroute_path = self.settings.get("omniroute_path", "omniroute")
 
-            # Запускаем в отдельном окне
+            # Запускаем команду (если просто "omniroute", то через PATH)
             self.omniroute_process = subprocess.Popen(
                 omniroute_path,
                 shell=True,
@@ -1994,12 +1994,27 @@ class ClaudeManager(QMainWindow):
 
     def _wait_for_omniroute(self):
         """Ожидает запуска Omniroute"""
-        for i in range(30):
+        for i in range(60):  # Увеличили до 30 секунд
             if check_omniroute_status():
                 QTimer.singleShot(0, lambda: self.log("Omniroute успешно подключен", "success"))
+                QTimer.singleShot(0, self._on_omniroute_connected)
                 return
             time.sleep(0.5)
-        QTimer.singleShot(0, lambda: self.log("Таймаут ожидания подключения", "warning"))
+        QTimer.singleShot(0, lambda: self.log("Таймаут ожидания подключения. Проверьте, что Omniroute установлен и путь к нему правильный.", "error"))
+
+    def _on_omniroute_connected(self):
+        """Вызывается когда Omniroute успешно подключен"""
+        # Обновляем UI
+        self.btn_start_omniroute.setEnabled(False)
+        self.btn_stop_omniroute.setEnabled(True)
+        self.btn_claude.setEnabled(True)
+
+        # Открываем браузер
+        try:
+            import webbrowser
+            webbrowser.open("http://localhost:20128")
+        except:
+            pass
 
     def browse_directory(self):
         """Открывает диалог выбора директории"""
