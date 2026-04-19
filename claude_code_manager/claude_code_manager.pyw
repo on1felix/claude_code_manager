@@ -396,11 +396,9 @@ class GreenButton(QPushButton):
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
         b = int(base_b + (hover_b - base_b) * self._hover_progress)
 
-        bg_alpha = int(200 + 20 * self._hover_progress)
-
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, {bg_alpha});
+                background-color: rgb(40, 40, 45);
                 color: rgb(200, 200, 200);
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 6px;
@@ -560,11 +558,9 @@ class RedButton(QPushButton):
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
         b = int(base_b + (hover_b - base_b) * self._hover_progress)
 
-        bg_alpha = int(200 + 20 * self._hover_progress)
-
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, {bg_alpha});
+                background-color: rgb(40, 40, 45);
                 color: rgb(200, 200, 200);
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 6px;
