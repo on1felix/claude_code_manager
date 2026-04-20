@@ -13,7 +13,7 @@ echo.
 
 echo [2/3] Building executable with PyInstaller...
 cd /d "%~dp0"
-pyinstaller --onefile --windowed --icon=icon.ico --name=ClaudeCodeManager --add-data "icon.ico;." --add-data "icon.png;." claude_code_manager.pyw --clean
+pyinstaller --onefile --windowed --icon=icon.ico --name=ClaudeCodeManager --add-data "icon.ico;." --add-data "icon.png;." --add-data "icon-download-blue.svg;." claude_code_manager.pyw --clean
 echo.
 
 if exist "dist\ClaudeCodeManager.exe" (

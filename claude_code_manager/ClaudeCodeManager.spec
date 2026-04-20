@@ -5,7 +5,7 @@ a = Analysis(
     ['claude_code_manager.pyw'],
     pathex=[],
     binaries=[],
-    datas=[('icon.ico', '.'), ('icon.png', '.')],
+    datas=[('icon.ico', '.'), ('icon.png', '.'), ('icon-download-blue.svg', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

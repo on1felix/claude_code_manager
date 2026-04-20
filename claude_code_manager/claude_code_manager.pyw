@@ -14,8 +14,9 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient
 from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "2.1"  # Временно для теста обновлений
+APP_VERSION = "2.2"  # Временно для теста обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -187,17 +188,51 @@ class UpdateIndicator(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(32, 32)  # Увеличил с 28 до 32
+        self.setFixedSize(32, 32)
         self.setCursor(Qt.PointingHandCursor)
-        self._pulse_time = 0.0
-        self._pulse_timer = QTimer()
-        self._pulse_timer.timeout.connect(self._animate_pulse)
-        self._pulse_timer.start(16)  # ~60 FPS
+        self._scale = 1.0
+        self._target_scale = 1.0
+        self._press_scale = 1.0
+        self._is_hovered = False
+
+        self._scale_timer = QTimer()
+        self._scale_timer.timeout.connect(self._animate_scale)
+        self._scale_timer.start(16)
+
         self.setVisible(False)
 
-    def _animate_pulse(self):
-        self._pulse_time += 0.05
-        self.update()
+        # Загружаем синюю SVG
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        svg_path = os.path.join(base_dir, "icon-download-blue.svg")
+
+        # Если не нашли, пробуем текущую директорию
+        if not os.path.exists(svg_path):
+            svg_path = "icon-download-blue.svg"
+
+        self._svg_renderer = QSvgRenderer(svg_path)
+        self._icon_valid = self._svg_renderer.isValid()
+
+    def _animate_scale(self):
+        diff = self._target_scale - self._scale
+        if abs(diff) > 0.01:
+            self._scale += diff * 0.15
+            self.update()
+
+        # Анимация нажатия
+        press_diff = 1.0 - self._press_scale
+        if abs(press_diff) > 0.01:
+            self._press_scale += press_diff * 0.2
+            self.update()
+
+    def enterEvent(self, event):
+        self._target_scale = 1.15
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._target_scale = 1.0
+        self._is_hovered = False
+        super().leaveEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -205,27 +240,31 @@ class UpdateIndicator(QWidget):
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         w, h = self.width(), self.height()
-        center = QPointF(w / 2, h / 2)
 
-        # Плавная пульсация через синус (от 0.5 до 1.0)
-        pulse = 0.75 + 0.25 * math.sin(self._pulse_time)
+        # Вычисляем размер с учетом масштаба
+        total_scale = self._scale * self._press_scale
+        base_size = min(w, h) * 0.75
+        scaled_size = base_size * total_scale
+        offset = (w - scaled_size) / 2
 
-        # Синее свечение с плавной пульсацией
-        glow_radius = 6.0 + 3.0 * pulse
-        glow_alpha = int(60 * pulse)
-        painter.setBrush(QColor(100, 180, 255, glow_alpha))  # Синий
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(center, glow_radius, glow_radius)
-
-        # Основная синяя точка с плавной пульсацией яркости
-        brightness = int(180 + 75 * pulse)
-        painter.setBrush(QColor(100, brightness, 255))  # Яркий синий
-        painter.drawEllipse(center, 5.5, 5.5)
+        # Рисуем SVG
+        if self._icon_valid:
+            self._svg_renderer.render(painter, QRectF(offset, offset, scaled_size, scaled_size))
+        else:
+            # Fallback - синяя точка
+            painter.setBrush(QColor(100, 180, 255))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QPointF(w/2, h/2), 8 * total_scale, 8 * total_scale)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            self._press_scale = 0.9
             self.clicked.emit()
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press_scale = 1.0
+        super().mouseReleaseEvent(event)
 
         if self._is_active:
             # Зеленое свечение с плавной пульсацией (уменьшил радиус)
