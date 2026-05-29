@@ -10,7 +10,7 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
-                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QProgressBar)
+                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QProgressBar, QCheckBox)
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient
 from PySide6.QtCore import QPointF, QRectF
@@ -50,7 +50,12 @@ def load_settings():
         "selected_model": "kr/claude-sonnet-4.5",
         "omniroute_path": "omniroute",
         "working_directory": "",
-        "auth_token": ""
+        "auth_token": "",
+        "use_custom_token": False,
+        "custom_api_key": "",
+        "custom_base_url": "",
+        "custom_model": "",
+        "custom_endpoint": ""
     }
 
 def save_settings(settings):
@@ -1059,6 +1064,121 @@ class AnimatedProgressBar(QWidget):
             painter.setClipping(False)
 
 # ============================================================
+# ДИАЛОГ КАСТОМНЫХ НАСТРОЕК ТОКЕНА
+# ============================================================
+
+class CustomTokenDialog(QDialog):
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(18, 18, 22, 0.98),
+                    stop:1 rgba(16, 16, 20, 0.98));
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(15)
+
+        # Заголовок
+        title = QLabel("Настройки кастомного токена")
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        layout.addWidget(title)
+
+        # Информация о Base URL
+        info_label = QLabel("Base URL: https://cc.freemodel.dev")
+        info_label.setFont(QFont("Segoe UI", 9))
+        info_label.setAlignment(Qt.AlignCenter)
+        info_label.setStyleSheet("color: rgb(120, 120, 120);")
+        layout.addWidget(info_label)
+
+        # API ключ
+        key_label = QLabel("API ключ:")
+        key_label.setFont(QFont("Segoe UI", 10))
+        key_label.setStyleSheet("color: rgb(180, 180, 180);")
+        layout.addWidget(key_label)
+
+        key_layout = QHBoxLayout()
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("fe_oa_xxxxx...")
+        self.key_input.setText(settings.get("custom_api_key", ""))
+        self.key_input.setEchoMode(QLineEdit.Password)
+        self.key_input.setFont(QFont("Segoe UI", 9))
+        self.key_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        key_layout.addWidget(self.key_input)
+
+        self.btn_toggle_key = StyledButton("Показать")
+        self.btn_toggle_key.setMaximumWidth(100)
+        self.btn_toggle_key.clicked.connect(self.toggle_key_visibility)
+        key_layout.addWidget(self.btn_toggle_key)
+
+        layout.addLayout(key_layout)
+
+        # Кнопки
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        btn_cancel = RedButton("Отмена")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
+        btn_save = GreenButton("Сохранить")
+        btn_save.clicked.connect(self.save_settings)
+        btn_layout.addWidget(btn_save)
+
+        layout.addLayout(btn_layout)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+
+    def toggle_key_visibility(self):
+        """Переключает видимость ключа"""
+        if self.key_input.echoMode() == QLineEdit.Password:
+            self.key_input.setEchoMode(QLineEdit.Normal)
+            self.btn_toggle_key.setText("Скрыть")
+        else:
+            self.key_input.setEchoMode(QLineEdit.Password)
+            self.btn_toggle_key.setText("Показать")
+
+    def save_settings(self):
+        """Сохраняет настройки"""
+        api_key = self.key_input.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "Ошибка", "API ключ не может быть пустым")
+            return
+
+        self.settings["custom_api_key"] = api_key
+        # Hardcode Base URL для cc.freemodel.dev
+        self.settings["custom_base_url"] = "https://cc.freemodel.dev"
+        self.settings["custom_model"] = ""
+        self.settings["custom_endpoint"] = ""
+
+        self.accept()
+
+# ============================================================
 # ДИАЛОГ ОБНОВЛЕНИЯ ПРИЛОЖЕНИЯ
 # ============================================================
 
@@ -1685,23 +1805,23 @@ class ClaudeManager(QMainWindow):
         # Кнопки управления моделями
         model_btn_layout = QHBoxLayout()
 
-        btn_add_model = GreenButton("Добавить модель")
-        btn_add_model.clicked.connect(self.add_model)
-        model_btn_layout.addWidget(btn_add_model)
+        self.btn_add_model = GreenButton("Добавить модель")
+        self.btn_add_model.clicked.connect(self.add_model)
+        model_btn_layout.addWidget(self.btn_add_model)
 
-        btn_remove_model = RedButton("Удалить модель")
-        btn_remove_model.clicked.connect(self.remove_model)
-        model_btn_layout.addWidget(btn_remove_model)
+        self.btn_remove_model = RedButton("Удалить модель")
+        self.btn_remove_model.clicked.connect(self.remove_model)
+        model_btn_layout.addWidget(self.btn_remove_model)
 
         claude_layout.addLayout(model_btn_layout)
 
         # Токен авторизации
-        token_layout = QHBoxLayout()
+        self.token_layout = QHBoxLayout()
 
         token_label = QLabel("Токен:")
         token_label.setFont(QFont("Segoe UI", 10))
         token_label.setStyleSheet("color: rgb(180, 180, 180);")
-        token_layout.addWidget(token_label)
+        self.token_layout.addWidget(token_label)
 
         self.token_input = QLineEdit()
         self.token_input.setPlaceholderText("sk-xxxxxxxx...")
@@ -1730,12 +1850,12 @@ class ClaudeManager(QMainWindow):
                     padding: 6px;
                 }
             """)
-        token_layout.addWidget(self.token_input, 1)
+        self.token_layout.addWidget(self.token_input, 1)
 
         self.btn_toggle_token = StyledButton("Показать")
         self.btn_toggle_token.setMaximumWidth(100)
         self.btn_toggle_token.clicked.connect(self.toggle_token_visibility)
-        token_layout.addWidget(self.btn_toggle_token)
+        self.token_layout.addWidget(self.btn_toggle_token)
 
         self.btn_save_token = StyledButton("Сохранить")
         self.btn_save_token.setMaximumWidth(100)
@@ -1743,7 +1863,7 @@ class ClaudeManager(QMainWindow):
         # Если токен уже сохранен, скрываем кнопку сохранить
         if self.settings.get("auth_token", ""):
             self.btn_save_token.hide()
-        token_layout.addWidget(self.btn_save_token)
+        self.token_layout.addWidget(self.btn_save_token)
 
         self.btn_edit_token = StyledButton("Изменить")
         self.btn_edit_token.setMaximumWidth(100)
@@ -1751,9 +1871,52 @@ class ClaudeManager(QMainWindow):
         # Если токен не сохранен, скрываем кнопку изменить
         if not self.settings.get("auth_token", ""):
             self.btn_edit_token.hide()
-        token_layout.addWidget(self.btn_edit_token)
+        self.token_layout.addWidget(self.btn_edit_token)
 
-        claude_layout.addLayout(token_layout)
+        claude_layout.addLayout(self.token_layout)
+
+        # Переключатель типа токена
+        token_type_layout = QHBoxLayout()
+
+        token_type_label = QLabel("Тип токена:")
+        token_type_label.setFont(QFont("Segoe UI", 10))
+        token_type_label.setStyleSheet("color: rgb(180, 180, 180);")
+        token_type_layout.addWidget(token_type_label)
+
+        self.use_custom_token_checkbox = QCheckBox("Использовать кастомный токен")
+        self.use_custom_token_checkbox.setChecked(self.settings.get("use_custom_token", False))
+        self.use_custom_token_checkbox.setFont(QFont("Segoe UI", 9))
+        self.use_custom_token_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: rgb(200, 200, 200);
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                background-color: rgba(30, 30, 35, 200);
+            }
+            QCheckBox::indicator:checked {
+                background-color: rgb(100, 180, 255);
+                border-color: rgb(100, 180, 255);
+            }
+        """)
+        self.use_custom_token_checkbox.stateChanged.connect(self.toggle_custom_token_fields)
+        token_type_layout.addWidget(self.use_custom_token_checkbox)
+
+        # Кнопка настройки кастомного токена
+        self.btn_configure_custom = StyledButton("Настроить")
+        self.btn_configure_custom.setMaximumWidth(120)
+        self.btn_configure_custom.clicked.connect(self.open_custom_token_dialog)
+        token_type_layout.addWidget(self.btn_configure_custom)
+
+        token_type_layout.addStretch()
+
+        claude_layout.addLayout(token_type_layout)
+
+        # Изначально скрываем кнопку настройки если не выбрано
+        self.toggle_custom_token_fields()
 
         # Выбор рабочей директории
         dir_layout = QHBoxLayout()
@@ -1981,6 +2144,9 @@ class ClaudeManager(QMainWindow):
 
         self.status_indicator.set_active(is_running)
 
+        # Проверяем используется ли кастомный токен
+        use_custom = self.settings.get("use_custom_token", False)
+
         if is_running:
             self.status_label.setText("Подключен")
             self.status_label.setStyleSheet("color: rgb(0, 255, 100);")
@@ -1992,7 +2158,8 @@ class ClaudeManager(QMainWindow):
             self.status_label.setStyleSheet("color: rgb(255, 50, 50);")
             self.btn_start_omniroute.setEnabled(True)
             self.btn_stop_omniroute.setEnabled(False)
-            self.btn_claude.setEnabled(False)
+            # Если используется кастомный токен, Claude доступен без Omniroute
+            self.btn_claude.setEnabled(use_custom)
 
     def start_omniroute(self):
         """Запускает Omniroute"""
@@ -2147,6 +2314,53 @@ class ClaudeManager(QMainWindow):
             self.token_input.setEchoMode(QLineEdit.Password)
             self.btn_toggle_token.setText("Показать")
 
+    def toggle_custom_token_fields(self):
+        """Показывает/скрывает кнопку настройки кастомного токена"""
+        is_custom = self.use_custom_token_checkbox.isChecked()
+
+        # Показываем/скрываем кнопку настройки
+        self.btn_configure_custom.setVisible(is_custom)
+
+        # Блокируем выбор модели при кастомном токене
+        self.model_combo.setEnabled(not is_custom)
+        self.btn_add_model.setEnabled(not is_custom)
+        self.btn_remove_model.setEnabled(not is_custom)
+
+        # Показываем/скрываем обычный токен
+        for i in range(self.token_layout.count()):
+            widget = self.token_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(not is_custom)
+
+        # Сохраняем состояние переключателя
+        self.settings["use_custom_token"] = is_custom
+        save_settings(self.settings)
+
+        # Пересчитываем размер окна
+        self.adjustSize()
+        self.updateGeometry()
+
+    def open_custom_token_dialog(self):
+        """Открывает диалог настройки кастомного токена"""
+        dialog = CustomTokenDialog(self.settings, self)
+        if dialog.exec() == QDialog.Accepted:
+            # Настройки уже сохранены в диалоге
+            save_settings(self.settings)
+            self.log("Кастомные настройки сохранены", "success")
+
+            # Выводим инструкцию по активации
+            self.log("─" * 50, "info")
+            self.log("Для активации кастомного токена вручную:", "info")
+            self.log("1. Введите команду: /logout", "info")
+            self.log("2. Введите команду:", "info")
+            api_key = self.settings.get("custom_api_key", "")
+            self.log(f'   $env:ANTHROPIC_BASE_URL="https://cc.freemodel.dev"; $env:ANTHROPIC_API_KEY="{api_key}"; claude', "info")
+            self.log("3. Введите команду: /model и поставьте default", "info")
+            self.log("─" * 50, "info")
+
+        # Обновляем статус кнопки Claude (теперь доступна без Omniroute)
+        self.update_omniroute_status()
+
     def launch_claude(self):
         """Запускает Claude Code с выбранной моделью"""
         model = self.model_combo.currentText()
@@ -2174,16 +2388,41 @@ class ClaudeManager(QMainWindow):
         self.settings["selected_model"] = model
         save_settings(self.settings)
 
-        self.log(f"Запуск Claude Code ({model})...", "info")
+        # Проверяем используется ли кастомный токен
+        use_custom = self.settings.get("use_custom_token", False)
+
+        if use_custom:
+            self.log(f"Запуск Claude Code с кастомным токеном...", "info")
+        else:
+            self.log(f"Запуск Claude Code ({model})...", "info")
 
         # Устанавливаем переменные окружения и запускаем
         env = os.environ.copy()
-        env["ANTHROPIC_BASE_URL"] = "http://localhost:20128/v1"
-        env["ANTHROPIC_AUTH_TOKEN"] = self.settings.get("auth_token", "")
-        env["ANTHROPIC_API_KEY"] = ""
-        env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-        env["ANTHROPIC_MODEL"] = model
-        env["ANTHROPIC_SMALL_FAST_MODEL"] = model
+
+        if use_custom:
+            # Кастомные настройки
+            custom_api_key = self.settings.get("custom_api_key", "")
+
+            if not custom_api_key:
+                self.log("Кастомный API ключ не установлен", "error")
+                return
+
+            env["ANTHROPIC_API_KEY"] = custom_api_key
+            env["ANTHROPIC_BASE_URL"] = "https://cc.freemodel.dev"
+
+            # Не устанавливаем модель - пользователь выберет вручную через /model
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+            env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+
+            self.log(f"Используется кастомный токен для cc.freemodel.dev", "info")
+        else:
+            # Обычные настройки через Omniroute
+            env["ANTHROPIC_BASE_URL"] = "http://localhost:20128/v1"
+            env["ANTHROPIC_AUTH_TOKEN"] = self.settings.get("auth_token", "")
+            env["ANTHROPIC_API_KEY"] = ""
+            env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+            env["ANTHROPIC_MODEL"] = model
+            env["ANTHROPIC_SMALL_FAST_MODEL"] = model
 
         try:
             # Если выбрана папка проекта - запускаем из директории с аргументом
