@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "2.2"  # Временно для теста обновлений
+APP_VERSION = "2.7"  # Временно для теста обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -40,7 +40,17 @@ def load_settings():
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                loaded = json.load(f)
+                # Дописываем недостающие поля для совместимости
+                if "custom_base_urls" not in loaded or not loaded.get("custom_base_urls"):
+                    loaded["custom_base_urls"] = ["https://cc.freemodel.dev", "https://api.inferall.ai"]
+                else:
+                    for u in ["https://cc.freemodel.dev", "https://api.inferall.ai"]:
+                        if u not in loaded["custom_base_urls"]:
+                            loaded["custom_base_urls"].insert(0, u)
+                if not loaded.get("custom_base_url"):
+                    loaded["custom_base_url"] = loaded["custom_base_urls"][0]
+                return loaded
     except:
         pass
     return {
@@ -53,10 +63,29 @@ def load_settings():
         "auth_token": "",
         "use_custom_token": False,
         "custom_api_key": "",
-        "custom_base_url": "",
+        "custom_base_url": "https://cc.freemodel.dev",
+        "custom_base_urls": [
+            "https://cc.freemodel.dev",
+            "https://api.inferall.ai"
+        ],
         "custom_model": "",
         "custom_endpoint": ""
     }
+
+DEFAULT_BASE_URLS = ["https://cc.freemodel.dev", "https://api.inferall.ai"]
+
+def migrate_settings(settings):
+    """Дописывает недостающие поля в старые настройки"""
+    if "custom_base_urls" not in settings or not settings.get("custom_base_urls"):
+        settings["custom_base_urls"] = list(DEFAULT_BASE_URLS)
+    else:
+        # Гарантируем что дефолтные URL всегда присутствуют
+        for u in DEFAULT_BASE_URLS:
+            if u not in settings["custom_base_urls"]:
+                settings["custom_base_urls"].insert(0, u)
+    if not settings.get("custom_base_url"):
+        settings["custom_base_url"] = settings["custom_base_urls"][0]
+    return settings
 
 def save_settings(settings):
     ensure_settings_dir()
@@ -1064,6 +1093,256 @@ class AnimatedProgressBar(QWidget):
             painter.setClipping(False)
 
 # ============================================================
+# АНИМИРОВАННЫЙ ПЕРЕКЛЮЧАТЕЛЬ (TOGGLE SWITCH)
+# ============================================================
+
+class ToggleSwitch(QWidget):
+    toggled = Signal(bool)
+
+    def __init__(self, checked=False, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(42, 22)
+        self._checked = checked
+        self._progress = 1.0 if checked else 0.0
+        self._target = 1.0 if checked else 0.0
+
+        self._timer = QTimer()
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)  # ~60fps
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, val):
+        if val != self._checked:
+            self._checked = val
+            self._target = 1.0 if val else 0.0
+
+    def _tick(self):
+        diff = self._target - self._progress
+        if abs(diff) > 0.004:
+            self._progress += diff * 0.2  # expo ease-out
+            self.update()
+        elif self._progress != self._target:
+            self._progress = self._target
+            self.update()
+
+    def mousePressEvent(self, event):
+        self._checked = not self._checked
+        self._target = 1.0 if self._checked else 0.0
+        self.toggled.emit(self._checked)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        t = self._progress  # 0.0 = OFF, 1.0 = ON (плавно)
+        w, h = self.width(), self.height()
+
+        # Трек — всегда тёмный, только тонкая синяя обводка появляется при ON
+        br = int(55 + 5 * t)
+        bg = int(55 + 25 * t)
+        bb = int(62 + 48 * t)
+        p.setBrush(QColor(36, 36, 42))
+        p.setPen(QPen(QColor(br, bg, bb), 1))
+        p.drawRoundedRect(0, 0, w, h, 5, 5)
+
+        # Геометрия квадратика
+        thumb_sz = h - 6  # 16px
+        thumb_x = 3.0 + (w - 6 - thumb_sz) * t  # 3 → 23
+        thumb_y = 3.0
+
+        # Свечение вокруг квадратика (только когда ON)
+        if t > 0.01:
+            for i in range(1, 4):
+                alpha = int(70 * t * (1.0 - (i - 1) / 3.5))
+                p.setPen(QPen(QColor(80, 155, 255, alpha), 1))
+                p.setBrush(Qt.NoBrush)
+                ex = i * 1.8
+                p.drawRoundedRect(
+                    QRectF(thumb_x - ex, thumb_y - ex,
+                           thumb_sz + ex * 2, thumb_sz + ex * 2),
+                    3 + ex, 3 + ex
+                )
+
+        # Квадратик: серый при OFF → голубой при ON
+        r = int(138 - 18 * t)   # 138 → 120
+        g = int(138 + 47 * t)   # 138 → 185
+        b = int(145 + 110 * t)  # 145 → 255
+        p.setBrush(QColor(r, g, b))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(thumb_x, thumb_y, thumb_sz, thumb_sz), 3, 3)
+
+        p.end()
+
+# ============================================================
+# ДИАЛОГ УПРАВЛЕНИЯ BASE URL
+# ============================================================
+
+class BaseUrlManagerDialog(QDialog):
+    DEFAULT_URLS = ("https://cc.freemodel.dev", "https://api.inferall.ai")
+
+    def __init__(self, urls, current, parent=None):
+        super().__init__(parent)
+        self.urls = list(urls)
+        self.current = current
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(18, 18, 22, 0.98),
+                    stop:1 rgba(16, 16, 20, 0.98));
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(12)
+
+        title = QLabel("Управление Base URL")
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        layout.addWidget(title)
+
+        info = QLabel("Выберите URL или добавьте свой")
+        info.setFont(QFont("Segoe UI", 9))
+        info.setAlignment(Qt.AlignCenter)
+        info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        layout.addWidget(info)
+
+        # Combo со списком URL
+        self.url_combo = QComboBox()
+        self.url_combo.setCursor(Qt.PointingHandCursor)
+        self.url_combo.setFont(QFont("Segoe UI", 9))
+        self.url_combo.setStyleSheet("""
+            QComboBox {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: rgb(30, 30, 35);
+                color: rgb(200, 200, 200);
+                selection-background-color: rgb(50, 50, 55);
+            }
+        """)
+        self.url_combo.addItems(self.urls)
+        if self.current in self.urls:
+            self.url_combo.setCurrentText(self.current)
+        layout.addWidget(self.url_combo)
+
+        # Кнопка удалить выбранный URL
+        self.btn_remove_url = RedButton("Удалить выбранный URL")
+        self.btn_remove_url.setMinimumHeight(32)
+        self.btn_remove_url.clicked.connect(self.remove_url)
+        layout.addWidget(self.btn_remove_url)
+
+        # Разделитель — добавление нового
+        add_label = QLabel("Добавить новый URL:")
+        add_label.setFont(QFont("Segoe UI", 10))
+        add_label.setStyleSheet("color: rgb(180, 180, 180); background: transparent; border: none;")
+        layout.addWidget(add_label)
+
+        add_row = QHBoxLayout()
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("https://example.com")
+        self.url_input.setFont(QFont("Segoe UI", 9))
+        self.url_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        add_row.addWidget(self.url_input, 1)
+
+        self.btn_add_url = GreenButton("Добавить")
+        self.btn_add_url.setMinimumHeight(32)
+        self.btn_add_url.setMaximumWidth(110)
+        self.btn_add_url.clicked.connect(self.add_url)
+        add_row.addWidget(self.btn_add_url)
+
+        layout.addLayout(add_row)
+
+        # OK / Отмена
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        btn_cancel = RedButton("Отмена")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
+        btn_ok = GreenButton("Применить")
+        btn_ok.clicked.connect(self.accept)
+        btn_layout.addWidget(btn_ok)
+
+        layout.addLayout(btn_layout)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(440)
+
+        self._update_remove_button()
+        self.url_combo.currentTextChanged.connect(lambda _: self._update_remove_button())
+
+    def _update_remove_button(self):
+        """Запрещает удалять дефолтные URL"""
+        sel = self.url_combo.currentText()
+        is_default = sel in self.DEFAULT_URLS
+        self.btn_remove_url.setEnabled(not is_default)
+        if is_default:
+            self.btn_remove_url.setText("Базовый URL нельзя удалить")
+        else:
+            self.btn_remove_url.setText("Удалить выбранный URL")
+
+    def add_url(self):
+        url = self.url_input.text().strip()
+        if not url:
+            return
+        if not (url.startswith("http://") or url.startswith("https://")):
+            QMessageBox.warning(self, "Ошибка", "URL должен начинаться с http:// или https://")
+            return
+        if url in self.urls:
+            QMessageBox.information(self, "Информация", "Такой URL уже есть в списке")
+            self.url_combo.setCurrentText(url)
+            return
+        self.urls.append(url)
+        self.url_combo.addItem(url)
+        self.url_combo.setCurrentText(url)
+        self.url_input.clear()
+
+    def remove_url(self):
+        sel = self.url_combo.currentText()
+        if sel in self.DEFAULT_URLS:
+            return
+        if sel not in self.urls:
+            return
+        # Подтверждение удаления
+        confirm = ConfirmDeleteDialog(sel, self)
+        if confirm.exec() != QDialog.Accepted:
+            return
+        self.urls.remove(sel)
+        idx = self.url_combo.currentIndex()
+        self.url_combo.removeItem(idx)
+
+    def get_result(self):
+        return list(self.urls), self.url_combo.currentText()
+
+# ============================================================
 # ДИАЛОГ КАСТОМНЫХ НАСТРОЕК ТОКЕНА
 # ============================================================
 
@@ -1100,12 +1379,48 @@ class CustomTokenDialog(QDialog):
         title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
         layout.addWidget(title)
 
-        # Информация о Base URL
-        info_label = QLabel("Base URL: https://cc.freemodel.dev")
-        info_label.setFont(QFont("Segoe UI", 9))
-        info_label.setAlignment(Qt.AlignCenter)
-        info_label.setStyleSheet("color: rgb(120, 120, 120);")
-        layout.addWidget(info_label)
+        # Base URL — выбор + кнопка управления
+        url_label = QLabel("Base URL:")
+        url_label.setFont(QFont("Segoe UI", 10))
+        url_label.setStyleSheet("color: rgb(180, 180, 180);")
+        layout.addWidget(url_label)
+
+        url_layout = QHBoxLayout()
+        url_layout.setSpacing(8)
+        self.url_combo = QComboBox()
+        self.url_combo.setCursor(Qt.PointingHandCursor)
+        self.url_combo.setFont(QFont("Segoe UI", 9))
+        self.url_combo.setStyleSheet("""
+            QComboBox {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: rgb(30, 30, 35);
+                color: rgb(200, 200, 200);
+                selection-background-color: rgb(50, 50, 55);
+            }
+        """)
+        self.base_urls = list(settings.get("custom_base_urls", ["https://cc.freemodel.dev", "https://api.inferall.ai"]))
+        self.url_combo.addItems(self.base_urls)
+        saved_url = settings.get("custom_base_url", self.base_urls[0])
+        if saved_url in self.base_urls:
+            self.url_combo.setCurrentText(saved_url)
+        url_layout.addWidget(self.url_combo, 1)
+
+        self.btn_manage_urls = StyledButton("Управление")
+        self.btn_manage_urls.setMaximumWidth(120)
+        self.btn_manage_urls.setMinimumHeight(0)
+        self.btn_manage_urls.setFixedHeight(36)
+        self.btn_manage_urls.setFont(QFont("Segoe UI", 9))
+        self.btn_manage_urls.clicked.connect(self.open_url_manager)
+        url_layout.addWidget(self.btn_manage_urls)
+
+        layout.addLayout(url_layout)
 
         # API ключ
         key_label = QLabel("API ключ:")
@@ -1137,6 +1452,46 @@ class CustomTokenDialog(QDialog):
 
         layout.addLayout(key_layout)
 
+        # Модель
+        model_label = QLabel("Модель:")
+        model_label.setFont(QFont("Segoe UI", 10))
+        model_label.setStyleSheet("color: rgb(180, 180, 180);")
+        layout.addWidget(model_label)
+
+        self.model_combo = QComboBox()
+        self.model_combo.setCursor(Qt.PointingHandCursor)
+        self.model_combo.setFont(QFont("Segoe UI", 9))
+        self.model_combo.setStyleSheet("""
+            QComboBox {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: rgb(30, 30, 35);
+                color: rgb(200, 200, 200);
+                selection-background-color: rgb(50, 50, 55);
+            }
+        """)
+        models = ["Opus 4.8 (default)", "Opus 4.7", "Opus 4.6", "Sonnet 4.6"]
+        self.model_combo.addItems(models)
+        # Маппинг старых сохранённых значений на новые метки
+        model_remap = {
+            "default (claude-opus-4-8)": "Opus 4.8 (default)",
+            "claude-sonnet-4-6 (/model → 2)": "Sonnet 4.6",
+            "claude-sonnet-4-6": "Sonnet 4.6",
+            "claude-opus-4-7": "Opus 4.7",
+            "claude-opus-4-6": "Opus 4.6",
+        }
+        saved_model = settings.get("custom_model", "Opus 4.8 (default)")
+        saved_model = model_remap.get(saved_model, saved_model)
+        if saved_model in models:
+            self.model_combo.setCurrentText(saved_model)
+        layout.addWidget(self.model_combo)
+
         # Кнопки
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
@@ -1163,6 +1518,23 @@ class CustomTokenDialog(QDialog):
             self.key_input.setEchoMode(QLineEdit.Password)
             self.btn_toggle_key.setText("Показать")
 
+    def open_url_manager(self):
+        """Открывает отдельное окно управления Base URL"""
+        current_url = self.url_combo.currentText()
+        dialog = BaseUrlManagerDialog(self.base_urls, current_url, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.base_urls, new_current = dialog.get_result()
+            # Перестраиваем combo
+            self.url_combo.blockSignals(True)
+            self.url_combo.clear()
+            self.url_combo.addItems(self.base_urls)
+            if new_current in self.base_urls:
+                self.url_combo.setCurrentText(new_current)
+            self.url_combo.blockSignals(False)
+            # Сразу сохраняем список URL в settings (даже если основной диалог закроют отменой)
+            self.settings["custom_base_urls"] = list(self.base_urls)
+            save_settings(self.settings)
+
     def save_settings(self):
         """Сохраняет настройки"""
         api_key = self.key_input.text().strip()
@@ -1171,9 +1543,9 @@ class CustomTokenDialog(QDialog):
             return
 
         self.settings["custom_api_key"] = api_key
-        # Hardcode Base URL для cc.freemodel.dev
-        self.settings["custom_base_url"] = "https://cc.freemodel.dev"
-        self.settings["custom_model"] = ""
+        self.settings["custom_base_url"] = self.url_combo.currentText()
+        self.settings["custom_base_urls"] = list(self.base_urls)
+        self.settings["custom_model"] = self.model_combo.currentText()
         self.settings["custom_endpoint"] = ""
 
         self.accept()
@@ -1758,6 +2130,9 @@ class ClaudeManager(QMainWindow):
 
         self.btn_start_omniroute = GreenButton("Запустить Omniroute")
         self.btn_start_omniroute.clicked.connect(self.start_omniroute)
+        self._btn_start_omniroute_dim = QGraphicsOpacityEffect()
+        self._btn_start_omniroute_dim.setOpacity(1.0)
+        self.btn_start_omniroute.setGraphicsEffect(self._btn_start_omniroute_dim)
         omniroute_btn_layout.addWidget(self.btn_start_omniroute)
 
         self.btn_stop_omniroute = RedButton("Остановить Omniroute")
@@ -1793,11 +2168,10 @@ class ClaudeManager(QMainWindow):
         model_layout.addWidget(model_label)
 
         self.model_combo = StyledComboBox()
-        # Используем кастомную модель для отображения с разными цветами фона
         self.model_list_model = ModelListModel(self.settings["models"])
         self.model_combo.setModel(self.model_list_model)
         self.model_combo.setCurrentText(self.settings["selected_model"])
-        self.model_combo.setMaxVisibleItems(4)  # Показывать только 4 модели, остальные через скролл
+        self.model_combo.setMaxVisibleItems(4)
         model_layout.addWidget(self.model_combo, 1)
 
         claude_layout.addLayout(model_layout)
@@ -1815,13 +2189,21 @@ class ClaudeManager(QMainWindow):
 
         claude_layout.addLayout(model_btn_layout)
 
+        # Opacity effects для модели (применяем к комбо и кнопкам)
+        self._model_combo_dim = QGraphicsOpacityEffect(); self._model_combo_dim.setOpacity(1.0)
+        self._btn_add_dim = QGraphicsOpacityEffect(); self._btn_add_dim.setOpacity(1.0)
+        self._btn_remove_dim = QGraphicsOpacityEffect(); self._btn_remove_dim.setOpacity(1.0)
+        self.model_combo.setGraphicsEffect(self._model_combo_dim)
+        self.btn_add_model.setGraphicsEffect(self._btn_add_dim)
+        self.btn_remove_model.setGraphicsEffect(self._btn_remove_dim)
+
         # Токен авторизации
         self.token_layout = QHBoxLayout()
 
-        token_label = QLabel("Токен:")
-        token_label.setFont(QFont("Segoe UI", 10))
-        token_label.setStyleSheet("color: rgb(180, 180, 180);")
-        self.token_layout.addWidget(token_label)
+        self.token_label = QLabel("Токен:")
+        self.token_label.setFont(QFont("Segoe UI", 10))
+        self.token_label.setStyleSheet("color: rgb(180, 180, 180);")
+        self.token_layout.addWidget(self.token_label)
 
         self.token_input = QLineEdit()
         self.token_input.setPlaceholderText("sk-xxxxxxxx...")
@@ -1875,41 +2257,63 @@ class ClaudeManager(QMainWindow):
 
         claude_layout.addLayout(self.token_layout)
 
-        # Переключатель типа токена
+        # Opacity effects для токена
+        self._token_label_dim = QGraphicsOpacityEffect(); self._token_label_dim.setOpacity(1.0)
+        self._token_input_dim = QGraphicsOpacityEffect(); self._token_input_dim.setOpacity(1.0)
+        self._btn_toggle_token_dim = QGraphicsOpacityEffect(); self._btn_toggle_token_dim.setOpacity(1.0)
+        self._btn_save_token_dim = QGraphicsOpacityEffect(); self._btn_save_token_dim.setOpacity(1.0)
+        self._btn_edit_token_dim = QGraphicsOpacityEffect(); self._btn_edit_token_dim.setOpacity(1.0)
+        self.token_label.setGraphicsEffect(self._token_label_dim)
+        self.token_input.setGraphicsEffect(self._token_input_dim)
+        self.btn_toggle_token.setGraphicsEffect(self._btn_toggle_token_dim)
+        self.btn_save_token.setGraphicsEffect(self._btn_save_token_dim)
+        self.btn_edit_token.setGraphicsEffect(self._btn_edit_token_dim)
+
+        # Переключатель кастомного токена
         token_type_layout = QHBoxLayout()
 
-        token_type_label = QLabel("Тип токена:")
+        token_type_label = QLabel("Токен FreeModel")
         token_type_label.setFont(QFont("Segoe UI", 10))
         token_type_label.setStyleSheet("color: rgb(180, 180, 180);")
         token_type_layout.addWidget(token_type_label)
 
-        self.use_custom_token_checkbox = QCheckBox("Использовать кастомный токен")
-        self.use_custom_token_checkbox.setChecked(self.settings.get("use_custom_token", False))
-        self.use_custom_token_checkbox.setFont(QFont("Segoe UI", 9))
-        self.use_custom_token_checkbox.setStyleSheet("""
-            QCheckBox {
-                color: rgb(200, 200, 200);
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 2px solid rgb(60, 60, 65);
-                border-radius: 4px;
-                background-color: rgba(30, 30, 35, 200);
-            }
-            QCheckBox::indicator:checked {
-                background-color: rgb(100, 180, 255);
-                border-color: rgb(100, 180, 255);
-            }
-        """)
-        self.use_custom_token_checkbox.stateChanged.connect(self.toggle_custom_token_fields)
+        self.use_custom_token_checkbox = ToggleSwitch(checked=self.settings.get("use_custom_token", False))
+        self.use_custom_token_checkbox.toggled.connect(self.toggle_custom_token_fields)
         token_type_layout.addWidget(self.use_custom_token_checkbox)
 
         # Кнопка настройки кастомного токена
         self.btn_configure_custom = StyledButton("Настроить")
-        self.btn_configure_custom.setMaximumWidth(120)
+        self.btn_configure_custom.setFont(QFont("Segoe UI", 8))
+        self.btn_configure_custom.setMinimumHeight(0)
+        self.btn_configure_custom.setFixedHeight(28)
+
+        def _configure_update_style():
+            p = self.btn_configure_custom._hover_progress
+            r = int(60 + (60 - 60) * p)
+            g = int(60 + (140 - 60) * p)
+            b = int(65 + (200 - 65) * p)
+            bg_alpha = int(200 + 20 * p)
+            self.btn_configure_custom.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: rgba(40, 40, 45, {bg_alpha});
+                    color: rgb(200, 200, 200);
+                    border: 2px solid rgb({r}, {g}, {b});
+                    border-radius: 6px;
+                    padding: 2px 10px;
+                }}
+                QPushButton:pressed {{ background-color: rgba(30, 30, 35, 200); }}
+                QPushButton:disabled {{ background-color: rgba(30, 30, 35, 150); color: rgb(100, 100, 100); border: 2px solid rgb(40, 40, 45); }}
+            """)
+
+        self.btn_configure_custom._update_style = _configure_update_style
+        _configure_update_style()  # Применяем сразу при создании
         self.btn_configure_custom.clicked.connect(self.open_custom_token_dialog)
         token_type_layout.addWidget(self.btn_configure_custom)
+
+        # Opacity effect для кнопки настройки — не скрываем, а делаем прозрачной
+        self._btn_configure_custom_dim = QGraphicsOpacityEffect()
+        self._btn_configure_custom_dim.setOpacity(1.0)
+        self.btn_configure_custom.setGraphicsEffect(self._btn_configure_custom_dim)
 
         token_type_layout.addStretch()
 
@@ -2156,9 +2560,9 @@ class ClaudeManager(QMainWindow):
         else:
             self.status_label.setText("Не запущен")
             self.status_label.setStyleSheet("color: rgb(255, 50, 50);")
-            self.btn_start_omniroute.setEnabled(True)
+            # При кастомном токене кнопка запуска Omniroute заблокирована
+            self.btn_start_omniroute.setEnabled(not use_custom)
             self.btn_stop_omniroute.setEnabled(False)
-            # Если используется кастомный токен, Claude доступен без Omniroute
             self.btn_claude.setEnabled(use_custom)
 
     def start_omniroute(self):
@@ -2314,31 +2718,45 @@ class ClaudeManager(QMainWindow):
             self.token_input.setEchoMode(QLineEdit.Password)
             self.btn_toggle_token.setText("Показать")
 
-    def toggle_custom_token_fields(self):
-        """Показывает/скрывает кнопку настройки кастомного токена"""
-        is_custom = self.use_custom_token_checkbox.isChecked()
+    def toggle_custom_token_fields(self, is_custom=None):
+        """Затемняет секции при включении кастомного токена"""
+        if is_custom is None:
+            is_custom = self.use_custom_token_checkbox.isChecked()
 
-        # Показываем/скрываем кнопку настройки
-        self.btn_configure_custom.setVisible(is_custom)
+        self.settings["use_custom_token"] = is_custom
+        save_settings(self.settings)
 
-        # Блокируем выбор модели при кастомном токене
+        dim = 0.3 if is_custom else 1.0
+
+        # Затемняем только кнопку запуска Omniroute
+        self._btn_start_omniroute_dim.setOpacity(dim)
+        self.btn_start_omniroute.setEnabled(not is_custom)
+
+        # Затемняем модель
+        self._model_combo_dim.setOpacity(dim)
+        self._btn_add_dim.setOpacity(dim)
+        self._btn_remove_dim.setOpacity(dim)
         self.model_combo.setEnabled(not is_custom)
         self.btn_add_model.setEnabled(not is_custom)
         self.btn_remove_model.setEnabled(not is_custom)
 
-        # Показываем/скрываем обычный токен
-        for i in range(self.token_layout.count()):
-            widget = self.token_layout.itemAt(i).widget()
-            if widget:
-                widget.setVisible(not is_custom)
+        # Затемняем токен
+        self._token_label_dim.setOpacity(dim)
+        self._token_input_dim.setOpacity(dim)
+        self._btn_toggle_token_dim.setOpacity(dim)
+        self._btn_save_token_dim.setOpacity(dim)
+        self._btn_edit_token_dim.setOpacity(dim)
+        self.token_input.setEnabled(not is_custom)
+        self.btn_toggle_token.setEnabled(not is_custom)
+        self.btn_save_token.setEnabled(not is_custom)
+        self.btn_edit_token.setEnabled(not is_custom)
 
-        # Сохраняем состояние переключателя
-        self.settings["use_custom_token"] = is_custom
-        save_settings(self.settings)
+        # Кнопка настройки — только opacity, без setVisible (иначе меняется размер layout)
+        self._btn_configure_custom_dim.setOpacity(1.0 if is_custom else 0.0)
+        self.btn_configure_custom.setEnabled(is_custom)
 
-        # Пересчитываем размер окна
-        self.adjustSize()
-        self.updateGeometry()
+        if not is_custom:
+            self.check_status_async()
 
     def open_custom_token_dialog(self):
         """Открывает диалог настройки кастомного токена"""
@@ -2354,12 +2772,42 @@ class ClaudeManager(QMainWindow):
             self.log("1. Введите команду: /logout", "info")
             self.log("2. Введите команду:", "info")
             api_key = self.settings.get("custom_api_key", "")
-            self.log(f'   $env:ANTHROPIC_BASE_URL="https://cc.freemodel.dev"; $env:ANTHROPIC_API_KEY="{api_key}"; claude', "info")
+            base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
+            self.log(f'   $env:ANTHROPIC_BASE_URL="{base_url}"; $env:ANTHROPIC_API_KEY="{api_key}"; claude', "info")
             self.log("3. Введите команду: /model и поставьте default", "info")
+            self.log("─" * 50, "info")
+            self.log("Если выбрали opus 4.6 или 4.7 и хотите вернуться на opus 4.8:", "info")
+            self.log("   введите /model и выберите default (1)", "info")
             self.log("─" * 50, "info")
 
         # Обновляем статус кнопки Claude (теперь доступна без Omniroute)
         self.update_omniroute_status()
+
+    def _write_claude_model_setting(self, model_choice):
+        """Записывает выбранную модель в ~/.claude/settings.json"""
+        try:
+            claude_settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+            claude_settings = {}
+            if os.path.exists(claude_settings_path):
+                with open(claude_settings_path, 'r', encoding='utf-8') as f:
+                    claude_settings = json.load(f)
+
+            model_map = {
+                "Opus 4.8 (default)": None,
+                "Sonnet 4.6": "claude-sonnet-4-6",
+                "Opus 4.7": "claude-opus-4-7",
+                "Opus 4.6": "claude-opus-4-6",
+            }
+            model_id = model_map.get(model_choice)
+            if model_id is None:
+                claude_settings.pop("model", None)
+            else:
+                claude_settings["model"] = model_id
+
+            with open(claude_settings_path, 'w', encoding='utf-8') as f:
+                json.dump(claude_settings, f, indent=2)
+        except Exception as e:
+            self.log(f"Не удалось записать модель в настройки Claude: {e}", "warning")
 
     def launch_claude(self):
         """Запускает Claude Code с выбранной моделью"""
@@ -2407,14 +2855,22 @@ class ClaudeManager(QMainWindow):
                 self.log("Кастомный API ключ не установлен", "error")
                 return
 
-            env["ANTHROPIC_API_KEY"] = custom_api_key
-            env["ANTHROPIC_BASE_URL"] = "https://cc.freemodel.dev"
+            custom_model = self.settings.get("custom_model", "")
 
-            # Не устанавливаем модель - пользователь выберет вручную через /model
+            custom_base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
+
+            env["ANTHROPIC_API_KEY"] = custom_api_key
+            env["ANTHROPIC_BASE_URL"] = custom_base_url
+            env.pop("ANTHROPIC_MODEL", None)
+            env.pop("ANTHROPIC_SMALL_FAST_MODEL", None)
             env["ANTHROPIC_AUTH_TOKEN"] = ""
             env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
-            self.log(f"Используется кастомный токен для cc.freemodel.dev", "info")
+            # Записываем модель в ~/.claude/settings.json чтобы она сохранялась
+            custom_model = self.settings.get("custom_model", "default (claude-opus-4-8)")
+            self._write_claude_model_setting(custom_model)
+
+            self.log(f"Используется кастомный токен для {custom_base_url}", "info")
         else:
             # Обычные настройки через Omniroute
             env["ANTHROPIC_BASE_URL"] = "http://localhost:20128/v1"
