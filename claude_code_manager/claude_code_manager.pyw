@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "2.7"  # Временно для теста обновлений
+APP_VERSION = "2.8"  # Временно для теста обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -892,7 +892,7 @@ class AddModelDialog(QDialog):
 # ============================================================
 
 class ConfirmDeleteDialog(QDialog):
-    def __init__(self, model_name, parent=None):
+    def __init__(self, model_name, parent=None, question_text=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -930,7 +930,7 @@ class ConfirmDeleteDialog(QDialog):
         layout.addWidget(warning_label)
 
         # Текст вопроса
-        question_label = QLabel("Вы уверены, что хотите удалить модель?")
+        question_label = QLabel(question_text if question_text else "Вы уверены, что хотите удалить модель?")
         question_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
         question_label.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
         question_label.setAlignment(Qt.AlignCenter)
@@ -1332,7 +1332,7 @@ class BaseUrlManagerDialog(QDialog):
         if sel not in self.urls:
             return
         # Подтверждение удаления
-        confirm = ConfirmDeleteDialog(sel, self)
+        confirm = ConfirmDeleteDialog(sel, self, question_text="Вы уверены, что хотите удалить Base URL?")
         if confirm.exec() != QDialog.Accepted:
             return
         self.urls.remove(sel)
@@ -2768,16 +2768,13 @@ class ClaudeManager(QMainWindow):
 
             # Выводим инструкцию по активации
             self.log("─" * 50, "info")
-            self.log("Для активации кастомного токена вручную:", "info")
-            self.log("1. Введите команду: /logout", "info")
-            self.log("2. Введите команду:", "info")
+            self.log("Для активации кастомного токена вручную:", "warning")
+            self.log("(активировать нужно только один раз)", "warning")
+            self.log("1. Введите команду: /logout", "warning")
+            self.log("2. Введите команду:", "warning")
             api_key = self.settings.get("custom_api_key", "")
             base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
-            self.log(f'   $env:ANTHROPIC_BASE_URL="{base_url}"; $env:ANTHROPIC_API_KEY="{api_key}"; claude', "info")
-            self.log("3. Введите команду: /model и поставьте default", "info")
-            self.log("─" * 50, "info")
-            self.log("Если выбрали opus 4.6 или 4.7 и хотите вернуться на opus 4.8:", "info")
-            self.log("   введите /model и выберите default (1)", "info")
+            self.log(f'   $env:ANTHROPIC_BASE_URL="{base_url}"; $env:ANTHROPIC_API_KEY="{api_key}"; claude', "warning")
             self.log("─" * 50, "info")
 
         # Обновляем статус кнопки Claude (теперь доступна без Omniroute)
