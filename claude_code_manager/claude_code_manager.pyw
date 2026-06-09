@@ -41,6 +41,7 @@ def load_settings():
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
+
                 # Дописываем недостающие поля для совместимости
                 if "custom_base_urls" not in loaded or not loaded.get("custom_base_urls"):
                     loaded["custom_base_urls"] = ["https://cc.freemodel.dev", "https://api.inferall.ai"]
@@ -1692,6 +1693,7 @@ class CustomTokenDialog(QDialog):
         self.model_combo = QComboBox()
         self.model_combo.setCursor(Qt.PointingHandCursor)
         self.model_combo.setFont(QFont("Segoe UI", 9))
+        self.model_combo.setMaxVisibleItems(4)
         self.model_combo.setStyleSheet("""
             QComboBox {
                 background-color: rgba(30, 30, 35, 200);
@@ -1707,7 +1709,7 @@ class CustomTokenDialog(QDialog):
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
-        models = ["Opus 4.8 (default)", "Opus 4.7", "Opus 4.6", "Sonnet 4.6"]
+        models = ["Opus 4.8 (default)", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Sonnet 4"]
         self.model_combo.addItems(models)
         # Маппинг старых сохранённых значений на новые метки
         model_remap = {
@@ -2716,6 +2718,7 @@ class ClaudeManager(QMainWindow):
         self.fm_model_combo = QComboBox()
         self.fm_model_combo.setCursor(Qt.PointingHandCursor)
         self.fm_model_combo.setFont(QFont("Segoe UI", 9))
+        self.fm_model_combo.setMaxVisibleItems(4)
         self.fm_model_combo.setStyleSheet("""
             QComboBox {
                 background-color: rgba(30, 30, 35, 200);
@@ -2732,7 +2735,7 @@ class ClaudeManager(QMainWindow):
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
-        fm_models = ["Opus 4.8 (default)", "Opus 4.7", "Opus 4.6", "Sonnet 4.6"]
+        fm_models = ["Opus 4.8 (default)", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Sonnet 4"]
         self.fm_model_combo.addItems(fm_models)
         saved_m = self.settings.get("custom_model", "Opus 4.8 (default)")
         remap = {
@@ -3291,10 +3294,16 @@ class ClaudeManager(QMainWindow):
 
         self.btn_configure_custom.setEnabled(is_custom)
 
-        # Кнопка запуска Claude доступна сразу при FreeModel режиме
+        # Кнопка запуска Claude доступна:
+        # - В BaseURL режиме — если сохранён API ключ
+        # - В Omniroute режиме — если Omniroute отвечает (last == True)
         if hasattr(self, "btn_claude"):
-            last = getattr(self, "_last_status", None)
-            self.btn_claude.setEnabled(is_custom or bool(last))
+            if is_custom:
+                has_key = bool(self.settings.get("custom_api_key", ""))
+                self.btn_claude.setEnabled(has_key)
+            else:
+                last = getattr(self, "_last_status", None)
+                self.btn_claude.setEnabled(bool(last))
 
         # Подгоняем высоту окна
         target_h = 825 if is_custom else 905
@@ -3333,11 +3342,15 @@ class ClaudeManager(QMainWindow):
         self.update_omniroute_status()
 
     MODEL_ID_MAP = {
-        "Opus 4.8 (default)": None,
+        "Opus 4.8 (default)": "claude-opus-4-8",
         "Sonnet 4.6": "claude-sonnet-4-6",
+        "Sonnet 4": "claude-sonnet-4",
         "Opus 4.7": "claude-opus-4-7",
         "Opus 4.6": "claude-opus-4-6",
     }
+
+    # Модели, для которых НЕ передавать --model (только env), чтобы /model показывал Default
+    NO_CLI_FLAG_MODELS = set()  # Пустой — все модели форсятся через --model
 
     def _resolve_model_id(self, model_choice):
         """Возвращает реальный ID модели для CLI/env или None для дефолта."""
@@ -3399,7 +3412,7 @@ class ClaudeManager(QMainWindow):
         env = os.environ.copy()
 
         if use_custom:
-            # Кастомные настройки
+            # Кастомные настройки (BaseURL)
             custom_api_key = self.settings.get("custom_api_key", "")
 
             if not custom_api_key:
@@ -3407,7 +3420,6 @@ class ClaudeManager(QMainWindow):
                 return
 
             custom_model = self.settings.get("custom_model", "")
-
             custom_base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
 
             env["ANTHROPIC_API_KEY"] = custom_api_key
@@ -3417,9 +3429,14 @@ class ClaudeManager(QMainWindow):
             env["ANTHROPIC_AUTH_TOKEN"] = ""
             env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
-            # Записываем модель в ~/.claude/settings.json чтобы она сохранялась
-            custom_model = self.settings.get("custom_model", "default (claude-opus-4-8)")
+            # Записываем модель в ~/.claude/settings.json для BaseURL
             self._write_claude_model_setting(custom_model)
+
+            # Форсируем модель через --model (только для BaseURL)
+            model_id = self._resolve_model_id(custom_model)
+            cli_cmd = "claude"
+            if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
+                cli_cmd += f" --model {model_id}"
 
             self.log(f"Используется кастомный токен для {custom_base_url}", "info")
         else:
@@ -3428,29 +3445,26 @@ class ClaudeManager(QMainWindow):
             env["ANTHROPIC_AUTH_TOKEN"] = self.settings.get("auth_token", "")
             env["ANTHROPIC_API_KEY"] = ""
             env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+            # Передаём ID модели напрямую (kr/claude-sonnet-4.5 и т.д.)
             env["ANTHROPIC_MODEL"] = model
             env["ANTHROPIC_SMALL_FAST_MODEL"] = model
 
-        # Форсируем выбранную модель через --model — иначе Claude Code при
-        # резюме старого чата подхватит модель из истории сообщений.
-        if use_custom:
-            model_id = self._resolve_model_id(self.settings.get("custom_model", ""))
-        else:
-            model_id = self._resolve_model_id(model)
-
-        cli_cmd = "claude"
-        if model_id:
-            cli_cmd += f" --model {model_id}"
+            # Форсируем модель через --model, чтобы старые чаты не переключались
+            cli_cmd = f"claude --model {model}"
 
         try:
             subprocess.Popen(
                 ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {cli_cmd}"],
                 env=env
             )
-            if model_id:
-                self.log(f"Claude Code запущен (--model {model_id})", "success")
+            if use_custom:
+                model_id = self._resolve_model_id(self.settings.get("custom_model", ""))
+                if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
+                    self.log(f"Claude Code запущен (--model {model_id})", "success")
+                else:
+                    self.log(f"Claude Code запущен ({model_id or 'default'})", "success")
             else:
-                self.log("Claude Code запущен (модель по умолчанию)", "success")
+                self.log(f"Claude Code запущен ({model})", "success")
         except Exception as e:
             self.log(f"Ошибка запуска: {e}", "error")
 
