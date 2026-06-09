@@ -12,11 +12,11 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
                                QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QProgressBar, QCheckBox)
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QPainterPath
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "2.8"  # Временно для теста обновлений
+APP_VERSION = "2.9"  # Временно для теста обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -1176,6 +1176,109 @@ class ToggleSwitch(QWidget):
         p.end()
 
 # ============================================================
+# ШИРОКИЙ ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМОВ (FreeModel ↔ Omniroute)
+# ============================================================
+
+class ModeToggle(QWidget):
+    """Левое положение = FreeModel (оранжевый), Правое = Omniroute (синий)"""
+    toggled = Signal(bool)  # True = Omniroute, False = FreeModel
+
+    def __init__(self, omniroute_mode=True, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(280, 38)
+        self.setCursor(Qt.PointingHandCursor)
+        self._omniroute = omniroute_mode
+        self._progress = 1.0 if omniroute_mode else 0.0
+        self._target = self._progress
+
+        self._timer = QTimer()
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)  # 60fps
+
+    def isOmniroute(self):
+        return self._omniroute
+
+    def setOmniroute(self, val, animate=True):
+        if val != self._omniroute:
+            self._omniroute = val
+            self._target = 1.0 if val else 0.0
+            if not animate:
+                self._progress = self._target
+                self.update()
+
+    def _tick(self):
+        diff = self._target - self._progress
+        if abs(diff) > 0.004:
+            self._progress += diff * 0.18
+            self.update()
+        elif self._progress != self._target:
+            self._progress = self._target
+            self.update()
+
+    def mousePressEvent(self, event):
+        new_mode = event.pos().x() >= self.width() / 2
+        if new_mode != self._omniroute:
+            self._omniroute = new_mode
+            self._target = 1.0 if self._omniroute else 0.0
+            self.toggled.emit(self._omniroute)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        t = self._progress
+        w, h = self.width(), self.height()
+
+        # Трек
+        p.setBrush(QColor(28, 28, 33))
+        p.setPen(QPen(QColor(60, 60, 65), 2))
+        p.drawRoundedRect(1, 1, w - 2, h - 2, 9, 9)
+
+        # Активная "таблетка" (скользящая половина)
+        pill_w = w / 2 - 4
+        pill_x = 2 + (w / 2) * t  # 2 → w/2 + 2
+
+        # Цвет: оранжевый (FreeModel) → синий (Omniroute)
+        r = int(255 + (100 - 255) * t)   # 255 → 100
+        g = int(170 + (150 - 170) * t)   # 170 → 150
+        b = int(40 + (255 - 40) * t)     # 40  → 255
+
+        # Свечение вокруг таблетки (клипом обрезаем по внутренней области трека)
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(QRectF(2, 2, w - 4, h - 4), 8, 8)
+        p.save()
+        p.setClipPath(clip_path)
+        for i in range(1, 4):
+            alpha = int(55 * (1 - (i - 1) / 3.5))
+            p.setPen(QPen(QColor(r, g, b, alpha), 1))
+            p.setBrush(Qt.NoBrush)
+            ex = i * 1.6
+            p.drawRoundedRect(
+                QRectF(pill_x - ex, 2 - ex, pill_w + ex * 2, h - 4 + ex * 2),
+                7 + ex, 7 + ex
+            )
+        p.restore()
+
+        # Сама таблетка
+        p.setBrush(QColor(r, g, b, 235))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(pill_x, 2, pill_w, h - 4), 7, 7)
+
+        # Текст
+        p.setFont(QFont("Segoe UI", 10, QFont.Bold))
+
+        # Левая половина: FreeModel — яркая когда t=0
+        left_b = int(235 - 120 * t)
+        p.setPen(QColor(left_b, left_b, left_b))
+        p.drawText(QRectF(0, 0, w / 2, h), Qt.AlignCenter, "BaseURL")
+
+        # Правая половина: Omniroute — яркая когда t=1
+        right_b = int(115 + 120 * t)
+        p.setPen(QColor(right_b, right_b, right_b))
+        p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignCenter, "Omniroute")
+
+        p.end()
+
+# ============================================================
 # ДИАЛОГ УПРАВЛЕНИЯ BASE URL
 # ============================================================
 
@@ -1455,7 +1558,10 @@ class CustomTokenDialog(QDialog):
         # Модель
         model_label = QLabel("Модель:")
         model_label.setFont(QFont("Segoe UI", 10))
-        model_label.setStyleSheet("color: rgb(180, 180, 180);")
+        model_label.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
         layout.addWidget(model_label)
 
         self.model_combo = QComboBox()
@@ -2012,7 +2118,11 @@ class ClaudeManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Claude Code Manager")
-        self.setFixedSize(700, 800)  # Увеличил высоту с 750 до 800
+        self.setFixedWidth(700)
+        # Стартовая высота — зависит от сохранённого режима
+        _is_fm = self.settings.get("use_custom_token", False) if False else False
+        # Будет переустановлено в toggle_custom_token_fields()
+        self.resize(700, 900)
 
         # Устанавливаем иконку - ищем в разных местах
         icon_paths = [
@@ -2090,6 +2200,15 @@ class ClaudeManager(QMainWindow):
 
         main_layout.addLayout(title_layout)
 
+        # Переключатель режимов FreeModel ↔ Omniroute (под заголовком, по центру)
+        mode_row = QHBoxLayout()
+        mode_row.addStretch()
+        self.mode_toggle = ModeToggle(omniroute_mode=not self.settings.get("use_custom_token", False))
+        self.mode_toggle.toggled.connect(self._on_mode_changed)
+        mode_row.addWidget(self.mode_toggle)
+        mode_row.addStretch()
+        main_layout.addLayout(mode_row)
+
         # Индикатор обновления (абсолютная позиция в правом верхнем углу)
         self.update_indicator = UpdateIndicator(self)
         self.update_indicator.clicked.connect(self._on_update_indicator_clicked)
@@ -2098,8 +2217,10 @@ class ClaudeManager(QMainWindow):
 
         # Секция Omniroute
         omniroute_frame = QFrame()
+        omniroute_frame.setObjectName("omniroute_frame")
+        self.omniroute_frame = omniroute_frame
         omniroute_frame.setStyleSheet("""
-            QFrame {
+            QFrame#omniroute_frame {
                 background-color: rgba(30, 30, 35, 200);
                 border: 2px solid rgb(60, 60, 65);
                 border-radius: 8px;
@@ -2111,7 +2232,10 @@ class ClaudeManager(QMainWindow):
         header_layout = QHBoxLayout()
         omniroute_label = QLabel("Omniroute")
         omniroute_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        omniroute_label.setStyleSheet("color: rgb(200, 200, 200);")
+        omniroute_label.setStyleSheet(
+            "color: rgb(200, 200, 200); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 10px;"
+        )
         header_layout.addWidget(omniroute_label)
 
         self.status_indicator = StatusIndicator()
@@ -2142,12 +2266,18 @@ class ClaudeManager(QMainWindow):
 
         omniroute_layout.addLayout(omniroute_btn_layout)
 
+        # Opacity-эффект на весь блок Omniroute (для плавного затемнения в FreeModel режиме)
+        self._omniroute_frame_dim = QGraphicsOpacityEffect()
+        self._omniroute_frame_dim.setOpacity(1.0)
+        omniroute_frame.setGraphicsEffect(self._omniroute_frame_dim)
+
         main_layout.addWidget(omniroute_frame)
 
         # Секция Claude Code
         claude_frame = QFrame()
+        claude_frame.setObjectName("claude_frame")
         claude_frame.setStyleSheet("""
-            QFrame {
+            QFrame#claude_frame {
                 background-color: rgba(30, 30, 35, 200);
                 border: 2px solid rgb(60, 60, 65);
                 border-radius: 8px;
@@ -2157,14 +2287,25 @@ class ClaudeManager(QMainWindow):
 
         claude_label = QLabel("Claude Code")
         claude_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        claude_label.setStyleSheet("color: rgb(200, 200, 200);")
+        claude_label.setStyleSheet(
+            "color: rgb(200, 200, 200); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 10px;"
+        )
         claude_layout.addWidget(claude_label)
 
-        # Выбор модели
+        # Выбор модели — обёрнут в контейнер чтобы можно было скрыть целиком
+        self.model_section_widget = QWidget()
+        model_section_layout = QVBoxLayout(self.model_section_widget)
+        model_section_layout.setContentsMargins(0, 0, 0, 0)
+        model_section_layout.setSpacing(8)
+
         model_layout = QHBoxLayout()
         model_label = QLabel("Модель:")
         model_label.setFont(QFont("Segoe UI", 10))
-        model_label.setStyleSheet("color: rgb(180, 180, 180);")
+        model_label.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
         model_layout.addWidget(model_label)
 
         self.model_combo = StyledComboBox()
@@ -2174,7 +2315,7 @@ class ClaudeManager(QMainWindow):
         self.model_combo.setMaxVisibleItems(4)
         model_layout.addWidget(self.model_combo, 1)
 
-        claude_layout.addLayout(model_layout)
+        model_section_layout.addLayout(model_layout)
 
         # Кнопки управления моделями
         model_btn_layout = QHBoxLayout()
@@ -2187,7 +2328,8 @@ class ClaudeManager(QMainWindow):
         self.btn_remove_model.clicked.connect(self.remove_model)
         model_btn_layout.addWidget(self.btn_remove_model)
 
-        claude_layout.addLayout(model_btn_layout)
+        model_section_layout.addLayout(model_btn_layout)
+        claude_layout.addWidget(self.model_section_widget)
 
         # Opacity effects для модели (применяем к комбо и кнопкам)
         self._model_combo_dim = QGraphicsOpacityEffect(); self._model_combo_dim.setOpacity(1.0)
@@ -2197,12 +2339,19 @@ class ClaudeManager(QMainWindow):
         self.btn_add_model.setGraphicsEffect(self._btn_add_dim)
         self.btn_remove_model.setGraphicsEffect(self._btn_remove_dim)
 
-        # Токен авторизации
+        # Токен авторизации — обёрнут в контейнер
+        self.token_section_widget = QWidget()
+        token_section_outer = QVBoxLayout(self.token_section_widget)
+        token_section_outer.setContentsMargins(0, 0, 0, 0)
+        token_section_outer.setSpacing(0)
         self.token_layout = QHBoxLayout()
 
         self.token_label = QLabel("Токен:")
         self.token_label.setFont(QFont("Segoe UI", 10))
-        self.token_label.setStyleSheet("color: rgb(180, 180, 180);")
+        self.token_label.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
         self.token_layout.addWidget(self.token_label)
 
         self.token_input = QLineEdit()
@@ -2255,7 +2404,8 @@ class ClaudeManager(QMainWindow):
             self.btn_edit_token.hide()
         self.token_layout.addWidget(self.btn_edit_token)
 
-        claude_layout.addLayout(self.token_layout)
+        token_section_outer.addLayout(self.token_layout)
+        claude_layout.addWidget(self.token_section_widget)
 
         # Opacity effects для токена
         self._token_label_dim = QGraphicsOpacityEffect(); self._token_label_dim.setOpacity(1.0)
@@ -2269,57 +2419,183 @@ class ClaudeManager(QMainWindow):
         self.btn_save_token.setGraphicsEffect(self._btn_save_token_dim)
         self.btn_edit_token.setGraphicsEffect(self._btn_edit_token_dim)
 
-        # Переключатель кастомного токена
-        token_type_layout = QHBoxLayout()
-
-        token_type_label = QLabel("Токен FreeModel")
-        token_type_label.setFont(QFont("Segoe UI", 10))
-        token_type_label.setStyleSheet("color: rgb(180, 180, 180);")
-        token_type_layout.addWidget(token_type_label)
-
+        # Скрытый старый toggle (для совместимости логики)
         self.use_custom_token_checkbox = ToggleSwitch(checked=self.settings.get("use_custom_token", False))
         self.use_custom_token_checkbox.toggled.connect(self.toggle_custom_token_fields)
-        token_type_layout.addWidget(self.use_custom_token_checkbox)
+        self.use_custom_token_checkbox.hide()
 
-        # Кнопка настройки кастомного токена
-        self.btn_configure_custom = StyledButton("Настроить")
-        self.btn_configure_custom.setFont(QFont("Segoe UI", 8))
-        self.btn_configure_custom.setMinimumHeight(0)
-        self.btn_configure_custom.setFixedHeight(28)
+        # Секция FreeModel — все настройки inline
+        self.freemodel_section_widget = QWidget()
+        freemodel_layout = QVBoxLayout(self.freemodel_section_widget)
+        freemodel_layout.setContentsMargins(0, 0, 0, 0)
+        freemodel_layout.setSpacing(8)
 
-        def _configure_update_style():
-            p = self.btn_configure_custom._hover_progress
-            r = int(60 + (60 - 60) * p)
-            g = int(60 + (140 - 60) * p)
-            b = int(65 + (200 - 65) * p)
-            bg_alpha = int(200 + 20 * p)
-            self.btn_configure_custom.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: rgba(40, 40, 45, {bg_alpha});
+        # Base URL: label + combo + manage button
+        url_row = QHBoxLayout()
+        url_lbl = QLabel("Base URL:")
+        url_lbl.setFont(QFont("Segoe UI", 10))
+        url_lbl.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
+        url_lbl.setFixedWidth(90)
+        url_row.addWidget(url_lbl)
+
+        self.fm_url_combo = QComboBox()
+        self.fm_url_combo.setCursor(Qt.PointingHandCursor)
+        self.fm_url_combo.setFont(QFont("Segoe UI", 9))
+        self.fm_url_combo.setStyleSheet("""
+            QComboBox {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 6px;
+                min-height: 24px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: rgb(30, 30, 35);
+                color: rgb(200, 200, 200);
+                selection-background-color: rgb(50, 50, 55);
+            }
+        """)
+        self.fm_url_combo.addItems(self.settings.get("custom_base_urls", []))
+        if self.settings.get("custom_base_url"):
+            self.fm_url_combo.setCurrentText(self.settings["custom_base_url"])
+        self.fm_url_combo.currentTextChanged.connect(self._fm_url_changed)
+        url_row.addWidget(self.fm_url_combo, 1)
+
+        self.fm_btn_manage = StyledButton("Управление")
+        self.fm_btn_manage.setMinimumHeight(0)
+        self.fm_btn_manage.setFixedHeight(36)
+        self.fm_btn_manage.setFixedWidth(130)
+        self.fm_btn_manage.clicked.connect(self._fm_manage_urls)
+        url_row.addWidget(self.fm_btn_manage)
+        freemodel_layout.addLayout(url_row)
+
+        # API key: label + input + show/save
+        key_row = QHBoxLayout()
+        key_lbl = QLabel("API ключ:")
+        key_lbl.setFont(QFont("Segoe UI", 10))
+        key_lbl.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
+        key_lbl.setFixedWidth(90)
+        key_row.addWidget(key_lbl)
+
+        self.fm_key_input = QLineEdit()
+        self.fm_key_input.setPlaceholderText("fe_oa_xxxxx...")
+        self.fm_key_input.setText(self.settings.get("custom_api_key", ""))
+        self.fm_key_input.setEchoMode(QLineEdit.Password)
+        self.fm_key_input.setFont(QFont("Segoe UI", 9))
+        _has_fm_key = bool(self.settings.get("custom_api_key", ""))
+        if _has_fm_key:
+            self.fm_key_input.setReadOnly(True)
+            self.fm_key_input.setStyleSheet("""
+                QLineEdit {
+                    background-color: rgba(20, 20, 25, 200);
                     color: rgb(200, 200, 200);
-                    border: 2px solid rgb({r}, {g}, {b});
-                    border-radius: 6px;
-                    padding: 2px 10px;
-                }}
-                QPushButton:pressed {{ background-color: rgba(30, 30, 35, 200); }}
-                QPushButton:disabled {{ background-color: rgba(30, 30, 35, 150); color: rgb(100, 100, 100); border: 2px solid rgb(40, 40, 45); }}
+                    border: 1px solid rgb(60, 60, 65);
+                    border-radius: 4px;
+                    padding: 8px;
+                }
             """)
+        else:
+            self.fm_key_input.setStyleSheet("""
+                QLineEdit {
+                    background-color: rgba(30, 30, 35, 200);
+                    color: rgb(200, 200, 200);
+                    border: 1px solid rgb(60, 60, 65);
+                    border-radius: 4px;
+                    padding: 8px;
+                }
+            """)
+        key_row.addWidget(self.fm_key_input, 1)
 
-        self.btn_configure_custom._update_style = _configure_update_style
-        _configure_update_style()  # Применяем сразу при создании
-        self.btn_configure_custom.clicked.connect(self.open_custom_token_dialog)
-        token_type_layout.addWidget(self.btn_configure_custom)
+        self.fm_btn_toggle_key = StyledButton("Показать")
+        self.fm_btn_toggle_key.setMinimumHeight(0)
+        self.fm_btn_toggle_key.setFixedHeight(36)
+        self.fm_btn_toggle_key.setFixedWidth(90)
+        self.fm_btn_toggle_key.clicked.connect(self._fm_toggle_key)
+        key_row.addWidget(self.fm_btn_toggle_key)
 
-        # Opacity effect для кнопки настройки — не скрываем, а делаем прозрачной
+        self.fm_btn_save_key = StyledButton("Сохранить")
+        self.fm_btn_save_key.setMinimumHeight(0)
+        self.fm_btn_save_key.setFixedHeight(36)
+        self.fm_btn_save_key.setFixedWidth(110)
+        self.fm_btn_save_key.clicked.connect(self._fm_save_key)
+        if _has_fm_key:
+            self.fm_btn_save_key.hide()
+        key_row.addWidget(self.fm_btn_save_key)
+
+        self.fm_btn_edit_key = StyledButton("Изменить")
+        self.fm_btn_edit_key.setMinimumHeight(0)
+        self.fm_btn_edit_key.setFixedHeight(36)
+        self.fm_btn_edit_key.setFixedWidth(110)
+        self.fm_btn_edit_key.clicked.connect(self._fm_edit_key)
+        if not _has_fm_key:
+            self.fm_btn_edit_key.hide()
+        key_row.addWidget(self.fm_btn_edit_key)
+        freemodel_layout.addLayout(key_row)
+
+        # Model: label + combo
+        model_row = QHBoxLayout()
+        model_lbl = QLabel("Модель:")
+        model_lbl.setFont(QFont("Segoe UI", 10))
+        model_lbl.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
+        model_lbl.setFixedWidth(90)
+        model_row.addWidget(model_lbl)
+
+        self.fm_model_combo = QComboBox()
+        self.fm_model_combo.setCursor(Qt.PointingHandCursor)
+        self.fm_model_combo.setFont(QFont("Segoe UI", 9))
+        self.fm_model_combo.setStyleSheet("""
+            QComboBox {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 6px;
+                min-height: 24px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: rgb(30, 30, 35);
+                color: rgb(200, 200, 200);
+                selection-background-color: rgb(50, 50, 55);
+            }
+        """)
+        fm_models = ["Opus 4.8 (default)", "Opus 4.7", "Opus 4.6", "Sonnet 4.6"]
+        self.fm_model_combo.addItems(fm_models)
+        saved_m = self.settings.get("custom_model", "Opus 4.8 (default)")
+        remap = {
+            "default (claude-opus-4-8)": "Opus 4.8 (default)",
+            "claude-sonnet-4-6 (/model → 2)": "Sonnet 4.6",
+            "claude-sonnet-4-6": "Sonnet 4.6",
+            "claude-opus-4-7": "Opus 4.7",
+            "claude-opus-4-6": "Opus 4.6",
+        }
+        saved_m = remap.get(saved_m, saved_m)
+        if saved_m in fm_models:
+            self.fm_model_combo.setCurrentText(saved_m)
+        self.fm_model_combo.currentTextChanged.connect(self._fm_model_changed)
+        model_row.addWidget(self.fm_model_combo, 1)
+        freemodel_layout.addLayout(model_row)
+
+        # Скрытая кнопка для совместимости со старым кодом
+        self.btn_configure_custom = StyledButton("Настроить")
+        self.btn_configure_custom.hide()
         self._btn_configure_custom_dim = QGraphicsOpacityEffect()
         self._btn_configure_custom_dim.setOpacity(1.0)
-        self.btn_configure_custom.setGraphicsEffect(self._btn_configure_custom_dim)
 
-        token_type_layout.addStretch()
+        claude_layout.addWidget(self.freemodel_section_widget)
 
-        claude_layout.addLayout(token_type_layout)
-
-        # Изначально скрываем кнопку настройки если не выбрано
+        # Применяем начальное состояние видимости секций
         self.toggle_custom_token_fields()
 
         # Выбор рабочей директории
@@ -2327,7 +2603,10 @@ class ClaudeManager(QMainWindow):
 
         dir_label = QLabel("Директория:")
         dir_label.setFont(QFont("Segoe UI", 10))
-        dir_label.setStyleSheet("color: rgb(180, 180, 180);")
+        dir_label.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
         dir_layout.addWidget(dir_label)
 
         self.dir_input = QLineEdit()
@@ -2363,7 +2642,10 @@ class ClaudeManager(QMainWindow):
 
         project_label = QLabel("Папка проекта:")
         project_label.setFont(QFont("Segoe UI", 10))
-        project_label.setStyleSheet("color: rgb(180, 180, 180);")
+        project_label.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
         project_layout.addWidget(project_label)
 
         self.project_input = QLineEdit()
@@ -2404,8 +2686,9 @@ class ClaudeManager(QMainWindow):
 
         # Консоль
         console_frame = QFrame()
+        console_frame.setObjectName("console_frame")
         console_frame.setStyleSheet("""
-            QFrame {
+            QFrame#console_frame {
                 background-color: rgba(25, 25, 30, 220);
                 border: 2px solid rgb(60, 60, 65);
                 border-radius: 8px;
@@ -2417,7 +2700,10 @@ class ClaudeManager(QMainWindow):
 
         console_label = QLabel("Консоль")
         console_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        console_label.setStyleSheet("color: rgb(220, 220, 220);")
+        console_label.setStyleSheet(
+            "color: rgb(220, 220, 220); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 10px;"
+        )
         console_layout.addWidget(console_label)
 
         self.console = QTextEdit()
@@ -2447,7 +2733,10 @@ class ClaudeManager(QMainWindow):
         """)
         console_layout.addWidget(self.console)
 
+        console_frame.setMaximumHeight(210)
         main_layout.addWidget(console_frame)
+
+        main_layout.addStretch(1)
 
         # Футер
         footer = QLabel("© 2026 Claude Code Manager v" + APP_VERSION)
@@ -2718,44 +3007,180 @@ class ClaudeManager(QMainWindow):
             self.token_input.setEchoMode(QLineEdit.Password)
             self.btn_toggle_token.setText("Показать")
 
+    def _on_mode_changed(self, is_omniroute):
+        """Обработчик переключателя режимов в шапке (Omniroute ↔ FreeModel)"""
+        self.toggle_custom_token_fields(is_custom=not is_omniroute)
+
+    def _fm_url_changed(self, new_url):
+        """Сохраняет выбранный Base URL"""
+        if new_url:
+            self.settings["custom_base_url"] = new_url
+            save_settings(self.settings)
+
+    def _fm_model_changed(self, new_model):
+        """Сохраняет выбранную модель FreeModel"""
+        if new_model:
+            self.settings["custom_model"] = new_model
+            save_settings(self.settings)
+
+    def _fm_toggle_key(self):
+        """Показать/скрыть API ключ"""
+        if self.fm_key_input.echoMode() == QLineEdit.Password:
+            self.fm_key_input.setEchoMode(QLineEdit.Normal)
+            self.fm_btn_toggle_key.setText("Скрыть")
+        else:
+            self.fm_key_input.setEchoMode(QLineEdit.Password)
+            self.fm_btn_toggle_key.setText("Показать")
+
+    def _fm_save_key(self):
+        """Сохраняет API ключ FreeModel и показывает инструкцию"""
+        api_key = self.fm_key_input.text().strip()
+        if not api_key:
+            self.log("API ключ не может быть пустым", "warning")
+            return
+        self.settings["custom_api_key"] = api_key
+        self.settings["custom_base_url"] = self.fm_url_combo.currentText()
+        self.settings["custom_model"] = self.fm_model_combo.currentText()
+        save_settings(self.settings)
+        self.log("Настройки FreeModel сохранены", "success")
+        self.log("─" * 50, "info")
+        self.log("Для активации кастомного токена вручную:", "warning")
+        self.log("(активировать нужно только один раз)", "warning")
+        self.log("1. Введите команду: /logout", "warning")
+        self.log("2. Введите команду:", "warning")
+        base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
+        self.log(f'   $env:ANTHROPIC_BASE_URL="{base_url}"; $env:ANTHROPIC_API_KEY="{api_key}"; claude', "warning")
+        self.log("─" * 50, "info")
+
+        # Блокируем редактирование, переключаем кнопки
+        self.fm_key_input.setReadOnly(True)
+        self.fm_key_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        self.fm_btn_save_key.hide()
+        self.fm_btn_edit_key.show()
+
+    def _fm_edit_key(self):
+        """Разрешает редактирование API ключа FreeModel"""
+        self.fm_key_input.setReadOnly(False)
+        self.fm_key_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        self.fm_key_input.setFocus()
+        self.fm_btn_edit_key.hide()
+        self.fm_btn_save_key.show()
+        self.log("Режим редактирования API ключа", "info")
+
+    def _fm_manage_urls(self):
+        """Открывает окно управления Base URL"""
+        urls = self.settings.get("custom_base_urls", [])
+        current = self.fm_url_combo.currentText()
+        dialog = BaseUrlManagerDialog(urls, current, self)
+        if dialog.exec() == QDialog.Accepted:
+            new_urls, new_current = dialog.get_result()
+            self.settings["custom_base_urls"] = list(new_urls)
+            self.settings["custom_base_url"] = new_current
+            save_settings(self.settings)
+            self.fm_url_combo.blockSignals(True)
+            self.fm_url_combo.clear()
+            self.fm_url_combo.addItems(new_urls)
+            if new_current in new_urls:
+                self.fm_url_combo.setCurrentText(new_current)
+            self.fm_url_combo.blockSignals(False)
+
+    def _animate_opacity(self, effect, target, duration=280):
+        """Плавно анимирует opacity у QGraphicsOpacityEffect"""
+        anim = QPropertyAnimation(effect, b"opacity")
+        anim.setDuration(duration)
+        anim.setStartValue(effect.opacity())
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        anim.start()
+        # Сохраняем ссылку чтобы анимация не была собрана GC
+        if not hasattr(self, "_opacity_anims"):
+            self._opacity_anims = []
+        self._opacity_anims.append(anim)
+        anim.finished.connect(lambda a=anim: self._opacity_anims.remove(a) if a in self._opacity_anims else None)
+
+    def _animate_window_height(self, target_height):
+        """Плавно изменяет высоту окна через resize()"""
+        if hasattr(self, "_resize_anim") and self._resize_anim is not None:
+            self._resize_anim.stop()
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(16777215)
+
+        from PySide6.QtCore import QVariantAnimation
+        anim = QVariantAnimation(self)
+        anim.setDuration(280)
+        anim.setStartValue(self.height())
+        anim.setEndValue(target_height)
+        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        anim.valueChanged.connect(lambda v: self.resize(self.width(), int(v)))
+        anim.start()
+        self._resize_anim = anim
+
     def toggle_custom_token_fields(self, is_custom=None):
-        """Затемняет секции при включении кастомного токена"""
+        """Скрывает/показывает секции для соответствующего режима"""
         if is_custom is None:
             is_custom = self.use_custom_token_checkbox.isChecked()
 
         self.settings["use_custom_token"] = is_custom
         save_settings(self.settings)
 
-        dim = 0.3 if is_custom else 1.0
+        # Синхронизируем оба переключателя
+        if hasattr(self, "mode_toggle"):
+            self.mode_toggle.setOmniroute(not is_custom)
+        if self.use_custom_token_checkbox.isChecked() != is_custom:
+            self.use_custom_token_checkbox.setChecked(is_custom)
 
-        # Затемняем только кнопку запуска Omniroute
-        self._btn_start_omniroute_dim.setOpacity(dim)
-        self.btn_start_omniroute.setEnabled(not is_custom)
+        # Залочим текущую высоту, чтобы Qt не растянул окно при показе скрытых виджетов
+        _was_initialized = getattr(self, "_height_initialized", False) and self.isVisible()
+        if _was_initialized:
+            _cur_h = self.height()
+            self.setMinimumHeight(_cur_h)
+            self.setMaximumHeight(_cur_h)
 
-        # Затемняем модель
-        self._model_combo_dim.setOpacity(dim)
-        self._btn_add_dim.setOpacity(dim)
-        self._btn_remove_dim.setOpacity(dim)
-        self.model_combo.setEnabled(not is_custom)
-        self.btn_add_model.setEnabled(not is_custom)
-        self.btn_remove_model.setEnabled(not is_custom)
+        # Полностью скрываем/показываем секции
+        if hasattr(self, "omniroute_frame"):
+            self.omniroute_frame.setVisible(not is_custom)
+        if hasattr(self, "model_section_widget"):
+            self.model_section_widget.setVisible(not is_custom)
+        if hasattr(self, "token_section_widget"):
+            self.token_section_widget.setVisible(not is_custom)
+        if hasattr(self, "freemodel_section_widget"):
+            self.freemodel_section_widget.setVisible(is_custom)
 
-        # Затемняем токен
-        self._token_label_dim.setOpacity(dim)
-        self._token_input_dim.setOpacity(dim)
-        self._btn_toggle_token_dim.setOpacity(dim)
-        self._btn_save_token_dim.setOpacity(dim)
-        self._btn_edit_token_dim.setOpacity(dim)
-        self.token_input.setEnabled(not is_custom)
-        self.btn_toggle_token.setEnabled(not is_custom)
-        self.btn_save_token.setEnabled(not is_custom)
-        self.btn_edit_token.setEnabled(not is_custom)
-
-        # Кнопка настройки — только opacity, без setVisible (иначе меняется размер layout)
-        self._btn_configure_custom_dim.setOpacity(1.0 if is_custom else 0.0)
         self.btn_configure_custom.setEnabled(is_custom)
 
-        if not is_custom:
+        # Кнопка запуска Claude доступна сразу при FreeModel режиме
+        if hasattr(self, "btn_claude"):
+            last = getattr(self, "_last_status", None)
+            self.btn_claude.setEnabled(is_custom or bool(last))
+
+        # Подгоняем высоту окна
+        target_h = 820 if is_custom else 900
+        if hasattr(self, "_height_initialized") and self._height_initialized and self.isVisible():
+            self._animate_window_height(target_h)
+        else:
+            # Первая установка — мгновенно
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self.resize(self.width(), target_h)
+            self._height_initialized = True
+
+        if not is_custom and hasattr(self, "status_timer"):
             self.check_status_async()
 
     def open_custom_token_dialog(self):
