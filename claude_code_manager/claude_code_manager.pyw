@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "2.9"  # Временно для теста обновлений
+APP_VERSION = "3.0"  # Временно для теста обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -163,6 +163,7 @@ class StatusIndicator(QWidget):
         super().__init__(parent)
         self.setFixedSize(20, 20)
         self._is_active = False
+        self._state = "off"  # "off" (red), "on" (green), "warn" (yellow)
         self._pulse_time = 0.0
         self._pulse_timer = QTimer()
         self._pulse_timer.timeout.connect(self._animate_pulse)
@@ -171,6 +172,13 @@ class StatusIndicator(QWidget):
 
     def set_active(self, active):
         self._is_active = active
+        self._state = "on" if active else "off"
+        self.update()
+
+    def set_state(self, state):
+        """state: 'on' (зелёный), 'off' (красный), 'warn' (жёлтый)"""
+        self._state = state
+        self._is_active = (state == "on")
         self.update()
 
     def _animate_pulse(self):
@@ -184,34 +192,30 @@ class StatusIndicator(QWidget):
 
         w, h = self.width(), self.height()
         center = QPointF(w / 2, h / 2)
-
-        # Плавная пульсация через синус (от 0.5 до 1.0)
         pulse = 0.75 + 0.25 * math.sin(self._pulse_time)
 
-        if self._is_active:
-            # Зеленое свечение с плавной пульсацией
-            glow_radius = 5.0 + 2.5 * pulse
-            glow_alpha = int(60 * pulse)
-            painter.setBrush(QColor(0, 255, 100, glow_alpha))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(center, glow_radius, glow_radius)
-
-            # Основная точка с плавной пульсацией яркости
+        # Цвет точки и свечения по состоянию
+        if self._state == "on":
+            glow = (0, 255, 100, int(60 * pulse))
             brightness = int(180 + 75 * pulse)
-            painter.setBrush(QColor(0, brightness, int(brightness * 0.4)))
-            painter.drawEllipse(center, 4.5, 4.5)
+            core = (0, brightness, int(brightness * 0.4))
+        elif self._state == "warn":
+            # жёлто-оранжевый
+            glow = (255, 170, 30, int(70 * pulse))
+            brightness = int(180 + 75 * pulse)
+            core = (brightness, int(brightness * 0.62), int(brightness * 0.10))
         else:
-            # Красная точка с плавной пульсацией
-            glow_radius = 5.0 + 2.5 * pulse
-            glow_alpha = int(50 * pulse)
-            painter.setBrush(QColor(255, 50, 50, glow_alpha))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(center, glow_radius, glow_radius)
-
-            # Основная красная точка с пульсацией яркости
+            glow = (255, 50, 50, int(50 * pulse))
             brightness = int(180 + 75 * pulse)
-            painter.setBrush(QColor(brightness, 50, 50))
-            painter.drawEllipse(center, 4.5, 4.5)
+            core = (brightness, 50, 50)
+
+        glow_radius = 5.0 + 2.5 * pulse
+        painter.setBrush(QColor(*glow))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(center, glow_radius, glow_radius)
+
+        painter.setBrush(QColor(*core))
+        painter.drawEllipse(center, 4.5, 4.5)
 
 # ============================================================
 # ИНДИКАТОР ОБНОВЛЕНИЯ (ГОЛУБАЯ ПУЛЬСИРУЮЩАЯ ТОЧКА)
@@ -336,29 +340,17 @@ class StyledButton(QPushButton):
         self.setMinimumHeight(40)
         self.setCursor(Qt.PointingHandCursor)
         self._hover_progress = 0.0
+        self._hover_color = (60, 140, 200)  # default — голубой
         self._hover_timer = QTimer()
         self._hover_timer.timeout.connect(self._animate_hover)
         self._hover_timer.start(20)
         self._is_hovered = False
         self.setMouseTracking(True)
+        self._update_style()
 
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
-                border: 2px solid rgb(60, 60, 65);
-                border-radius: 6px;
-                padding: 8px;
-            }
-            QPushButton:pressed {
-                background-color: rgba(30, 30, 35, 200);
-            }
-            QPushButton:disabled {
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
-                border: 2px solid rgb(40, 40, 45);
-            }
-        """)
+    def set_hover_color(self, r, g, b):
+        self._hover_color = (r, g, b)
+        self._update_style()
 
     def enterEvent(self, event):
         self._is_hovered = True
@@ -379,9 +371,9 @@ class StyledButton(QPushButton):
                 self._update_style()
 
     def _update_style(self):
-        # Плавный переход к голубому
+        # Плавный переход к настраиваемому цвету hover
         base_r, base_g, base_b = 60, 60, 65
-        hover_r, hover_g, hover_b = 60, 140, 200  # Голубой
+        hover_r, hover_g, hover_b = self._hover_color
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -1001,6 +993,139 @@ class ConfirmDeleteDialog(QDialog):
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
         fade.finished.connect(lambda: super(ConfirmDeleteDialog, self).reject())
+        fade.start()
+        self._fade = fade
+
+# ============================================================
+# КАСТОМНОЕ ОКНО ПОДТВЕРЖДЕНИЯ ДЕЙСТВИЯ
+# ============================================================
+
+class ConfirmActionDialog(QDialog):
+    """Универсальное окно подтверждения с кастомным заголовком и текстом."""
+    def __init__(self, title, message, detail=None, confirm_text="Продолжить",
+                 icon="⚙", icon_color=(100, 150, 255), parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(18, 18, 22, 0.98),
+                    stop:1 rgba(16, 16, 20, 0.98));
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(14)
+
+        ir, ig, ib = icon_color
+        icon_label = QLabel(icon)
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet(f"""
+            QLabel {{
+                color: rgb({ir}, {ig}, {ib});
+                font-size: 28px;
+                font-weight: bold;
+                background: rgba({ir}, {ig}, {ib}, 0.15);
+                border: 2px solid rgba({ir}, {ig}, {ib}, 0.4);
+                border-radius: 25px;
+                min-width: 50px;
+                max-width: 50px;
+                min-height: 50px;
+                max-height: 50px;
+            }}
+        """)
+        icon_row = QHBoxLayout()
+        icon_row.addStretch()
+        icon_row.addWidget(icon_label)
+        icon_row.addStretch()
+        layout.addLayout(icon_row)
+
+        title_label = QLabel(title)
+        title_label.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title_label.setStyleSheet("color: #DDDDDD; background: transparent; border: none;")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        message_label = QLabel(message)
+        message_label.setFont(QFont("Segoe UI", 10))
+        message_label.setStyleSheet("color: #B5B5B5; background: transparent; border: none;")
+        message_label.setAlignment(Qt.AlignCenter)
+        message_label.setWordWrap(True)
+        layout.addWidget(message_label)
+
+        if detail:
+            detail_label = QLabel(detail)
+            detail_label.setFont(QFont("Consolas", 9))
+            detail_label.setStyleSheet("""
+                QLabel {
+                    color: #E0E0E0;
+                    background: rgba(100, 100, 105, 0.1);
+                    border: 1.5px solid rgba(100, 100, 105, 0.4);
+                    border-radius: 8px;
+                    padding: 8px 12px;
+                }
+            """)
+            detail_label.setAlignment(Qt.AlignLeft)
+            detail_label.setWordWrap(True)
+            layout.addWidget(detail_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+
+        btn_no = RedButton("Отмена")
+        btn_no.setMinimumHeight(40)
+        btn_no.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_no)
+
+        btn_yes = GreenButton(confirm_text)
+        btn_yes.setMinimumHeight(40)
+        btn_yes.clicked.connect(self.accept)
+        btn_layout.addWidget(btn_yes)
+
+        layout.addLayout(btn_layout)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.adjustSize()
+        self.setMinimumWidth(440)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(280)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(180)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.finished.connect(lambda: super(ConfirmActionDialog, self).accept())
+        fade.start()
+        self._fade = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(180)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.finished.connect(lambda: super(ConfirmActionDialog, self).reject())
         fade.start()
         self._fade = fade
 
@@ -2114,6 +2239,8 @@ class DownloadUpdateDialog(QDialog):
 class ClaudeManager(QMainWindow):
     status_changed = Signal(bool)
     update_available = Signal(dict)  # Новый сигнал для обновлений
+    path_add_finished = Signal(list, list, str)  # added, skipped, error
+    claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
 
     def __init__(self):
         super().__init__()
@@ -2122,7 +2249,7 @@ class ClaudeManager(QMainWindow):
         # Стартовая высота — зависит от сохранённого режима
         _is_fm = self.settings.get("use_custom_token", False) if False else False
         # Будет переустановлено в toggle_custom_token_fields()
-        self.resize(700, 900)
+        self.resize(700, 905)
 
         # Устанавливаем иконку - ищем в разных местах
         icon_paths = [
@@ -2209,6 +2336,23 @@ class ClaudeManager(QMainWindow):
         mode_row.addStretch()
         main_layout.addLayout(mode_row)
 
+        # Ряд кнопок установки Claude Code и добавления в PATH
+        install_row = QHBoxLayout()
+        install_row.addStretch()
+
+        self.btn_install_claude = StyledButton("Установить Claude Code")
+        self.btn_install_claude.setFixedHeight(34)
+        self.btn_install_claude.clicked.connect(self._install_claude_code)
+        install_row.addWidget(self.btn_install_claude)
+
+        self.btn_add_to_path = StyledButton("Добавить в PATH")
+        self.btn_add_to_path.setFixedHeight(34)
+        self.btn_add_to_path.clicked.connect(self._add_npm_to_path)
+        install_row.addWidget(self.btn_add_to_path)
+
+        install_row.addStretch()
+        main_layout.addLayout(install_row)
+
         # Индикатор обновления (абсолютная позиция в правом верхнем углу)
         self.update_indicator = UpdateIndicator(self)
         self.update_indicator.clicked.connect(self._on_update_indicator_clicked)
@@ -2285,13 +2429,31 @@ class ClaudeManager(QMainWindow):
         """)
         claude_layout = QVBoxLayout(claude_frame)
 
+        claude_header_chip = QFrame()
+        claude_header_chip.setObjectName("claude_header_chip")
+        claude_header_chip.setStyleSheet(
+            "QFrame#claude_header_chip { background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; }"
+        )
+        claude_header_inner = QHBoxLayout(claude_header_chip)
+        claude_header_inner.setContentsMargins(10, 4, 10, 4)
+        claude_header_inner.setSpacing(8)
+
         claude_label = QLabel("Claude Code")
         claude_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        claude_label.setStyleSheet(
-            "color: rgb(200, 200, 200); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 10px;"
-        )
-        claude_layout.addWidget(claude_label)
+        claude_label.setStyleSheet("color: rgb(200, 200, 200); background: transparent; border: none;")
+        claude_header_inner.addWidget(claude_label)
+
+        self.claude_install_indicator = StatusIndicator()
+        claude_header_inner.addWidget(self.claude_install_indicator)
+
+        self.claude_install_status_label = QLabel("Не установлен")
+        self.claude_install_status_label.setFont(QFont("Segoe UI", 10))
+        self.claude_install_status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        claude_header_inner.addWidget(self.claude_install_status_label)
+
+        claude_header_inner.addStretch()
+        claude_layout.addWidget(claude_header_chip)
 
         # Выбор модели — обёрнут в контейнер чтобы можно было скрыть целиком
         self.model_section_widget = QWidget()
@@ -2346,7 +2508,7 @@ class ClaudeManager(QMainWindow):
         token_section_outer.setSpacing(0)
         self.token_layout = QHBoxLayout()
 
-        self.token_label = QLabel("Токен:")
+        self.token_label = QLabel("API ключ:")
         self.token_label.setFont(QFont("Segoe UI", 10))
         self.token_label.setStyleSheet(
             "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
@@ -2637,45 +2799,6 @@ class ClaudeManager(QMainWindow):
 
         claude_layout.addLayout(dir_layout)
 
-        # Выбор папки проекта
-        project_layout = QHBoxLayout()
-
-        project_label = QLabel("Папка проекта:")
-        project_label.setFont(QFont("Segoe UI", 10))
-        project_label.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
-        )
-        project_layout.addWidget(project_label)
-
-        self.project_input = QLineEdit()
-        self.project_input.setReadOnly(True)
-        self.project_input.setPlaceholderText("Не выбрана (используется директория)")
-        self.project_input.setText("")  # Всегда пустое по умолчанию
-        self.project_input.setFont(QFont("Segoe UI", 9))
-        self.project_input.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
-                padding: 6px;
-            }
-        """)
-        project_layout.addWidget(self.project_input, 1)
-
-        btn_browse_project = StyledButton("Обзор")
-        btn_browse_project.setMaximumWidth(80)
-        btn_browse_project.clicked.connect(self.browse_project)
-        project_layout.addWidget(btn_browse_project)
-
-        btn_clear_project = StyledButton("Очистить")
-        btn_clear_project.setMaximumWidth(80)
-        btn_clear_project.clicked.connect(self.clear_project)
-        project_layout.addWidget(btn_clear_project)
-
-        claude_layout.addLayout(project_layout)
-
         # Кнопка запуска Claude Code
         self.btn_claude = GreenButton("Запустить Claude Code")
         self.btn_claude.clicked.connect(self.launch_claude)
@@ -2753,6 +2876,28 @@ class ClaudeManager(QMainWindow):
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.check_status_async)
         self.status_timer.start(3000)
+
+        # Состояние версии Claude Code (заполняется фоновой проверкой)
+        self._claude_local_version = ""
+        self._claude_latest_version = ""
+        self._claude_latest_date = ""
+        self.claude_version_checked.connect(self._on_claude_version_checked)
+
+        # Стартовая проверка состояния кнопки Установить Claude
+        self._update_install_button_state()
+
+        # Периодическая проверка (на случай если поставили вручную)
+        self._install_check_timer = QTimer(self)
+        self._install_check_timer.timeout.connect(self._update_install_button_state)
+        self._install_check_timer.start(5000)
+
+        # Запуск фоновой проверки версии Claude (сразу + раз в час)
+        threading.Thread(target=self._check_claude_version, daemon=True).start()
+        self._claude_version_timer = QTimer(self)
+        self._claude_version_timer.timeout.connect(
+            lambda: threading.Thread(target=self._check_claude_version, daemon=True).start()
+        )
+        self._claude_version_timer.start(60 * 60 * 1000)  # 1 час
 
         # Первая проверка
         self.log("Приложение запущено", "info")
@@ -2938,34 +3083,16 @@ class ClaudeManager(QMainWindow):
         save_settings(self.settings)
         self.log("Директория очищена", "info")
 
-    def browse_project(self):
-        """Открывает диалог выбора папки проекта"""
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Выберите папку проекта",
-            os.path.expanduser("~"),
-            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
-        )
-
-        if directory:
-            self.project_input.setText(directory)
-            self.log(f"Установлена папка проекта: {directory}", "success")
-
-    def clear_project(self):
-        """Очищает папку проекта"""
-        self.project_input.setText("")
-        self.log("Папка проекта очищена", "info")
-
     def save_token(self):
-        """Сохраняет токен в настройки"""
+        """Сохраняет API ключ в настройки"""
         token = self.token_input.text().strip()
         if not token:
-            self.log("Токен не может быть пустым", "warning")
+            self.log("API ключ не может быть пустым", "warning")
             return
 
         self.settings["auth_token"] = token
         save_settings(self.settings)
-        self.log("Токен сохранен", "success")
+        self.log("API ключ сохранен", "success")
 
         # Делаем поле только для чтения, темнее и переключаем кнопки
         self.token_input.setReadOnly(True)
@@ -2982,7 +3109,7 @@ class ClaudeManager(QMainWindow):
         self.btn_edit_token.show()
 
     def edit_token(self):
-        """Разрешает редактирование токена"""
+        """Разрешает редактирование API ключа"""
         self.token_input.setReadOnly(False)
         self.token_input.setStyleSheet("""
             QLineEdit {
@@ -2996,10 +3123,10 @@ class ClaudeManager(QMainWindow):
         self.token_input.setFocus()
         self.btn_edit_token.hide()
         self.btn_save_token.show()
-        self.log("Режим редактирования токена", "info")
+        self.log("Режим редактирования API ключа", "info")
 
     def toggle_token_visibility(self):
-        """Переключает видимость токена"""
+        """Переключает видимость API ключа"""
         if self.token_input.echoMode() == QLineEdit.Password:
             self.token_input.setEchoMode(QLineEdit.Normal)
             self.btn_toggle_token.setText("Скрыть")
@@ -3044,7 +3171,7 @@ class ClaudeManager(QMainWindow):
         save_settings(self.settings)
         self.log("Настройки FreeModel сохранены", "success")
         self.log("─" * 50, "info")
-        self.log("Для активации кастомного токена вручную:", "warning")
+        self.log("Для активации кастомного API ключа вручную:", "warning")
         self.log("(активировать нужно только один раз)", "warning")
         self.log("1. Введите команду: /logout", "warning")
         self.log("2. Введите команду:", "warning")
@@ -3170,7 +3297,7 @@ class ClaudeManager(QMainWindow):
             self.btn_claude.setEnabled(is_custom or bool(last))
 
         # Подгоняем высоту окна
-        target_h = 820 if is_custom else 900
+        target_h = 825 if is_custom else 905
         if hasattr(self, "_height_initialized") and self._height_initialized and self.isVisible():
             self._animate_window_height(target_h)
         else:
@@ -3193,7 +3320,7 @@ class ClaudeManager(QMainWindow):
 
             # Выводим инструкцию по активации
             self.log("─" * 50, "info")
-            self.log("Для активации кастомного токена вручную:", "warning")
+            self.log("Для активации кастомного API ключа вручную:", "warning")
             self.log("(активировать нужно только один раз)", "warning")
             self.log("1. Введите команду: /logout", "warning")
             self.log("2. Введите команду:", "warning")
@@ -3235,14 +3362,11 @@ class ClaudeManager(QMainWindow):
         """Запускает Claude Code с выбранной моделью"""
         model = self.model_combo.currentText()
 
-        # Проверяем папку проекта (из поля ввода, не из настроек)
-        project_folder = self.project_input.text().strip()
-
-        # Если папка проекта не выбрана, используем директорию
+        # Рабочая директория
         working_dir = self.settings.get("working_directory", "")
 
-        if not project_folder and not working_dir:
-            # Если ничего не установлено - запрашиваем
+        if not working_dir:
+            # Если директория не установлена - запрашиваем
             working_dir = QFileDialog.getExistingDirectory(
                 self,
                 "Выберите рабочую директорию для Claude Code",
@@ -3303,26 +3427,317 @@ class ClaudeManager(QMainWindow):
             env["ANTHROPIC_SMALL_FAST_MODEL"] = model
 
         try:
-            # Если выбрана папка проекта - запускаем из директории с аргументом
-            if project_folder:
-                self.log(f"Папка проекта: {project_folder}", "info")
-                self.log(f"Память из: {working_dir if working_dir else 'домашняя папка'}", "info")
-
-                # Запускаем из директории (для памяти), передаем папку проекта как аргумент
-                launch_dir = working_dir if working_dir else os.path.expanduser("~")
-                subprocess.Popen(
-                    ["powershell", "-NoExit", "-Command", f"cd '{launch_dir}'; claude '{project_folder}'"],
-                    env=env
-                )
-            else:
-                # Запускаем просто в директории
-                subprocess.Popen(
-                    ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; claude"],
-                    env=env
-                )
+            subprocess.Popen(
+                ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; claude"],
+                env=env
+            )
             self.log("Claude Code запущен", "success")
         except Exception as e:
             self.log(f"Ошибка запуска: {e}", "error")
+
+    def _install_claude_code(self):
+        """Запускает официальный скрипт установки/обновления Claude Code от Anthropic в PowerShell"""
+        installed = self._is_claude_installed()
+        local = getattr(self, "_claude_local_version", "")
+        latest = getattr(self, "_claude_latest_version", "")
+        is_update = False
+        if installed and local and latest:
+            try:
+                is_update = compare_versions(latest, local) > 0
+            except Exception:
+                is_update = False
+
+        if is_update:
+            dlg = ConfirmActionDialog(
+                title=f"Обновление Claude Code до v{latest}",
+                message=f"Будет запущен официальный скрипт от Anthropic для обновления "
+                        f"с v{local} до v{latest}. Твои настройки в %USERPROFILE%\\.claude "
+                        "не пострадают.",
+                detail="irm https://claude.ai/install.ps1 | iex",
+                confirm_text="Обновить",
+                icon="↑",
+                icon_color=(245, 180, 60),  # жёлто-оранжевый
+                parent=self
+            )
+        else:
+            dlg = ConfirmActionDialog(
+                title="Установка Claude Code",
+                message="Будет запущен официальный скрипт установки Claude Code от Anthropic. "
+                        "Откроется окно PowerShell, где пойдёт установка.",
+                detail="irm https://claude.ai/install.ps1 | iex",
+                confirm_text="Установить",
+                icon="↓",
+                icon_color=(120, 200, 130),  # зелёный
+                parent=self
+            )
+        if dlg.exec() != QDialog.Accepted:
+            self.log("Операция отменена", "info")
+            return
+
+        self.log("Запускаю установку Claude Code в окне PowerShell...", "info")
+        try:
+            subprocess.Popen([
+                "powershell", "-NoExit", "-Command",
+                "Write-Host 'Установка Claude Code (официальный скрипт Anthropic)...' -ForegroundColor Cyan; "
+                "irm https://claude.ai/install.ps1 | iex; "
+                "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
+                "Write-Host 'Если команда не найдена — нажми Добавить в PATH в приложении.' -ForegroundColor Yellow"
+            ])
+            # Перепроверим версию через 30 секунд (даём время установке)
+            QTimer.singleShot(30000, lambda: threading.Thread(target=self._check_claude_version, daemon=True).start())
+        except Exception as e:
+            self.log(f"Не удалось запустить установку: {e}", "error")
+
+    def _detect_claude_install_dirs(self):
+        """Возвращает список существующих папок где может лежать claude"""
+        candidates = [
+            os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
+            os.path.join(os.environ.get("APPDATA", ""), "npm"),
+        ]
+        return [d for d in candidates if os.path.isdir(d)]
+
+    def _is_claude_installed(self):
+        """True если есть claude в %USERPROFILE%\\.local\\bin или %APPDATA%\\npm"""
+        for d in self._detect_claude_install_dirs():
+            for name in ("claude.exe", "claude.cmd", "claude.bat", "claude"):
+                if os.path.isfile(os.path.join(d, name)):
+                    return True
+        return False
+
+    def _update_install_button_state(self):
+        """Обновляет кнопку и индикатор по состоянию (установлен / не установлен / есть обновление)"""
+        installed = self._is_claude_installed()
+        local = getattr(self, "_claude_local_version", "")
+        latest = getattr(self, "_claude_latest_version", "")
+        latest_date = getattr(self, "_claude_latest_date", "")
+
+        update_available = False
+        if installed and local and latest:
+            try:
+                update_available = compare_versions(latest, local) > 0
+            except Exception:
+                update_available = False
+
+        if hasattr(self, "btn_install_claude"):
+            if not installed:
+                self.btn_install_claude.setEnabled(True)
+                self.btn_install_claude.setText("Установить Claude Code")
+                self.btn_install_claude.set_hover_color(80, 200, 110)  # зелёный
+            elif update_available:
+                self.btn_install_claude.setEnabled(True)
+                self.btn_install_claude.setText("Обновить Claude Code")
+                self.btn_install_claude.set_hover_color(245, 180, 60)  # жёлто-оранжевый
+            else:
+                self.btn_install_claude.setEnabled(False)
+                self.btn_install_claude.setText("Claude Code установлен")
+
+        if hasattr(self, "claude_install_indicator"):
+            if not installed:
+                self.claude_install_indicator.set_state("off")
+            elif update_available:
+                self.claude_install_indicator.set_state("warn")
+            else:
+                self.claude_install_indicator.set_state("on")
+
+        if hasattr(self, "claude_install_status_label"):
+            if not installed:
+                self.claude_install_status_label.setText("Не установлен")
+                self.claude_install_status_label.setStyleSheet(
+                    "color: rgb(220, 120, 120); background: transparent; border: none;"
+                )
+            elif update_available:
+                self.claude_install_status_label.setText(
+                    f"Доступно обновление: v{local} → v{latest}"
+                )
+                self.claude_install_status_label.setStyleSheet(
+                    "color: rgb(245, 180, 60); background: transparent; border: none;"
+                )
+            else:
+                version_part = f" v{local}" if local else ""
+                self.claude_install_status_label.setText(f"Установлен{version_part}")
+                self.claude_install_status_label.setStyleSheet(
+                    "color: rgb(120, 220, 140); background: transparent; border: none;"
+                )
+
+    def _format_date(self, iso_date):
+        """Преобразует ISO-дату из npm в DD.MM.YYYY"""
+        if not iso_date:
+            return ""
+        try:
+            return f"{iso_date[8:10]}.{iso_date[5:7]}.{iso_date[0:4]}"
+        except Exception:
+            return iso_date
+
+    def _get_installed_claude_version(self):
+        """Возвращает строку версии установленного claude или пустую строку"""
+        # Сначала ищем сам claude в наших стандартных папках
+        claude_path = None
+        for d in self._detect_claude_install_dirs():
+            for name in ("claude.exe", "claude.cmd", "claude.bat", "claude"):
+                p = os.path.join(d, name)
+                if os.path.isfile(p):
+                    claude_path = p
+                    break
+            if claude_path:
+                break
+        if not claude_path:
+            return ""
+        try:
+            result = subprocess.run(
+                [claude_path, "--version"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+            output = (result.stdout or "") + (result.stderr or "")
+            # Формат: "1.2.3 (Claude Code)"
+            import re
+            m = re.search(r"(\d+\.\d+\.\d+)", output)
+            return m.group(1) if m else ""
+        except Exception:
+            return ""
+
+    def _check_claude_version(self):
+        """Фоновая проверка локальной и актуальной версии Claude Code"""
+        local = self._get_installed_claude_version()
+        latest = ""
+        latest_date = ""
+        try:
+            req = Request(
+                "https://registry.npmjs.org/@anthropic-ai/claude-code",
+                headers={"Accept": "application/vnd.npm.install-v1+json, application/json",
+                         "User-Agent": "ClaudeCodeManager"}
+            )
+            ctx = ssl.create_default_context()
+            with urlopen(req, timeout=8, context=ctx) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            latest = data.get("dist-tags", {}).get("latest", "") or ""
+            if latest:
+                latest_date = (data.get("time", {}) or {}).get(latest, "") or ""
+        except Exception:
+            pass
+        try:
+            self.claude_version_checked.emit(local, latest, latest_date)
+        except Exception:
+            pass
+
+    def _on_claude_version_checked(self, local, latest, latest_date):
+        """Получили результат проверки версии из фонового потока"""
+        self._claude_local_version = local
+        self._claude_latest_version = latest
+        self._claude_latest_date = latest_date
+        self._update_install_button_state()
+
+    def _add_npm_to_path(self):
+        """Добавляет существующие папки с claude в пользовательский PATH (полностью внутри приложения)"""
+        existing = self._detect_claude_install_dirs()
+
+        if not existing:
+            self.log("Не найдены папки с claude. Сначала установите Claude Code.", "warning")
+            return
+
+        # Подтверждение
+        paths_str = "\n".join(existing)
+        dlg = ConfirmActionDialog(
+            title="Добавить в PATH",
+            message="Следующие пути будут добавлены в пользовательский PATH Windows, "
+                    "чтобы команда claude была доступна из любого места.",
+            detail=paths_str,
+            confirm_text="Добавить",
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            self.log("Добавление в PATH отменено", "info")
+            return
+
+        # Блокируем кнопку и запускаем спиннер
+        self.btn_add_to_path.setEnabled(False)
+        self._path_spinner_phase = 0
+        self._path_spinner_timer = QTimer(self)
+        self._path_spinner_timer.timeout.connect(self._tick_path_spinner)
+        self._path_spinner_timer.start(80)
+
+        # Подключаем сигнал завершения один раз
+        if not getattr(self, "_path_signal_connected", False):
+            self.path_add_finished.connect(self._finish_add_to_path)
+            self._path_signal_connected = True
+
+        # Запускаем работу в фоне чтобы UI не зависал
+        threading.Thread(target=self._do_add_to_path, args=(existing,), daemon=True).start()
+
+    def _tick_path_spinner(self):
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._path_spinner_phase = (self._path_spinner_phase + 1) % len(frames)
+        self.btn_add_to_path.setText(f"{frames[self._path_spinner_phase]}  Обновление PATH...")
+
+    def _do_add_to_path(self, paths_to_add):
+        """Фоновая работа: правка реестра HKCU\\Environment\\Path + broadcast WM_SETTINGCHANGE"""
+        added, skipped, error = [], [], ""
+        try:
+            import winreg, ctypes
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,
+                                winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+                try:
+                    current, vtype = winreg.QueryValueEx(key, "Path")
+                except FileNotFoundError:
+                    current, vtype = "", winreg.REG_EXPAND_SZ
+
+                existing_norm = {p.strip().rstrip("\\").lower()
+                                 for p in current.split(";") if p.strip()}
+                new_value = current
+                for p in paths_to_add:
+                    if p.strip().rstrip("\\").lower() in existing_norm:
+                        skipped.append(p)
+                        continue
+                    if new_value and not new_value.endswith(";"):
+                        new_value += ";"
+                    new_value += p
+                    added.append(p)
+                    existing_norm.add(p.strip().rstrip("\\").lower())
+
+                if added:
+                    winreg.SetValueEx(key, "Path", 0, vtype, new_value)
+
+            if added:
+                try:
+                    HWND_BROADCAST = 0xFFFF
+                    WM_SETTINGCHANGE = 0x001A
+                    SMTO_ABORTIFHUNG = 0x0002
+                    result = ctypes.c_ulong()
+                    ctypes.windll.user32.SendMessageTimeoutW(
+                        HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                        ctypes.c_wchar_p("Environment"),
+                        SMTO_ABORTIFHUNG, 3000, ctypes.byref(result)
+                    )
+                except Exception:
+                    # Не критично — PATH уже записан
+                    pass
+        except Exception as e:
+            error = str(e) or repr(e) or "unknown error"
+
+        # Возвращаемся в UI-поток через сигнал (потокобезопасно)
+        try:
+            self.path_add_finished.emit(added, skipped, error)
+        except Exception:
+            pass
+
+    def _finish_add_to_path(self, added, skipped, error):
+        if getattr(self, "_path_spinner_timer", None):
+            self._path_spinner_timer.stop()
+            self._path_spinner_timer = None
+        self.btn_add_to_path.setText("Добавить в PATH")
+        self.btn_add_to_path.setEnabled(True)
+
+        if error:
+            self.log(f"Не удалось обновить PATH: {error}", "error")
+            return
+        for p in added:
+            self.log(f"Добавлено в PATH: {p}", "success")
+        for p in skipped:
+            self.log(f"Уже было в PATH: {p}", "info")
+        if added:
+            self.log("PATH обновлён. Перезапусти открытые терминалы, чтобы изменения подхватились.", "warning")
+        else:
+            self.log("Нечего добавлять — все пути уже были в PATH", "info")
 
     def add_model(self):
         """Добавляет новую модель"""
