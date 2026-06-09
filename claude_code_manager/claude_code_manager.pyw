@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "3.1"  # Временно для теста обновлений
+APP_VERSION = "3.2"  # Временно для теста обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -2605,25 +2605,9 @@ class ClaudeManager(QMainWindow):
         url_lbl.setFixedWidth(90)
         url_row.addWidget(url_lbl)
 
-        self.fm_url_combo = QComboBox()
-        self.fm_url_combo.setCursor(Qt.PointingHandCursor)
+        self.fm_url_combo = StyledComboBox()
         self.fm_url_combo.setFont(QFont("Segoe UI", 9))
-        self.fm_url_combo.setStyleSheet("""
-            QComboBox {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
-                padding: 6px;
-                min-height: 24px;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background-color: rgb(30, 30, 35);
-                color: rgb(200, 200, 200);
-                selection-background-color: rgb(50, 50, 55);
-            }
-        """)
+        self.fm_url_combo.setMaxVisibleItems(4)
         self.fm_url_combo.addItems(self.settings.get("custom_base_urls", []))
         if self.settings.get("custom_base_url"):
             self.fm_url_combo.setCurrentText(self.settings["custom_base_url"])
@@ -2715,26 +2699,9 @@ class ClaudeManager(QMainWindow):
         model_lbl.setFixedWidth(90)
         model_row.addWidget(model_lbl)
 
-        self.fm_model_combo = QComboBox()
-        self.fm_model_combo.setCursor(Qt.PointingHandCursor)
+        self.fm_model_combo = StyledComboBox()
         self.fm_model_combo.setFont(QFont("Segoe UI", 9))
         self.fm_model_combo.setMaxVisibleItems(4)
-        self.fm_model_combo.setStyleSheet("""
-            QComboBox {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
-                padding: 6px;
-                min-height: 24px;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background-color: rgb(30, 30, 35);
-                color: rgb(200, 200, 200);
-                selection-background-color: rgb(50, 50, 55);
-            }
-        """)
         fm_models = ["Opus 4.8 (default)", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Sonnet 4"]
         self.fm_model_combo.addItems(fm_models)
         saved_m = self.settings.get("custom_model", "Opus 4.8 (default)")
