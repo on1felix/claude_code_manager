@@ -3332,6 +3332,17 @@ class ClaudeManager(QMainWindow):
         # Обновляем статус кнопки Claude (теперь доступна без Omniroute)
         self.update_omniroute_status()
 
+    MODEL_ID_MAP = {
+        "Opus 4.8 (default)": None,
+        "Sonnet 4.6": "claude-sonnet-4-6",
+        "Opus 4.7": "claude-opus-4-7",
+        "Opus 4.6": "claude-opus-4-6",
+    }
+
+    def _resolve_model_id(self, model_choice):
+        """Возвращает реальный ID модели для CLI/env или None для дефолта."""
+        return self.MODEL_ID_MAP.get(model_choice)
+
     def _write_claude_model_setting(self, model_choice):
         """Записывает выбранную модель в ~/.claude/settings.json"""
         try:
@@ -3341,13 +3352,7 @@ class ClaudeManager(QMainWindow):
                 with open(claude_settings_path, 'r', encoding='utf-8') as f:
                     claude_settings = json.load(f)
 
-            model_map = {
-                "Opus 4.8 (default)": None,
-                "Sonnet 4.6": "claude-sonnet-4-6",
-                "Opus 4.7": "claude-opus-4-7",
-                "Opus 4.6": "claude-opus-4-6",
-            }
-            model_id = model_map.get(model_choice)
+            model_id = self._resolve_model_id(model_choice)
             if model_id is None:
                 claude_settings.pop("model", None)
             else:
@@ -3426,12 +3431,26 @@ class ClaudeManager(QMainWindow):
             env["ANTHROPIC_MODEL"] = model
             env["ANTHROPIC_SMALL_FAST_MODEL"] = model
 
+        # Форсируем выбранную модель через --model — иначе Claude Code при
+        # резюме старого чата подхватит модель из истории сообщений.
+        if use_custom:
+            model_id = self._resolve_model_id(self.settings.get("custom_model", ""))
+        else:
+            model_id = self._resolve_model_id(model)
+
+        cli_cmd = "claude"
+        if model_id:
+            cli_cmd += f" --model {model_id}"
+
         try:
             subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; claude"],
+                ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {cli_cmd}"],
                 env=env
             )
-            self.log("Claude Code запущен", "success")
+            if model_id:
+                self.log(f"Claude Code запущен (--model {model_id})", "success")
+            else:
+                self.log("Claude Code запущен (модель по умолчанию)", "success")
         except Exception as e:
             self.log(f"Ошибка запуска: {e}", "error")
 
