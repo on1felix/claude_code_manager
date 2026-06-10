@@ -828,10 +828,11 @@ class PickerDialog(QDialog):
     def __init__(self, items, current, parent=None, item_colors=None,
                  item_tooltips=None, title="Выбор"):
         super().__init__(parent)
-        # Tool → не закрывается при клике вне, не блокирует основное окно
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.NoDropShadowWindowHint)
+        # Dialog + WindowModal — блокирует родительское окно, не закрывается при клике вне
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setWindowModality(Qt.ApplicationModal)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)
@@ -1309,7 +1310,7 @@ class Fable5WarningDialog(QDialog):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setModal(True)
+        self.setWindowModality(Qt.ApplicationModal)
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -2533,7 +2534,7 @@ class ClaudeInstallProgressDialog(QDialog):
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setModal(True)
+        self.setWindowModality(Qt.ApplicationModal)
 
         if is_update:
             self._accent = (245, 180, 60)   # жёлто-оранжевый
@@ -2741,7 +2742,7 @@ class PathDoneDialog(QDialog):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setModal(True)
+        self.setWindowModality(Qt.ApplicationModal)
 
         success = not error and (added or skipped)
         accent = (100, 200, 130) if success else (235, 90, 90)
