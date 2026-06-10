@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "3.3"  # Временно для теста обновлений
+APP_VERSION = "3.4"  # Временно для теста обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -2163,12 +2163,7 @@ class CustomTokenDialog(QDialog):
             txt = self.model_combo.itemText(i)
             if txt in _sd_model_colors:
                 self.model_combo.setItemData(i, _sd_model_colors[txt], Qt.ForegroundRole)
-            if txt == "Fable 5":
-                self.model_combo.setItemData(
-                    i,
-                    "Это дорогая модель.\nИспользовать только для очень сложных задач.",
-                    Qt.ToolTipRole,
-                )
+            pass
         # Маппинг старых сохранённых значений на новые метки
         model_remap = {
             "default (claude-opus-4-8)": "Opus 4.8",
@@ -3697,9 +3692,7 @@ class ClaudeManager(QMainWindow):
             "Fable 5":   QColor(235, 90, 90),    # красный
         }
         self._fm_model_colors = model_colors
-        model_tooltips = {
-            "Fable 5": "Это дорогая модель.\nИспользовать только для очень сложных задач.",
-        }
+        model_tooltips = {}
         for i in range(self.fm_model_combo.count()):
             txt = self.fm_model_combo.itemText(i)
             if txt in model_colors:
@@ -3728,11 +3721,6 @@ class ClaudeManager(QMainWindow):
         if saved_m in model_colors:
             self.fm_model_combo.setTextColor(model_colors[saved_m])
         self.fm_model_combo.currentTextChanged.connect(self._fm_model_changed)
-        # Tooltip на самом комбобоксе — обновляется при выборе Fable 5
-        if self.fm_model_combo.currentText() == "Fable 5":
-            self.fm_model_combo.setToolTip(
-                "Это дорогая модель.\nИспользовать только для очень сложных задач."
-            )
         model_row.addWidget(self.fm_model_combo, 1)
         freemodel_layout.addLayout(model_row)
 
@@ -3889,6 +3877,13 @@ class ClaudeManager(QMainWindow):
         # Первая проверка
         self.log("Приложение запущено", "info")
         self.log(f"Порт Omniroute: {OMNIROUTE_PORT}", "info")
+        self.log("─" * 50, "info")
+        self.log("Для работы с Base URL (freemodel / inferall и др.):", "warning")
+        self.log("Если впервые — запустите Claude Code и введите /logout.", "warning")
+        self.log("Это нужно сделать только один раз. Даже если вы", "warning")
+        self.log("поменяете API ключ — повторно вводить /logout не нужно.", "warning")
+        self.log("Приложение автоматически подставит ключ и Base URL.", "warning")
+        self.log("─" * 50, "info")
         self.check_status_async()
 
     def log(self, message, level="info"):
@@ -4138,13 +4133,8 @@ class ClaudeManager(QMainWindow):
             save_settings(self.settings)
         if hasattr(self, "fm_model_combo"):
             if new_model == "Fable 5":
-                self.fm_model_combo.setToolTip(
-                    "Это дорогая модель.\nИспользовать только для очень сложных задач."
-                )
                 dlg = Fable5WarningDialog(self)
                 dlg.exec()
-            else:
-                self.fm_model_combo.setToolTip("")
             # Обновить цвет отображаемого текста под выбранную модель
             if hasattr(self, "_fm_model_colors") and new_model in self._fm_model_colors:
                 self.fm_model_combo.setTextColor(self._fm_model_colors[new_model])
@@ -4169,15 +4159,6 @@ class ClaudeManager(QMainWindow):
         self.settings["custom_model"] = self.fm_model_combo.currentText()
         save_settings(self.settings)
         self.log("Настройки FreeModel сохранены", "success")
-        self.log("─" * 50, "info")
-        self.log("Для активации кастомного API ключа вручную:", "warning")
-        self.log("(активировать нужно только один раз)", "warning")
-        self.log("1. Введите команду: /logout", "warning")
-        self.log("2. Введите команду:", "warning")
-        base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
-        self.log(f'   $env:ANTHROPIC_BASE_URL="{base_url}"; $env:ANTHROPIC_API_KEY="{api_key}"; claude', "warning")
-        self.log("─" * 50, "info")
-
         # Блокируем редактирование, переключаем кнопки
         self.fm_key_input.setReadOnly(True)
         self.fm_key_input.setStyleSheet("""
@@ -4323,16 +4304,6 @@ class ClaudeManager(QMainWindow):
             save_settings(self.settings)
             self.log("Кастомные настройки сохранены", "success")
 
-            # Выводим инструкцию по активации
-            self.log("─" * 50, "info")
-            self.log("Для активации кастомного API ключа вручную:", "warning")
-            self.log("(активировать нужно только один раз)", "warning")
-            self.log("1. Введите команду: /logout", "warning")
-            self.log("2. Введите команду:", "warning")
-            api_key = self.settings.get("custom_api_key", "")
-            base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
-            self.log(f'   $env:ANTHROPIC_BASE_URL="{base_url}"; $env:ANTHROPIC_API_KEY="{api_key}"; claude', "warning")
-            self.log("─" * 50, "info")
 
         # Обновляем статус кнопки Claude (теперь доступна без Omniroute)
         self.update_omniroute_status()
