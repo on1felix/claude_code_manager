@@ -10,13 +10,13 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
-                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QProgressBar, QCheckBox)
-from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property
+                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox)
+from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QPainterPath
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "3.2"  # Временно для теста обновлений
+APP_VERSION = "3.3"  # Временно для теста обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -651,13 +651,14 @@ class StyledComboBox(QComboBox):
         self._hover_timer.timeout.connect(self._animate_hover)
         self._hover_timer.start(20)
         self._is_hovered = False
+        self._text_color = "rgb(200, 200, 200)"
         self.setMouseTracking(True)
         self.setCursor(Qt.PointingHandCursor)
 
         self.setStyleSheet("""
             QComboBox {
                 background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
+                color: %s;
                 border: 2px solid rgb(60, 60, 65);
                 border-radius: 4px;
                 padding: 6px;
@@ -685,7 +686,7 @@ class StyledComboBox(QComboBox):
             QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {
                 background: rgba(80, 200, 255, 200);
             }
-        """)
+        """ % self._text_color)
 
     def enterEvent(self, event):
         self._is_hovered = True
@@ -717,7 +718,7 @@ class StyledComboBox(QComboBox):
         self.setStyleSheet(f"""
             QComboBox {{
                 background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
+                color: {self._text_color};
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 4px;
                 padding: 6px;
@@ -731,6 +732,307 @@ class StyledComboBox(QComboBox):
                 selection-background-color: rgb(50, 50, 55);
             }}
         """)
+
+    def setTextColor(self, color):
+        """Установить цвет отображаемого текста (для свёрнутого состояния)."""
+        if isinstance(color, QColor):
+            self._text_color = f"rgb({color.red()}, {color.green()}, {color.blue()})"
+        else:
+            self._text_color = color
+        self._update_style()
+
+
+# ============================================================
+# КАСТОМНЫЙ ПИКЕР: МОДАЛЬНОЕ ОКНО С КАРТОЧКАМИ ВМЕСТО DROPDOWN
+# ============================================================
+
+class PickerCard(QPushButton):
+    """Одна карточка-виджет в окне выбора."""
+
+    def __init__(self, text, color=None, tooltip=None, is_current=False, parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFont(QFont("Segoe UI", 10, QFont.Medium))
+        self.setMinimumHeight(42)
+        if tooltip:
+            self.setToolTip(tooltip)
+
+        # Цвет текста и целевой цвет рамки — под модель.
+        # Если цвета нет (например, у URL) — рамка голубая по умолчанию.
+        if color is not None:
+            self._text_color_str = f"rgb({color.red()}, {color.green()}, {color.blue()})"
+            self._hover_rgb = (color.red(), color.green(), color.blue())
+        else:
+            self._text_color_str = "rgb(220, 220, 220)"
+            self._hover_rgb = (60, 140, 200)
+
+        # Постоянный фон одинаков для всех карточек
+        self._bg_str = "rgba(40, 40, 45, 180)"
+
+        self._is_current = is_current
+        # Анимация только рамки
+        self._hover_progress = 1.0 if is_current else 0.0
+        self._is_hovered = False
+        self._hover_timer = QTimer(self)
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(16)
+        self._update_style()
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        target = 1.0 if (self._is_hovered or self._is_current) else 0.0
+        if abs(self._hover_progress - target) < 0.005:
+            return
+        # Плавно — около 200мс к цели
+        step = 0.08
+        if self._hover_progress < target:
+            self._hover_progress = min(target, self._hover_progress + step)
+        else:
+            self._hover_progress = max(target, self._hover_progress - step)
+        self._update_style()
+
+    def _update_style(self):
+        base_r, base_g, base_b = 60, 60, 65
+        hov_r, hov_g, hov_b = self._hover_rgb
+        p = self._hover_progress
+        r = int(base_r + (hov_r - base_r) * p)
+        g = int(base_g + (hov_g - base_g) * p)
+        b = int(base_b + (hov_b - base_b) * p)
+        self.setStyleSheet(f"""
+            QPushButton {{
+                text-align: center;
+                background-color: {self._bg_str};
+                color: {self._text_color_str};
+                border: 2px solid rgb({r}, {g}, {b});
+                border-radius: 8px;
+                padding: 7px 10px;
+            }}
+            QPushButton:pressed {{
+                background-color: {self._bg_str};
+            }}
+        """)
+
+
+class PickerDialog(QDialog):
+    """Окно выбора со списком карточек (popup, не блокирующее)."""
+
+    picked = Signal(str)
+
+    def __init__(self, items, current, parent=None, item_colors=None,
+                 item_tooltips=None, title="Выбор"):
+        super().__init__(parent)
+        # Tool → не закрывается при клике вне, не блокирует основное окно
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 14)
+
+        self.container = QFrame()
+        self.container.setObjectName("pickerContainer")
+        self.container.setStyleSheet("""
+            QFrame#pickerContainer {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(18, 18, 22, 0.95),
+                    stop:1 rgba(16, 16, 20, 0.95));
+                border: 2px solid rgba(110, 110, 120, 0.7);
+                border-radius: 14px;
+            }
+        """)
+        outer.addWidget(self.container)
+
+        # Тень на контейнере
+        shadow = QGraphicsDropShadowEffect(self.container)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 6)
+        self.container.setGraphicsEffect(shadow)
+
+        inner = QVBoxLayout(self.container)
+        inner.setSpacing(8)
+        inner.setContentsMargins(16, 14, 16, 16)
+
+        # Заголовок + крестик
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        title_lbl = QLabel(title)
+        title_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        title_lbl.setStyleSheet("color: rgb(200, 200, 210); border: none; background: transparent;")
+        head.addWidget(title_lbl)
+        head.addStretch()
+        close_btn = QPushButton("✕")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setFixedSize(26, 26)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: rgb(160, 160, 170);
+                border: none;
+                font-size: 14px;
+                border-radius: 13px;
+            }
+            QPushButton:hover {
+                background-color: rgba(220, 80, 80, 200);
+                color: white;
+            }
+        """)
+        close_btn.clicked.connect(self.close)
+        head.addWidget(close_btn)
+        inner.addLayout(head)
+
+        # Прокручиваемая область — ровно 4 карточки
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("""
+            QScrollArea { border: none; background: transparent; }
+            QScrollBar:vertical {
+                width: 4px;
+                background: transparent;
+                border-radius: 2px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(140, 140, 145, 160);
+                border-radius: 2px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:vertical:hover { background: rgba(170, 170, 175, 200); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        cards_layout = QVBoxLayout(content)
+        cards_layout.setSpacing(8)
+        cards_layout.setContentsMargins(2, 2, 6, 2)
+
+        colors = item_colors or {}
+        tooltips = item_tooltips or {}
+
+        for item in items:
+            card = PickerCard(
+                item,
+                color=colors.get(item),
+                tooltip=tooltips.get(item),
+                is_current=(item == current),
+            )
+            card.clicked.connect(lambda _checked=False, v=item: self._pick(v))
+            cards_layout.addWidget(card)
+
+        cards_layout.addStretch()
+        scroll.setWidget(content)
+        scroll.setFixedHeight(200)  # 4 × 41 + 3 × 8
+        inner.addWidget(scroll, 0)
+
+        self.setFixedWidth(300)
+        self.adjustSize()
+
+        # Плавное появление через windowOpacity (без QGraphicsOpacityEffect на самом окне —
+        # на Windows + WA_TranslucentBackground оно тормозит / зависает)
+        self.setWindowOpacity(0.0)
+        self._fade_in = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_in.setDuration(220)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_in.start()
+
+    def _pick(self, value):
+        self.picked.emit(value)
+        self.close()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+
+class PickerComboBox(StyledComboBox):
+    """ComboBox, который при клике открывает PickerDialog вместо нативного списка."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pick_colors = {}
+        self._pick_tooltips = {}
+        self._pick_title = "Выбор"
+        self._picker_dlg = None
+
+    def set_picker(self, colors=None, tooltips=None, title=None):
+        if colors is not None:
+            self._pick_colors = colors
+        if tooltips is not None:
+            self._pick_tooltips = tooltips
+        if title:
+            self._pick_title = title
+
+    def showPopup(self):
+        # Если уже открыт — игнорируем повторный вызов
+        if self._picker_dlg is not None:
+            return
+        items = [self.itemText(i) for i in range(self.count())]
+        if not items:
+            return
+        dlg = PickerDialog(
+            items,
+            current=self.currentText(),
+            parent=self.window(),
+            item_colors=self._pick_colors,
+            item_tooltips=self._pick_tooltips,
+            title=self._pick_title,
+        )
+        dlg.picked.connect(self._on_picked)
+        dlg.destroyed.connect(self._on_picker_destroyed)
+        self._picker_dlg = dlg
+
+        def _show_and_position():
+            dlg.show()
+            dlg.adjustSize()
+            dw = dlg.width()
+            dh = dlg.height()
+            parent_win = self.window()
+            try:
+                if parent_win is not None:
+                    pg = parent_win.frameGeometry()
+                    center = pg.center()
+                    x = center.x() - dw // 2 - 2
+                    y = center.y() - dh // 2
+                else:
+                    from PySide6.QtGui import QGuiApplication
+                    screen = QGuiApplication.primaryScreen().availableGeometry()
+                    x = screen.x() + (screen.width() - dw) // 2
+                    y = screen.y() + (screen.height() - dh) // 2
+                dlg.move(x, y)
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _show_and_position)
+
+    def hidePopup(self):
+        # Нативный popup не используется
+        pass
+
+    def _on_picker_destroyed(self):
+        self._picker_dlg = None
+
+    def _on_picked(self, value):
+        if value and value != self.currentText():
+            self.setCurrentText(value)
+
 
 # ============================================================
 # МОДЕЛЬ ДЛЯ КОМБОБОКСА С КАСТОМНЫМИ ЦВЕТАМИ
@@ -996,6 +1298,143 @@ class ConfirmDeleteDialog(QDialog):
         fade.finished.connect(lambda: super(ConfirmDeleteDialog, self).reject())
         fade.start()
         self._fade = fade
+
+# ============================================================
+# ПРЕДУПРЕЖДЕНИЕ О МОДЕЛИ FABLE 5
+# ============================================================
+
+class Fable5WarningDialog(QDialog):
+    """Предупреждение при выборе модели Fable 5."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QFrame()
+        container.setObjectName("fable5Container")
+        container.setStyleSheet("""
+            QFrame#fable5Container {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(22, 14, 14, 0.98),
+                    stop:1 rgba(18, 12, 12, 0.98));
+                border: 2px solid rgba(235, 90, 90, 0.55);
+                border-radius: 18px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(32, 28, 32, 28)
+        layout.setSpacing(14)
+
+        # Иконка
+        icon_label = QLabel("🔥")
+        icon_label.setFont(QFont("Segoe UI Emoji", 34))
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(icon_label)
+
+        # Заголовок
+        title_label = QLabel("Fable 5 — Модель высшего класса")
+        title_label.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title_label.setStyleSheet("""
+            QLabel {
+                color: rgb(235, 110, 110);
+                background: transparent;
+                border: none;
+            }
+        """)
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+
+        # Разделитель
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: rgba(235, 90, 90, 0.25); background: rgba(235, 90, 90, 0.25); border: none; max-height: 1px;")
+        layout.addWidget(sep)
+
+        # Описание
+        desc_label = QLabel(
+            "Один запрос при уровне /effort High может потребовать\n"
+            "до 15% вашего дневного лимита токенов.\n\n"
+            "Fable 5 на среднем уровне /effort (Medium) превосходит\n"
+            "Opus 4.8 на максимальных настройках (xHigh / Max) — разрыв\n"
+            "составляет около 5% в пользу Fable 5.\n\n"
+            "По общей мощности Fable 5 превосходит Opus 4.8\n"
+            "примерно в 2 раза — но и стоит соответственно.\n\n"
+            "Используйте эту модель только тогда, когда другие\n"
+            "уже не справляются — она стоит каждого токена,\n"
+            "но расходует их значительно быстрее."
+        )
+        desc_label.setFont(QFont("Segoe UI", 10))
+        desc_label.setStyleSheet("""
+            QLabel {
+                color: rgba(210, 200, 200, 0.9);
+                background: transparent;
+                border: none;
+            }
+        """)
+        desc_label.setAlignment(Qt.AlignCenter)
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        # Плашка с датой релиза
+        date_label = QLabel("Выпущена Anthropic · 09 июня 2026")
+        date_label.setFont(QFont("Segoe UI", 9))
+        date_label.setStyleSheet("""
+            QLabel {
+                color: rgba(235, 90, 90, 0.7);
+                background: rgba(235, 90, 90, 0.08);
+                border: 1px solid rgba(235, 90, 90, 0.2);
+                border-radius: 6px;
+                padding: 5px 10px;
+            }
+        """)
+        date_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(date_label)
+
+        layout.addSpacing(4)
+
+        # Кнопка OK — не на всю ширину, по центру
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_ok = GlowDialogButton("Понятно",
+                                  base_rgb=(235, 90, 90),
+                                  hover_rgb=(235, 120, 120))
+        btn_ok.clicked.connect(self.accept)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_ok)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(420)
+
+        # Анимация появления через windowOpacity (не конфликтует с дочерними виджетами)
+        self.setWindowOpacity(0.0)
+        self.fade_in = QPropertyAnimation(self, b"windowOpacity")
+        self.fade_in.setDuration(260)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(160)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.finished.connect(lambda: super(Fable5WarningDialog, self).accept())
+        fade.start()
+        self._fade = fade
+
 
 # ============================================================
 # КАСТОМНОЕ ОКНО ПОДТВЕРЖДЕНИЯ ДЕЙСТВИЯ
@@ -1709,17 +2148,38 @@ class CustomTokenDialog(QDialog):
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
-        models = ["Opus 4.8 (default)", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Sonnet 4"]
+        models = ["Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Sonnet 4"]
         self.model_combo.addItems(models)
+        # Цвета для каждой модели (от зелёного к красному)
+        _sd_model_colors = {
+            "Sonnet 4":     QColor(120, 220, 120),
+            "Sonnet 4.6":   QColor(100, 230, 100),
+            "Opus 4.6":     QColor(230, 220, 130),
+            "Opus 4.7":     QColor(235, 180, 110),
+            "Opus 4.8":     QColor(235, 150, 130),
+            "Fable 5":   QColor(235, 90, 90),
+        }
+        for i in range(self.model_combo.count()):
+            txt = self.model_combo.itemText(i)
+            if txt in _sd_model_colors:
+                self.model_combo.setItemData(i, _sd_model_colors[txt], Qt.ForegroundRole)
+            if txt == "Fable 5":
+                self.model_combo.setItemData(
+                    i,
+                    "Это дорогая модель.\nИспользовать только для очень сложных задач.",
+                    Qt.ToolTipRole,
+                )
         # Маппинг старых сохранённых значений на новые метки
         model_remap = {
-            "default (claude-opus-4-8)": "Opus 4.8 (default)",
+            "default (claude-opus-4-8)": "Opus 4.8",
+            "Opus 4.8 (default)": "Opus 4.8",
             "claude-sonnet-4-6 (/model → 2)": "Sonnet 4.6",
             "claude-sonnet-4-6": "Sonnet 4.6",
             "claude-opus-4-7": "Opus 4.7",
             "claude-opus-4-6": "Opus 4.6",
+            "claude-fable-5": "Fable 5",
         }
-        saved_model = settings.get("custom_model", "Opus 4.8 (default)")
+        saved_model = settings.get("custom_model", "Opus 4.8")
         saved_model = model_remap.get(saved_model, saved_model)
         if saved_model in models:
             self.model_combo.setCurrentText(saved_model)
@@ -1931,6 +2391,527 @@ class UpdateAppDialog(QDialog):
 # ============================================================
 # ДИАЛОГ СКАЧИВАНИЯ ОБНОВЛЕНИЯ
 # ============================================================
+
+# ============================================================
+# КНОПКА С ПЛАВНЫМ HOVER-СВЕЧЕНИЕМ (для диалогов)
+# ============================================================
+
+class GlowDialogButton(QPushButton):
+    """Кнопка с плавной анимацией цвета при наведении — как GlowButton в spicetify_manager."""
+    def __init__(self, text, base_rgb, hover_rgb, parent=None):
+        super().__init__(text, parent)
+        self._base = base_rgb    # (r,g,b) — обычное состояние
+        self._hover = hover_rgb  # (r,g,b) — при наведении
+        self._progress = 0.0
+        self._hovered = False
+        self.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.setFixedWidth(140)
+        self.setMinimumHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._animate)
+        self._timer.start(13)
+        self._update_style()
+
+    def _animate(self):
+        target = 1.0 if self._hovered else 0.0
+        if abs(self._progress - target) < 0.005:
+            return
+        self._progress += 0.10 if self._progress < target else -0.10
+        self._progress = max(0.0, min(1.0, self._progress))
+        self._update_style()
+
+    def _update_style(self):
+        p = self._progress
+        br, bg, bb = self._base
+        hr, hg, hb = self._hover
+        r = int(br + (hr - br) * p)
+        g = int(bg + (hg - bg) * p)
+        b = int(bb + (hb - bb) * p)
+        bg_alpha = int(0.15 * 255 + (0.32 - 0.15) * 255 * p)
+        border_alpha = int(0.50 * 255 + (0.85 - 0.50) * 255 * p)
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba({r}, {g}, {b}, {bg_alpha});
+                color: rgb({r}, {g}, {b});
+                border: 2px solid rgba({r}, {g}, {b}, {border_alpha});
+                border-radius: 8px;
+                padding: 8px;
+            }}
+            QPushButton:pressed {{
+                background-color: rgba({r}, {g}, {b}, 35);
+            }}
+        """)
+
+    def enterEvent(self, event):
+        self._hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        super().leaveEvent(event)
+
+
+# ============================================================
+# АНИМАЦИЯ-СЕТКА 3×3 (sk-cube-grid стиль)
+# ============================================================
+
+class CubeGridSpinner(QWidget):
+    """Анимация — 3×3 сетки кубиков с волной (стиль из spicetify_manager)."""
+    _DELAYS = [0.2, 0.3, 0.4,
+               0.1, 0.2, 0.3,
+               0.0, 0.1, 0.2]
+    _PERIOD = 1.3
+
+    def __init__(self, color=(120, 200, 130), size=72, parent=None):
+        super().__init__(parent)
+        if isinstance(color, QColor):
+            self._color = color
+        else:
+            self._color = QColor(*color)
+        self._size = size
+        self.setFixedSize(size, size)
+        self._time = 0.0
+        self._stopped = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._animate)
+        self._timer.start(13)  # ~75 FPS
+
+    def setColor(self, color):
+        if isinstance(color, QColor):
+            self._color = color
+        else:
+            self._color = QColor(*color)
+        self.update()
+
+    def _animate(self):
+        if self._stopped:
+            return
+        self._time = (self._time + 0.016) % self._PERIOD
+        self.update()
+
+    def stop(self):
+        self._stopped = True
+        self._timer.stop()
+
+    def paintEvent(self, event):
+        if self._stopped:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        cube_size = self.width() / 3.0
+        for i in range(9):
+            t = (self._time - self._DELAYS[i]) % self._PERIOD
+            phase = t / self._PERIOD
+            if phase < 0.35:
+                scale = 1.0 - phase / 0.35
+            elif phase < 0.70:
+                scale = (phase - 0.35) / 0.35
+            else:
+                scale = 1.0
+            # smoothstep
+            scale = max(0.0, min(1.0, scale * scale * (3 - 2 * scale)))
+            sz = (cube_size - 1) * scale
+            if sz <= 0.5:
+                continue
+            cx = (i % 3) * cube_size + cube_size / 2.0
+            cy = (i // 3) * cube_size + cube_size / 2.0
+            alpha = int(180 + 75 * scale)
+            p.setBrush(QColor(self._color.red(), self._color.green(), self._color.blue(), alpha))
+            p.drawRoundedRect(QRectF(cx - sz / 2, cy - sz / 2, sz, sz), 2, 2)
+
+
+# ============================================================
+# МОДАЛЬНОЕ ОКНО ПРОЦЕССА УСТАНОВКИ / ОБНОВЛЕНИЯ CLAUDE CODE
+# ============================================================
+
+class ClaudeInstallProgressDialog(QDialog):
+    """Показывает прогресс установки/обновления, ждёт закрытия PowerShell."""
+
+    def __init__(self, is_update=False, old_version="", new_version="", parent=None):
+        super().__init__(parent)
+        self._is_update = is_update
+        self._old_version = old_version
+        self._new_version = new_version
+        self._finished = False
+
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        if is_update:
+            self._accent = (245, 180, 60)   # жёлто-оранжевый
+            self._title_text = "Обновление Claude Code"
+            self._action_word = "обновление"
+        else:
+            self._accent = (120, 200, 130)  # зелёный
+            self._title_text = "Установка Claude Code"
+            self._action_word = "установка"
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QFrame()
+        container.setObjectName("installContainer")
+        r, g, b = self._accent
+        container.setStyleSheet(f"""
+            QFrame#installContainer {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(18, 18, 22, 0.98),
+                    stop:1 rgba(16, 16, 20, 0.98));
+                border: 2px solid rgba({r}, {g}, {b}, 0.55);
+                border-radius: 18px;
+            }}
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(34, 28, 34, 26)
+        layout.setSpacing(14)
+
+        # Заголовок
+        self.title_lbl = QLabel(self._title_text)
+        self.title_lbl.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        self.title_lbl.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
+        )
+        self.title_lbl.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.title_lbl)
+
+        # Версии (если есть)
+        sub_text = ""
+        if is_update and old_version and new_version:
+            sub_text = f"v{old_version}  →  v{new_version}"
+        elif new_version:
+            sub_text = f"v{new_version}"
+        self.sub_lbl = QLabel(sub_text)
+        self.sub_lbl.setFont(QFont("Segoe UI", 10))
+        self.sub_lbl.setStyleSheet(
+            f"color: rgba({r}, {g}, {b}, 0.7); background: transparent; border: none;"
+        )
+        self.sub_lbl.setAlignment(Qt.AlignCenter)
+        if sub_text:
+            layout.addWidget(self.sub_lbl)
+
+        # Спиннер
+        spinner_row = QHBoxLayout()
+        spinner_row.addStretch()
+        self.spinner = CubeGridSpinner(color=self._accent, size=72)
+        spinner_row.addWidget(self.spinner)
+        spinner_row.addStretch()
+        layout.addSpacing(6)
+        layout.addLayout(spinner_row)
+        layout.addSpacing(6)
+
+        # Статус
+        self.status_lbl = QLabel(
+            f"Идёт {self._action_word}…\nНе закрывайте окно PowerShell."
+        )
+        self.status_lbl.setFont(QFont("Segoe UI", 10))
+        self.status_lbl.setStyleSheet(
+            "color: rgba(210, 210, 215, 0.9); background: transparent; border: none;"
+        )
+        self.status_lbl.setAlignment(Qt.AlignCenter)
+        self.status_lbl.setWordWrap(True)
+        layout.addWidget(self.status_lbl)
+
+        # Кнопка OK (скрыта до завершения)
+        self.btn_ok = GlowDialogButton("Понятно",
+                                       base_rgb=self._accent,
+                                       hover_rgb=tuple(min(255, c + 30) for c in self._accent))
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_ok.hide()
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(self.btn_ok)
+        btn_row.addStretch()
+        layout.addSpacing(4)
+        layout.addLayout(btn_row)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(420)
+
+        # Появление
+        self.setWindowOpacity(0.0)
+        self._fade_in = QPropertyAnimation(self, b"windowOpacity")
+        self._fade_in.setDuration(240)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_in.start()
+
+    def mark_finished(self, actual_version=""):
+        """Вызывается когда PowerShell закрылся — переключает окно в режим успеха."""
+        if self._finished:
+            return
+        self._finished = True
+        # Остановить спиннер
+        self.spinner.stop()
+        self.spinner.hide()
+        # Обновить тексты
+        if self._is_update:
+            ver = actual_version or self._new_version
+            self.title_lbl.setText("Claude Code обновлён ✓")
+            if ver:
+                self.sub_lbl.setText(f"Версия v{ver}")
+            else:
+                self.sub_lbl.setText("")
+            self.status_lbl.setText(
+                "Обновление завершено успешно.\n"
+                "Перезапустите Claude Code для применения изменений."
+            )
+        else:
+            ver = actual_version or self._new_version
+            self.title_lbl.setText("Claude Code установлен ✓")
+            if ver:
+                self.sub_lbl.setText(f"Версия v{ver}")
+            else:
+                self.sub_lbl.setText("")
+            self.status_lbl.setText(
+                "Установка завершена успешно.\n"
+                "Если команда claude не найдена — нажмите\n"
+                "«Добавить в PATH» в главном окне."
+            )
+        self.btn_ok.show()
+
+    def mark_cancelled(self):
+        if self._finished:
+            return
+        self._finished = True
+        self.spinner.stop()
+        self.spinner.hide()
+        self.title_lbl.setText(
+            "Обновление отменено" if self._is_update else "Установка отменена"
+        )
+        self.title_lbl.setStyleSheet(
+            "color: rgba(200, 180, 80, 0.9); background: transparent; border: none;"
+        )
+        self.sub_lbl.setText("")
+        self.status_lbl.setText(
+            "Окно PowerShell было закрыто до завершения.\n"
+            "Можете попробовать снова в любой момент."
+        )
+        self.btn_ok.show()
+
+    def mark_failed(self, message=""):
+        if self._finished:
+            return
+        self._finished = True
+        self.spinner.stop()
+        self.spinner.hide()
+        self.title_lbl.setText(
+            "Обновление не завершено" if self._is_update else "Установка не завершена"
+        )
+        self.title_lbl.setStyleSheet(
+            "color: rgb(235, 110, 110); background: transparent; border: none;"
+        )
+        self.sub_lbl.setText("")
+        self.status_lbl.setText(
+            message or "Окно PowerShell было закрыто до завершения операции.\n"
+                      "Попробуйте ещё раз."
+        )
+        self.btn_ok.show()
+
+
+# ============================================================
+# ОТСЛЕЖИВАНИЕ ЗАВЕРШЕНИЯ ПРОЦЕССА POWERSHELL
+# ============================================================
+
+class _ProcessWaiter(QObject):
+    finished = Signal()
+
+    def __init__(self, popen, parent=None):
+        super().__init__(parent)
+        self._popen = popen
+
+    def run(self):
+        try:
+            self._popen.wait()
+        except Exception:
+            pass
+        self.finished.emit()
+
+
+# ============================================================
+# МОДАЛЬНОЕ ОКНО РЕЗУЛЬТАТА ДОБАВЛЕНИЯ В PATH
+# ============================================================
+
+class PathDoneDialog(QDialog):
+    """Показывает результат операции добавления в PATH."""
+    def __init__(self, added, skipped, error="", parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        success = not error and (added or skipped)
+        accent = (100, 200, 130) if success else (235, 90, 90)
+        r, g, b = accent
+        icon = "✓" if success else "✕"
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QFrame()
+        container.setObjectName("pathDoneContainer")
+        container.setStyleSheet(f"""
+            QFrame#pathDoneContainer {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(18, 18, 22, 0.98),
+                    stop:1 rgba(16, 16, 20, 0.98));
+                border: 2px solid rgba({r}, {g}, {b}, 0.55);
+                border-radius: 18px;
+            }}
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(32, 26, 32, 26)
+        layout.setSpacing(12)
+
+        # Иконка
+        icon_lbl = QLabel(icon)
+        icon_lbl.setFont(QFont("Segoe UI", 30, QFont.Bold))
+        icon_lbl.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
+        )
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        layout.addWidget(icon_lbl)
+
+        # Заголовок
+        title_lbl = QLabel("PATH обновлён" if success else "Ошибка обновления PATH")
+        title_lbl.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        title_lbl.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
+        )
+        title_lbl.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_lbl)
+
+        # Разделитель
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(
+            f"background: rgba({r}, {g}, {b}, 0.2); border: none; max-height: 1px;"
+        )
+        layout.addWidget(sep)
+
+        if error:
+            err_lbl = QLabel(f"Не удалось обновить PATH:\n{error}")
+            err_lbl.setFont(QFont("Segoe UI", 9))
+            err_lbl.setStyleSheet(
+                "color: rgba(210,200,200,0.9); background: transparent; border: none;"
+            )
+            err_lbl.setAlignment(Qt.AlignCenter)
+            err_lbl.setWordWrap(True)
+            layout.addWidget(err_lbl)
+        else:
+            if added:
+                added_lbl = QLabel("Добавлено в PATH:")
+                added_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                added_lbl.setStyleSheet(
+                    "color: rgb(100,200,130); background: transparent; border: none;"
+                )
+                added_lbl.setAlignment(Qt.AlignCenter)
+                layout.addWidget(added_lbl)
+                for p in added:
+                    pl = QLabel(p)
+                    pl.setFont(QFont("Consolas", 8))
+                    pl.setStyleSheet("""
+                        QLabel {
+                            color: rgba(200,220,200,0.85);
+                            background: rgba(100,200,130,0.07);
+                            border: 1px solid rgba(100,200,130,0.2);
+                            border-radius: 4px;
+                            padding: 4px 8px;
+                        }
+                    """)
+                    pl.setAlignment(Qt.AlignCenter)
+                    pl.setWordWrap(True)
+                    layout.addWidget(pl)
+
+            if skipped:
+                skip_lbl = QLabel("Уже был в PATH:")
+                skip_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                skip_lbl.setStyleSheet(
+                    "color: rgba(180,180,190,0.7); background: transparent; border: none;"
+                )
+                skip_lbl.setAlignment(Qt.AlignCenter)
+                layout.addWidget(skip_lbl)
+                for p in skipped:
+                    pl = QLabel(p)
+                    pl.setFont(QFont("Consolas", 8))
+                    pl.setStyleSheet("""
+                        QLabel {
+                            color: rgba(180,180,190,0.65);
+                            background: rgba(120,120,130,0.07);
+                            border: 1px solid rgba(120,120,130,0.2);
+                            border-radius: 4px;
+                            padding: 4px 8px;
+                        }
+                    """)
+                    pl.setAlignment(Qt.AlignCenter)
+                    pl.setWordWrap(True)
+                    layout.addWidget(pl)
+
+            if success and added:
+                hint_lbl = QLabel(
+                    "Откройте новое окно консоли или IDE,\n"
+                    "чтобы изменения вступили в силу."
+                )
+                hint_lbl.setFont(QFont("Segoe UI", 9))
+                hint_lbl.setStyleSheet(
+                    "color: rgba(180,180,190,0.7); background: transparent; border: none;"
+                )
+                hint_lbl.setAlignment(Qt.AlignCenter)
+                layout.addWidget(hint_lbl)
+
+        layout.addSpacing(4)
+
+        # Кнопка
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_ok = GlowDialogButton("Понятно", base_rgb=accent,
+                                  hover_rgb=tuple(min(255, c + 30) for c in accent))
+        btn_ok.clicked.connect(self.accept)
+        btn_row.addWidget(btn_ok)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(400)
+
+        # Тень
+        shadow = QGraphicsDropShadowEffect(container)
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(0, 0, 0, 160))
+        container.setGraphicsEffect(shadow)
+
+        # Анимация
+        self.setWindowOpacity(0.0)
+        self._fade = QPropertyAnimation(self, b"windowOpacity")
+        self._fade.setDuration(240)
+        self._fade.setStartValue(0.0)
+        self._fade.setEndValue(1.0)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(160)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.finished.connect(lambda: super(PathDoneDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
 
 class DownloadUpdateDialog(QDialog):
     progress_updated = Signal(int, float, float)
@@ -2472,11 +3453,12 @@ class ClaudeManager(QMainWindow):
         )
         model_layout.addWidget(model_label)
 
-        self.model_combo = StyledComboBox()
+        self.model_combo = PickerComboBox()
         self.model_list_model = ModelListModel(self.settings["models"])
         self.model_combo.setModel(self.model_list_model)
         self.model_combo.setCurrentText(self.settings["selected_model"])
         self.model_combo.setMaxVisibleItems(4)
+        self.model_combo.set_picker(title="Выбор модели Omniroute")
         model_layout.addWidget(self.model_combo, 1)
 
         model_section_layout.addLayout(model_layout)
@@ -2605,12 +3587,13 @@ class ClaudeManager(QMainWindow):
         url_lbl.setFixedWidth(90)
         url_row.addWidget(url_lbl)
 
-        self.fm_url_combo = StyledComboBox()
+        self.fm_url_combo = PickerComboBox()
         self.fm_url_combo.setFont(QFont("Segoe UI", 9))
         self.fm_url_combo.setMaxVisibleItems(4)
         self.fm_url_combo.addItems(self.settings.get("custom_base_urls", []))
         if self.settings.get("custom_base_url"):
             self.fm_url_combo.setCurrentText(self.settings["custom_base_url"])
+        self.fm_url_combo.set_picker(title="Выбор Base URL")
         self.fm_url_combo.currentTextChanged.connect(self._fm_url_changed)
         url_row.addWidget(self.fm_url_combo, 1)
 
@@ -2699,23 +3682,57 @@ class ClaudeManager(QMainWindow):
         model_lbl.setFixedWidth(90)
         model_row.addWidget(model_lbl)
 
-        self.fm_model_combo = StyledComboBox()
+        self.fm_model_combo = PickerComboBox()
         self.fm_model_combo.setFont(QFont("Segoe UI", 9))
         self.fm_model_combo.setMaxVisibleItems(4)
-        fm_models = ["Opus 4.8 (default)", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Sonnet 4"]
+        fm_models = ["Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6"]
         self.fm_model_combo.addItems(fm_models)
-        saved_m = self.settings.get("custom_model", "Opus 4.8 (default)")
+        # Цвета для каждой модели (от зелёного к красному — по «дороговизне»)
+        model_colors = {
+            "Sonnet 4":     QColor(120, 220, 120),  # зелёный
+            "Sonnet 4.6":   QColor(180, 235, 150),  # светло-зелёный
+            "Opus 4.6":     QColor(230, 220, 130),  # слегка жёлтый
+            "Opus 4.7":     QColor(235, 180, 110),  # жёлтый с переходом в красноватый
+            "Opus 4.8":     QColor(235, 150, 130),  # слабо красноватый
+            "Fable 5":   QColor(235, 90, 90),    # красный
+        }
+        self._fm_model_colors = model_colors
+        model_tooltips = {
+            "Fable 5": "Это дорогая модель.\nИспользовать только для очень сложных задач.",
+        }
+        for i in range(self.fm_model_combo.count()):
+            txt = self.fm_model_combo.itemText(i)
+            if txt in model_colors:
+                self.fm_model_combo.setItemData(i, model_colors[txt], Qt.ForegroundRole)
+            if txt in model_tooltips:
+                self.fm_model_combo.setItemData(i, model_tooltips[txt], Qt.ToolTipRole)
+        self.fm_model_combo.set_picker(
+            colors=model_colors,
+            tooltips=model_tooltips,
+            title="Выбор модели",
+        )
+        saved_m = self.settings.get("custom_model", "Opus 4.8")
         remap = {
-            "default (claude-opus-4-8)": "Opus 4.8 (default)",
+            "default (claude-opus-4-8)": "Opus 4.8",
+            "Opus 4.8 (default)": "Opus 4.8",
             "claude-sonnet-4-6 (/model → 2)": "Sonnet 4.6",
             "claude-sonnet-4-6": "Sonnet 4.6",
             "claude-opus-4-7": "Opus 4.7",
             "claude-opus-4-6": "Opus 4.6",
+            "claude-fable-5": "Fable 5",
         }
         saved_m = remap.get(saved_m, saved_m)
         if saved_m in fm_models:
             self.fm_model_combo.setCurrentText(saved_m)
+        # Начальный цвет текста под выбранную модель
+        if saved_m in model_colors:
+            self.fm_model_combo.setTextColor(model_colors[saved_m])
         self.fm_model_combo.currentTextChanged.connect(self._fm_model_changed)
+        # Tooltip на самом комбобоксе — обновляется при выборе Fable 5
+        if self.fm_model_combo.currentText() == "Fable 5":
+            self.fm_model_combo.setToolTip(
+                "Это дорогая модель.\nИспользовать только для очень сложных задач."
+            )
         model_row.addWidget(self.fm_model_combo, 1)
         freemodel_layout.addLayout(model_row)
 
@@ -3119,6 +4136,18 @@ class ClaudeManager(QMainWindow):
         if new_model:
             self.settings["custom_model"] = new_model
             save_settings(self.settings)
+        if hasattr(self, "fm_model_combo"):
+            if new_model == "Fable 5":
+                self.fm_model_combo.setToolTip(
+                    "Это дорогая модель.\nИспользовать только для очень сложных задач."
+                )
+                dlg = Fable5WarningDialog(self)
+                dlg.exec()
+            else:
+                self.fm_model_combo.setToolTip("")
+            # Обновить цвет отображаемого текста под выбранную модель
+            if hasattr(self, "_fm_model_colors") and new_model in self._fm_model_colors:
+                self.fm_model_combo.setTextColor(self._fm_model_colors[new_model])
 
     def _fm_toggle_key(self):
         """Показать/скрыть API ключ"""
@@ -3309,7 +4338,9 @@ class ClaudeManager(QMainWindow):
         self.update_omniroute_status()
 
     MODEL_ID_MAP = {
+        "Opus 4.8": "claude-opus-4-8",
         "Opus 4.8 (default)": "claude-opus-4-8",
+        "Fable 5": "claude-fable-5",
         "Sonnet 4.6": "claude-sonnet-4-6",
         "Sonnet 4": "claude-sonnet-4",
         "Opus 4.7": "claude-opus-4-7",
@@ -3474,19 +4505,81 @@ class ClaudeManager(QMainWindow):
             self.log("Операция отменена", "info")
             return
 
-        self.log("Запускаю установку Claude Code в окне PowerShell...", "info")
+        action_word = "обновление" if is_update else "установку"
+        self.log(f"Запускаю {action_word} Claude Code в окне PowerShell...", "info")
+
+        # Открываем модальное окно прогресса
+        progress_dlg = ClaudeInstallProgressDialog(
+            is_update=is_update,
+            old_version=local,
+            new_version=latest,
+            parent=self,
+        )
+        self._claude_install_dlg = progress_dlg
+
         try:
-            subprocess.Popen([
-                "powershell", "-NoExit", "-Command",
+            popen = subprocess.Popen([
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
                 "Write-Host 'Установка Claude Code (официальный скрипт Anthropic)...' -ForegroundColor Cyan; "
-                "irm https://claude.ai/install.ps1 | iex; "
+                "try { irm https://claude.ai/install.ps1 | iex } catch { Write-Host $_ -ForegroundColor Red }; "
                 "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
-                "Write-Host 'Если команда не найдена — нажми Добавить в PATH в приложении.' -ForegroundColor Yellow"
+                "Write-Host 'Если команда не найдена — нажми Добавить в PATH в приложении.' -ForegroundColor Yellow; "
+                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
-            # Перепроверим версию через 30 секунд (даём время установке)
-            QTimer.singleShot(30000, lambda: threading.Thread(target=self._check_claude_version, daemon=True).start())
         except Exception as e:
             self.log(f"Не удалось запустить установку: {e}", "error")
+            progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
+            progress_dlg.exec()
+            return
+
+        # Поток-наблюдатель за процессом
+        self._claude_install_thread = QThread(self)
+        self._claude_install_waiter = _ProcessWaiter(popen)
+        self._claude_install_waiter.moveToThread(self._claude_install_thread)
+        self._claude_install_thread.started.connect(self._claude_install_waiter.run)
+        self._claude_install_waiter.finished.connect(
+            lambda: self._on_claude_install_done(is_update, local, progress_dlg, popen)
+        )
+        self._claude_install_waiter.finished.connect(self._claude_install_thread.quit)
+        self._claude_install_thread.start()
+
+        # Показываем окно (модально, но процесс PowerShell идёт параллельно)
+        progress_dlg.exec()
+
+    def _on_claude_install_done(self, is_update, old_local, progress_dlg, popen=None):
+        """Вызывается когда PowerShell завершился. Сигнал приходит из фонового потока."""
+        returncode = popen.returncode if popen else None
+
+        def _update_ui():
+            try:
+                import sip
+                if sip.isdeleted(progress_dlg):
+                    return
+            except Exception:
+                pass
+            try:
+                installed_now = self._is_claude_installed()
+                new_local = getattr(self, "_claude_local_version", "")
+                # returncode != 0 или None — PowerShell закрыт принудительно (отмена)
+                cancelled = (returncode is not None and returncode != 0)
+                if cancelled and not installed_now:
+                    progress_dlg.mark_cancelled()
+                elif not installed_now:
+                    progress_dlg.mark_cancelled()
+                else:
+                    progress_dlg.mark_finished(actual_version=new_local)
+            except RuntimeError:
+                pass
+            try:
+                self._update_install_button_state()
+            except Exception:
+                pass
+
+        # Обновляем UI немедленно (без сетевого запроса — не блокируем)
+        QTimer.singleShot(0, _update_ui)
+        # Версию обновим тихо в фоне (для следующего открытия)
+        threading.Thread(target=self._check_claude_version, daemon=True).start()
 
     def _detect_claude_install_dirs(self):
         """Возвращает список существующих папок где может лежать claude"""
@@ -3727,17 +4820,22 @@ class ClaudeManager(QMainWindow):
         self.btn_add_to_path.setText("Добавить в PATH")
         self.btn_add_to_path.setEnabled(True)
 
+        # Лог в консоль
         if error:
             self.log(f"Не удалось обновить PATH: {error}", "error")
-            return
-        for p in added:
-            self.log(f"Добавлено в PATH: {p}", "success")
-        for p in skipped:
-            self.log(f"Уже было в PATH: {p}", "info")
-        if added:
-            self.log("PATH обновлён. Перезапусти открытые терминалы, чтобы изменения подхватились.", "warning")
         else:
-            self.log("Нечего добавлять — все пути уже были в PATH", "info")
+            for p in added:
+                self.log(f"Добавлено в PATH: {p}", "success")
+            for p in skipped:
+                self.log(f"Уже было в PATH: {p}", "info")
+            if added:
+                self.log("PATH обновлён. Перезапусти открытые терминалы, чтобы изменения подхватились.", "warning")
+            else:
+                self.log("Нечего добавлять — все пути уже были в PATH", "info")
+
+        # Модальное окно результата
+        dlg = PathDoneDialog(added=added, skipped=skipped, error=error, parent=self)
+        dlg.exec()
 
     def add_model(self):
         """Добавляет новую модель"""
