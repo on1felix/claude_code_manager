@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "3.4.1"  # Для обновлений
+APP_VERSION = "3.4.2"  # Для обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -372,7 +372,6 @@ class StyledButton(QPushButton):
                 self._update_style()
 
     def _update_style(self):
-        # Плавный переход к настраиваемому цвету hover
         base_r, base_g, base_b = 60, 60, 65
         hover_r, hover_g, hover_b = self._hover_color
 
@@ -380,11 +379,9 @@ class StyledButton(QPushButton):
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
         b = int(base_b + (hover_b - base_b) * self._hover_progress)
 
-        bg_alpha = int(200 + 20 * self._hover_progress)
-
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, {bg_alpha});
+                background-color: rgba(40, 40, 45, 200);
                 color: rgb(200, 200, 200);
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 6px;
@@ -416,24 +413,8 @@ class GreenButton(QPushButton):
         self._hover_timer.start(20)
         self._is_hovered = False
         self.setMouseTracking(True)
-
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
-                border: 2px solid rgb(60, 60, 65);
-                border-radius: 6px;
-                padding: 8px;
-            }
-            QPushButton:pressed {
-                background-color: rgba(30, 30, 35, 200);
-            }
-            QPushButton:disabled {
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
-                border: 2px solid rgb(40, 40, 45);
-            }
-        """)
+        self._update_style()
+        self.ensurePolished()
 
     def enterEvent(self, event):
         self._is_hovered = True
@@ -454,9 +435,8 @@ class GreenButton(QPushButton):
                 self._update_style()
 
     def _update_style(self):
-        # Плавный переход к зеленому
         base_r, base_g, base_b = 60, 60, 65
-        hover_r, hover_g, hover_b = 50, 180, 100  # Зеленый
+        hover_r, hover_g, hover_b = 50, 180, 100
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -464,7 +444,7 @@ class GreenButton(QPushButton):
 
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgb(40, 40, 45);
+                background-color: rgba(40, 40, 45, 200);
                 color: rgb(200, 200, 200);
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 6px;
@@ -496,24 +476,8 @@ class BlueButton(QPushButton):
         self._hover_timer.start(20)
         self._is_hovered = False
         self.setMouseTracking(True)
-
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
-                border: 2px solid rgb(60, 60, 65);
-                border-radius: 6px;
-                padding: 8px;
-            }
-            QPushButton:pressed {
-                background-color: rgba(30, 30, 35, 200);
-            }
-            QPushButton:disabled {
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
-                border: 2px solid rgb(40, 40, 45);
-            }
-        """)
+        self._update_style()
+        self.ensurePolished()
 
     def enterEvent(self, event):
         self._is_hovered = True
@@ -534,19 +498,16 @@ class BlueButton(QPushButton):
                 self._update_style()
 
     def _update_style(self):
-        # Плавный переход к голубому
         base_r, base_g, base_b = 60, 60, 65
-        hover_r, hover_g, hover_b = 100, 180, 255  # Голубой
+        hover_r, hover_g, hover_b = 100, 180, 255
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
         b = int(base_b + (hover_b - base_b) * self._hover_progress)
 
-        bg_alpha = int(200 + 20 * self._hover_progress)
-
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, {bg_alpha});
+                background-color: rgba(40, 40, 45, 200);
                 color: rgb(200, 200, 200);
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 6px;
@@ -578,24 +539,8 @@ class RedButton(QPushButton):
         self._hover_timer.start(20)
         self._is_hovered = False
         self.setMouseTracking(True)
-
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
-                border: 2px solid rgb(60, 60, 65);
-                border-radius: 6px;
-                padding: 8px;
-            }
-            QPushButton:pressed {
-                background-color: rgba(30, 30, 35, 200);
-            }
-            QPushButton:disabled {
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
-                border: 2px solid rgb(40, 40, 45);
-            }
-        """)
+        self._update_style()
+        self.ensurePolished()
 
     def enterEvent(self, event):
         self._is_hovered = True
@@ -616,9 +561,8 @@ class RedButton(QPushButton):
                 self._update_style()
 
     def _update_style(self):
-        # Плавный переход к красному
         base_r, base_g, base_b = 60, 60, 65
-        hover_r, hover_g, hover_b = 200, 60, 60  # Красный
+        hover_r, hover_g, hover_b = 200, 60, 60
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -626,7 +570,7 @@ class RedButton(QPushButton):
 
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgb(40, 40, 45);
+                background-color: rgba(40, 40, 45, 200);
                 color: rgb(200, 200, 200);
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 6px;
@@ -2393,31 +2337,56 @@ class UpdateAppDialog(QDialog):
 # ============================================================
 
 class GlowDialogButton(QPushButton):
-    """Кнопка с плавной анимацией цвета при наведении — как GlowButton в spicetify_manager."""
+    """Кнопка с плавной анимацией цвета при наведении.
+
+    Использует paintEvent + QPropertyAnimation: не зависит от QSS-полировки,
+    которая первый раз срабатывает с задержкой (отсюда "вспышка" на первом ховере),
+    и анимация интегрирована с Qt animation framework — не "отвисает" во время
+    fade-in диалога.
+    """
     def __init__(self, text, base_rgb, hover_rgb, parent=None):
         super().__init__(text, parent)
-        self._base = base_rgb    # (r,g,b) — обычное состояние
-        self._hover = hover_rgb  # (r,g,b) — при наведении
+        self._base = base_rgb
+        self._hover = hover_rgb
         self._progress = 0.0
-        self._hovered = False
+        self._text = text
         self.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.setFixedWidth(140)
         self.setMinimumHeight(40)
         self.setCursor(Qt.PointingHandCursor)
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._animate)
-        self._timer.start(13)
-        self._update_style()
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setAttribute(Qt.WA_Hover, True)
+        # Убираем дефолтный QPushButton-стиль — рисуем всё вручную
+        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
 
-    def _animate(self):
-        target = 1.0 if self._hovered else 0.0
-        if abs(self._progress - target) < 0.005:
-            return
-        self._progress += 0.10 if self._progress < target else -0.10
-        self._progress = max(0.0, min(1.0, self._progress))
-        self._update_style()
+        self._anim = QPropertyAnimation(self, b"progress", self)
+        self._anim.setDuration(140)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
 
-    def _update_style(self):
+    def _get_progress(self):
+        return self._progress
+
+    def _set_progress(self, value):
+        self._progress = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    progress = Property(float, _get_progress, _set_progress)
+
+    def _start_anim(self, target):
+        self._anim.stop()
+        self._anim.setStartValue(self._progress)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def enterEvent(self, event):
+        self._start_anim(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._start_anim(0.0)
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
         p = self._progress
         br, bg, bb = self._base
         hr, hg, hb = self._hover
@@ -2426,26 +2395,20 @@ class GlowDialogButton(QPushButton):
         b = int(bb + (hb - bb) * p)
         bg_alpha = int(0.15 * 255 + (0.32 - 0.15) * 255 * p)
         border_alpha = int(0.50 * 255 + (0.85 - 0.50) * 255 * p)
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background-color: rgba({r}, {g}, {b}, {bg_alpha});
-                color: rgb({r}, {g}, {b});
-                border: 2px solid rgba({r}, {g}, {b}, {border_alpha});
-                border-radius: 8px;
-                padding: 8px;
-            }}
-            QPushButton:pressed {{
-                background-color: rgba({r}, {g}, {b}, 35);
-            }}
-        """)
+        if self.isDown():
+            bg_alpha = 35
 
-    def enterEvent(self, event):
-        self._hovered = True
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._hovered = False
-        super().leaveEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        # Фон
+        painter.setBrush(QColor(r, g, b, bg_alpha))
+        painter.setPen(QPen(QColor(r, g, b, border_alpha), 2))
+        painter.drawRoundedRect(rect, 8, 8)
+        # Текст
+        painter.setPen(QColor(r, g, b))
+        painter.setFont(self.font())
+        painter.drawText(rect, Qt.AlignCenter, self.text())
 
 
 # ============================================================
@@ -4124,8 +4087,11 @@ class ClaudeManager(QMainWindow):
     def _fm_url_changed(self, new_url):
         """Сохраняет выбранный Base URL"""
         if new_url:
+            prev = self.settings.get("custom_base_url", "")
             self.settings["custom_base_url"] = new_url
             save_settings(self.settings)
+            if prev != new_url:
+                self.log(f"Base URL {new_url} сохранён", "success")
 
     def _fm_model_changed(self, new_model):
         """Сохраняет выбранную модель FreeModel"""
@@ -4159,7 +4125,7 @@ class ClaudeManager(QMainWindow):
         self.settings["custom_base_url"] = self.fm_url_combo.currentText()
         self.settings["custom_model"] = self.fm_model_combo.currentText()
         save_settings(self.settings)
-        self.log("Настройки FreeModel сохранены", "success")
+        self.log("API ключ обновлён", "success")
         # Блокируем редактирование, переключаем кнопки
         self.fm_key_input.setReadOnly(True)
         self.fm_key_input.setStyleSheet("""
@@ -4510,48 +4476,75 @@ class ClaudeManager(QMainWindow):
         self._claude_install_waiter = _ProcessWaiter(popen)
         self._claude_install_waiter.moveToThread(self._claude_install_thread)
         self._claude_install_thread.started.connect(self._claude_install_waiter.run)
+        # ВАЖНО: QueuedConnection через self (живёт в main thread) — иначе
+        # лямбда выполнится на worker thread, у которого нет event loop,
+        # и UI никогда не обновится (диалог "зависает" со спиннером).
         self._claude_install_waiter.finished.connect(
-            lambda: self._on_claude_install_done(is_update, local, progress_dlg, popen)
+            lambda: self._on_claude_install_done(is_update, local, progress_dlg, popen),
+            Qt.QueuedConnection
         )
-        self._claude_install_waiter.finished.connect(self._claude_install_thread.quit)
+        self._claude_install_waiter.finished.connect(
+            self._claude_install_thread.quit, Qt.QueuedConnection
+        )
         self._claude_install_thread.start()
 
         # Показываем окно (модально, но процесс PowerShell идёт параллельно)
         progress_dlg.exec()
 
     def _on_claude_install_done(self, is_update, old_local, progress_dlg, popen=None):
-        """Вызывается когда PowerShell завершился. Сигнал приходит из фонового потока."""
-        returncode = popen.returncode if popen else None
+        """Вызывается на main thread (QueuedConnection) когда PowerShell завершился."""
+        returncode = None
+        try:
+            returncode = popen.returncode if popen else None
+        except Exception:
+            pass
 
-        def _update_ui():
-            try:
-                import sip
-                if sip.isdeleted(progress_dlg):
-                    return
-            except Exception:
-                pass
-            try:
-                installed_now = self._is_claude_installed()
-                new_local = getattr(self, "_claude_local_version", "")
-                # returncode != 0 или None — PowerShell закрыт принудительно (отмена)
-                cancelled = (returncode is not None and returncode != 0)
-                if cancelled and not installed_now:
-                    progress_dlg.mark_cancelled()
-                elif not installed_now:
-                    progress_dlg.mark_cancelled()
-                else:
+        # Проверка, что диалог ещё жив (shiboken6 — корректная замена sip для PySide6)
+        try:
+            from shiboken6 import isValid
+            if not isValid(progress_dlg):
+                return
+        except Exception:
+            pass
+
+        try:
+            new_local = self._get_installed_claude_version()
+            if new_local:
+                self._claude_local_version = new_local
+        except Exception:
+            new_local = getattr(self, "_claude_local_version", "")
+
+        # returncode != 0 — PowerShell закрыт принудительно (отмена)
+        cancelled = (returncode is not None and returncode != 0)
+
+        try:
+            if is_update:
+                # Успех обновления = версия реально изменилась
+                version_changed = new_local and old_local and new_local != old_local
+                if version_changed:
                     progress_dlg.mark_finished(actual_version=new_local)
-            except RuntimeError:
-                pass
-            try:
-                self._update_install_button_state()
-            except Exception:
-                pass
+                else:
+                    progress_dlg.mark_cancelled()
+            else:
+                # Успех установки = claude появился на диске
+                installed_now = self._is_claude_installed()
+                if installed_now and new_local:
+                    progress_dlg.mark_finished(actual_version=new_local)
+                else:
+                    progress_dlg.mark_cancelled()
+        except (RuntimeError, Exception):
+            pass
 
-        # Обновляем UI немедленно (без сетевого запроса — не блокируем)
-        QTimer.singleShot(0, _update_ui)
+        try:
+            self._update_install_button_state()
+        except Exception:
+            pass
+
         # Версию обновим тихо в фоне (для следующего открытия)
-        threading.Thread(target=self._check_claude_version, daemon=True).start()
+        try:
+            threading.Thread(target=self._check_claude_version, daemon=True).start()
+        except Exception:
+            pass
 
     def _detect_claude_install_dirs(self):
         """Возвращает список существующих папок где может лежать claude"""
