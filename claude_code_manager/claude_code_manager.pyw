@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "3.4.2"  # Для обновлений
+APP_VERSION = "3.4.3"  # Для обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -596,6 +596,7 @@ class StyledComboBox(QComboBox):
         self._hover_timer.start(20)
         self._is_hovered = False
         self._text_color = "rgb(200, 200, 200)"
+        self._accent_color = None  # (r,g,b) — если задан, рамка всегда окрашена в этот цвет
         self.setMouseTracking(True)
         self.setCursor(Qt.PointingHandCursor)
 
@@ -651,9 +652,16 @@ class StyledComboBox(QComboBox):
                 self._update_style()
 
     def _update_style(self):
-        # Плавный переход к тусклому оранжевому
-        base_r, base_g, base_b = 60, 60, 65
-        hover_r, hover_g, hover_b = 60, 140, 200  # Темнее голубой
+        if self._accent_color is not None:
+            # Рамка всегда в цвете акцента (тусклая), при наведении — ярче
+            ar, ag, ab = self._accent_color
+            dim = 0.45
+            base_r, base_g, base_b = int(ar * dim), int(ag * dim), int(ab * dim)
+            hover_r, hover_g, hover_b = ar, ag, ab
+        else:
+            # Поведение по умолчанию: серый → голубой
+            base_r, base_g, base_b = 60, 60, 65
+            hover_r, hover_g, hover_b = 60, 140, 200
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -676,6 +684,16 @@ class StyledComboBox(QComboBox):
                 selection-background-color: rgb(50, 50, 55);
             }}
         """)
+
+    def setAccentColor(self, color):
+        """Установить акцентный цвет рамки (обычно цвет модели). None — вернуть дефолт."""
+        if color is None:
+            self._accent_color = None
+        elif isinstance(color, QColor):
+            self._accent_color = (color.red(), color.green(), color.blue())
+        else:
+            self._accent_color = color
+        self._update_style()
 
     def setTextColor(self, color):
         """Установить цвет отображаемого текста (для свёрнутого состояния)."""
@@ -813,22 +831,8 @@ class PickerDialog(QDialog):
         title_lbl.setStyleSheet("color: rgb(200, 200, 210); border: none; background: transparent;")
         head.addWidget(title_lbl)
         head.addStretch()
-        close_btn = QPushButton("✕")
-        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn = _CloseButton(parent=self.container)
         close_btn.setFixedSize(26, 26)
-        close_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: rgb(160, 160, 170);
-                border: none;
-                font-size: 14px;
-                border-radius: 13px;
-            }
-            QPushButton:hover {
-                background-color: rgba(220, 80, 80, 200);
-                color: white;
-            }
-        """)
         close_btn.clicked.connect(self.close)
         head.addWidget(close_btn)
         inner.addLayout(head)
@@ -1792,6 +1796,119 @@ class ModeToggle(QWidget):
 # ДИАЛОГ УПРАВЛЕНИЯ BASE URL
 # ============================================================
 
+class AnimatedComboBox(QComboBox):
+    """QComboBox с плавной анимацией рамки при наведении (как StyledButton)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hover_progress = 0.0
+        self._is_hovered = False
+        self.setMouseTracking(True)
+        self._hover_timer = QTimer()
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+        self._apply_style()
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        if self._is_hovered:
+            if self._hover_progress < 1.0:
+                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._apply_style()
+        else:
+            if self._hover_progress > 0.0:
+                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._apply_style()
+
+    def _apply_style(self):
+        p = self._hover_progress
+        r = int(60 + (60 - 60) * p)
+        g = int(60 + (140 - 60) * p)
+        b = int(65 + (200 - 65) * p)
+        self.setStyleSheet(f"""
+            QComboBox {{
+                background-color: rgba(40, 40, 45, 200);
+                color: rgb(200, 200, 200);
+                border: 2px solid rgb({r}, {g}, {b});
+                border-radius: 6px;
+                padding: 8px 12px;
+            }}
+            QComboBox::drop-down {{ border: none; }}
+            QComboBox QAbstractItemView {{
+                background-color: rgb(30, 30, 35);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 4px;
+                outline: none;
+                selection-background-color: rgba(60, 140, 200, 140);
+                selection-color: rgb(240, 240, 240);
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: 6px 10px;
+                min-height: 24px;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: rgba(60, 140, 200, 100);
+            }}
+        """)
+
+
+class _CloseButton(QPushButton):
+    """Крестик с плавной анимацией рамки и фона при наведении."""
+
+    def __init__(self, parent=None):
+        super().__init__("✕", parent)
+        self.setFixedSize(28, 28)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
+        self._progress = 0.0
+        self._is_hovered = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(20)
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _tick(self):
+        target = 1.0 if self._is_hovered else 0.0
+        if abs(self._progress - target) > 0.01:
+            self._progress += 0.1 if target > self._progress else -0.1
+            self._progress = max(0.0, min(1.0, self._progress))
+            self.update()
+
+    def paintEvent(self, event):
+        p = self._progress
+        r = int(60 + (200 - 60) * p)
+        g = int(60 + (50 - 60) * p)
+        b = int(65 + (50 - 65) * p)
+        bg_alpha = int(0 + 140 * p)
+        txt_alpha = int(120 + (255 - 120) * p)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.setBrush(QColor(r, g, b, bg_alpha))
+        painter.setPen(QPen(QColor(r, g, b, int(80 + 175 * p)), 2))
+        painter.drawRoundedRect(rect, 6, 6)
+        painter.setPen(QColor(txt_alpha, txt_alpha, txt_alpha))
+        painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        painter.drawText(rect, Qt.AlignCenter, "✕")
+
+
 class BaseUrlManagerDialog(QDialog):
     DEFAULT_URLS = ("https://cc.freemodel.dev", "https://api.inferall.ai")
 
@@ -1818,40 +1935,41 @@ class BaseUrlManagerDialog(QDialog):
         """)
 
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setContentsMargins(30, 20, 30, 25)
         layout.setSpacing(12)
+
+        # Заголовок + крестик закрытия
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+
+        # Спейсер слева чтобы заголовок был по центру
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(28, 28)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(left_spacer)
 
         title = QLabel("Управление Base URL")
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
-        layout.addWidget(title)
+        title_row.addWidget(title, 1)
 
-        info = QLabel("Выберите URL или добавьте свой")
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.accept)
+        title_row.addWidget(self.btn_close)
+        layout.addLayout(title_row)
+
+        info = QLabel("Добавьте или удалите URL из списка")
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
         info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
         layout.addWidget(info)
 
-        # Combo со списком URL
-        self.url_combo = QComboBox()
+        # Combo со списком URL — с плавной анимацией рамки
+        self.url_combo = AnimatedComboBox()
         self.url_combo.setCursor(Qt.PointingHandCursor)
         self.url_combo.setFont(QFont("Segoe UI", 9))
-        self.url_combo.setStyleSheet("""
-            QComboBox {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
-                padding: 8px;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background-color: rgb(30, 30, 35);
-                color: rgb(200, 200, 200);
-                selection-background-color: rgb(50, 50, 55);
-            }
-        """)
+        self.url_combo.setMaxVisibleItems(3)
         self.url_combo.addItems(self.urls)
         if self.current in self.urls:
             self.url_combo.setCurrentText(self.current)
@@ -1892,25 +2010,26 @@ class BaseUrlManagerDialog(QDialog):
 
         layout.addLayout(add_row)
 
-        # OK / Отмена
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(10)
-        btn_cancel = RedButton("Отмена")
-        btn_cancel.clicked.connect(self.reject)
-        btn_layout.addWidget(btn_cancel)
-
-        btn_ok = GreenButton("Применить")
-        btn_ok.clicked.connect(self.accept)
-        btn_layout.addWidget(btn_ok)
-
-        layout.addLayout(btn_layout)
-
         main_layout.addWidget(container)
         self.setLayout(main_layout)
         self.setFixedWidth(440)
 
         self._update_remove_button()
         self.url_combo.currentTextChanged.connect(lambda _: self._update_remove_button())
+
+        # Плавное появление
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(200)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_anim.start()
 
     def _update_remove_button(self):
         """Запрещает удалять дефолтные URL"""
@@ -1953,7 +2072,7 @@ class BaseUrlManagerDialog(QDialog):
         self.url_combo.removeItem(idx)
 
     def get_result(self):
-        return list(self.urls), self.url_combo.currentText()
+        return list(self.urls), self.current
 
 # ============================================================
 # ДИАЛОГ КАСТОМНЫХ НАСТРОЕК ТОКЕНА
@@ -3183,6 +3302,7 @@ class ClaudeManager(QMainWindow):
     update_available = Signal(dict)  # Новый сигнал для обновлений
     path_add_finished = Signal(list, list, str)  # added, skipped, error
     claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
+    claude_install_finished = Signal(object)  # context dict
 
     def __init__(self):
         super().__init__()
@@ -3681,9 +3801,10 @@ class ClaudeManager(QMainWindow):
         saved_m = remap.get(saved_m, saved_m)
         if saved_m in fm_models:
             self.fm_model_combo.setCurrentText(saved_m)
-        # Начальный цвет текста под выбранную модель
+        # Начальный цвет текста и рамки под выбранную модель
         if saved_m in model_colors:
             self.fm_model_combo.setTextColor(model_colors[saved_m])
+            self.fm_model_combo.setAccentColor(model_colors[saved_m])
         self.fm_model_combo.currentTextChanged.connect(self._fm_model_changed)
         model_row.addWidget(self.fm_model_combo, 1)
         freemodel_layout.addLayout(model_row)
@@ -4102,9 +4223,10 @@ class ClaudeManager(QMainWindow):
             if new_model == "Fable 5":
                 dlg = Fable5WarningDialog(self)
                 dlg.exec()
-            # Обновить цвет отображаемого текста под выбранную модель
+            # Обновить цвет отображаемого текста и рамки под выбранную модель
             if hasattr(self, "_fm_model_colors") and new_model in self._fm_model_colors:
                 self.fm_model_combo.setTextColor(self._fm_model_colors[new_model])
+                self.fm_model_combo.setAccentColor(self._fm_model_colors[new_model])
 
     def _fm_toggle_key(self):
         """Показать/скрыть API ключ"""
@@ -4471,76 +4593,114 @@ class ClaudeManager(QMainWindow):
             progress_dlg.exec()
             return
 
-        # Поток-наблюдатель за процессом
-        self._claude_install_thread = QThread(self)
-        self._claude_install_waiter = _ProcessWaiter(popen)
-        self._claude_install_waiter.moveToThread(self._claude_install_thread)
-        self._claude_install_thread.started.connect(self._claude_install_waiter.run)
-        # ВАЖНО: QueuedConnection через self (живёт в main thread) — иначе
-        # лямбда выполнится на worker thread, у которого нет event loop,
-        # и UI никогда не обновится (диалог "зависает" со спиннером).
-        self._claude_install_waiter.finished.connect(
-            lambda: self._on_claude_install_done(is_update, local, progress_dlg, popen),
-            Qt.QueuedConnection
+        # Контекст для коллбэка
+        self._claude_install_ctx = {
+            "is_update": is_update,
+            "old_local": local,
+            "progress_dlg": progress_dlg,
+            "popen": popen,
+        }
+
+        # Подключаем сигнал ОДИН раз (UniqueConnection чтобы не плодить дубли)
+        try:
+            self.claude_install_finished.disconnect(self._on_claude_install_done_safe)
+        except Exception:
+            pass
+        self.claude_install_finished.connect(
+            self._on_claude_install_done_safe, Qt.QueuedConnection
         )
-        self._claude_install_waiter.finished.connect(
-            self._claude_install_thread.quit, Qt.QueuedConnection
-        )
-        self._claude_install_thread.start()
+
+        # Фоновая нить: ждёт PowerShell, читает версию там же (никаких subprocess.run в main!),
+        # затем эмитит сигнал с готовым контекстом
+        def _wait_and_emit():
+            try:
+                popen.wait()
+            except Exception:
+                pass
+            try:
+                rc = popen.returncode
+            except Exception:
+                rc = None
+            # Версию читаем здесь, в фоне — не блокируем UI
+            new_local = ""
+            try:
+                # дать инсталлятору пару секунд "отпустить" файл
+                time.sleep(0.5)
+                new_local = self._get_installed_claude_version()
+            except Exception:
+                new_local = ""
+            try:
+                installed_now = self._is_claude_installed()
+            except Exception:
+                installed_now = False
+            ctx = {
+                "is_update": is_update,
+                "old_local": local,
+                "new_local": new_local,
+                "installed_now": installed_now,
+                "returncode": rc,
+            }
+            try:
+                self.claude_install_finished.emit(ctx)
+            except Exception:
+                pass
+
+        threading.Thread(target=_wait_and_emit, daemon=True).start()
 
         # Показываем окно (модально, но процесс PowerShell идёт параллельно)
         progress_dlg.exec()
 
-    def _on_claude_install_done(self, is_update, old_local, progress_dlg, popen=None):
-        """Вызывается на main thread (QueuedConnection) когда PowerShell завершился."""
-        returncode = None
+    def _on_claude_install_done_safe(self, ctx):
+        """Вызывается на main thread через сигнал. Все subprocess-вызовы уже сделаны в фоне."""
+        if not isinstance(ctx, dict):
+            return
+
+        is_update = ctx.get("is_update", False)
+        old_local = ctx.get("old_local", "") or ""
+        new_local = ctx.get("new_local", "") or ""
+        installed_now = bool(ctx.get("installed_now", False))
+        returncode = ctx.get("returncode")
+
+        progress_dlg = None
         try:
-            returncode = popen.returncode if popen else None
+            saved_ctx = getattr(self, "_claude_install_ctx", None) or {}
+            progress_dlg = saved_ctx.get("progress_dlg")
         except Exception:
-            pass
+            progress_dlg = None
 
-        # Проверка, что диалог ещё жив (shiboken6 — корректная замена sip для PySide6)
-        try:
-            from shiboken6 import isValid
-            if not isValid(progress_dlg):
-                return
-        except Exception:
-            pass
+        # Проверка валидности диалога
+        dlg_alive = False
+        if progress_dlg is not None:
+            try:
+                from shiboken6 import isValid
+                dlg_alive = isValid(progress_dlg)
+            except Exception:
+                dlg_alive = True  # если проверить не можем — пробуем
 
-        try:
-            new_local = self._get_installed_claude_version()
-            if new_local:
-                self._claude_local_version = new_local
-        except Exception:
-            new_local = getattr(self, "_claude_local_version", "")
+        if new_local:
+            self._claude_local_version = new_local
 
-        # returncode != 0 — PowerShell закрыт принудительно (отмена)
-        cancelled = (returncode is not None and returncode != 0)
-
-        try:
-            if is_update:
-                # Успех обновления = версия реально изменилась
-                version_changed = new_local and old_local and new_local != old_local
-                if version_changed:
-                    progress_dlg.mark_finished(actual_version=new_local)
+        if dlg_alive:
+            try:
+                if is_update:
+                    version_changed = bool(new_local) and bool(old_local) and new_local != old_local
+                    if version_changed:
+                        progress_dlg.mark_finished(actual_version=new_local)
+                    else:
+                        progress_dlg.mark_cancelled()
                 else:
-                    progress_dlg.mark_cancelled()
-            else:
-                # Успех установки = claude появился на диске
-                installed_now = self._is_claude_installed()
-                if installed_now and new_local:
-                    progress_dlg.mark_finished(actual_version=new_local)
-                else:
-                    progress_dlg.mark_cancelled()
-        except (RuntimeError, Exception):
-            pass
+                    if installed_now and new_local:
+                        progress_dlg.mark_finished(actual_version=new_local)
+                    else:
+                        progress_dlg.mark_cancelled()
+            except Exception:
+                pass
 
         try:
             self._update_install_button_state()
         except Exception:
             pass
 
-        # Версию обновим тихо в фоне (для следующего открытия)
         try:
             threading.Thread(target=self._check_claude_version, daemon=True).start()
         except Exception:
