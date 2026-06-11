@@ -10,13 +10,13 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
-                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox)
-from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QPainterPath
+                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy)
+from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QPainterPath, QFontMetrics
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "3.4.3"  # Для обновлений
+APP_VERSION = "3.4.4"  # Для обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -716,8 +716,14 @@ class PickerCard(QPushButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setFont(QFont("Segoe UI", 10, QFont.Medium))
         self.setMinimumHeight(42)
+        self._full_text = text
+        # Тултип показываем только если явно передан (нужен для длинных URL).
+        # У пикера моделей tooltip=None — всплывашек быть не должно.
         if tooltip:
             self.setToolTip(tooltip)
+        # Запретить кнопке растягиваться по ширине текста — иначе длинный URL раздует layout
+        # и elide перестанет срабатывать на коротких карточках
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
 
         # Цвет текста и целевой цвет рамки — под модель.
         # Если цвета нет (например, у URL) — рамка голубая по умолчанию.
@@ -780,6 +786,31 @@ class PickerCard(QPushButton):
                 background-color: {self._bg_str};
             }}
         """)
+
+    def sizeHint(self):
+        # Не зависим от длины текста по горизонтали
+        return QSize(0, max(42, super().sizeHint().height()))
+
+    def minimumSizeHint(self):
+        return QSize(0, max(42, super().minimumSizeHint().height()))
+
+    def _update_elided_text(self):
+        fm = QFontMetrics(self.font())
+        # Доступная ширина = ширина кнопки минус padding 10+10 и небольшой запас
+        avail = max(0, self.width() - 24)
+        if avail <= 0:
+            return
+        elided = fm.elidedText(self._full_text, Qt.ElideRight, avail)
+        if elided != self.text():
+            super().setText(elided)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_elided_text()
 
 
 class PickerDialog(QDialog):
@@ -895,10 +926,26 @@ class PickerDialog(QDialog):
         self._fade_in.setStartValue(0.0)
         self._fade_in.setEndValue(1.0)
         self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        self._closing = False
 
     def showEvent(self, event):
         super().showEvent(event)
         self._fade_in.start()
+
+    def closeEvent(self, event):
+        if self._closing:
+            super().closeEvent(event)
+            return
+        self._closing = True
+        event.ignore()
+        fade = QPropertyAnimation(self, b"windowOpacity", self)
+        fade.setDuration(220)
+        fade.setStartValue(self.windowOpacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(self.close)
+        fade.start()
+        self._fade_out = fade
 
     def _pick(self, value):
         self.picked.emit(value)
@@ -936,12 +983,17 @@ class PickerComboBox(StyledComboBox):
         items = [self.itemText(i) for i in range(self.count())]
         if not items:
             return
+        # Если для конкретного combo тултипы не заданы вручную — подставляем
+        # полный текст элемента (нужно для длинных URL).
+        tooltips = self._pick_tooltips
+        if not tooltips and self._pick_title == "Выбор Base URL":
+            tooltips = {item: item for item in items}
         dlg = PickerDialog(
             items,
             current=self.currentText(),
             parent=self.window(),
             item_colors=self._pick_colors,
-            item_tooltips=self._pick_tooltips,
+            item_tooltips=tooltips,
             title=self._pick_title,
         )
         dlg.picked.connect(self._on_picked)
@@ -1100,9 +1152,10 @@ class AddModelDialog(QDialog):
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
         self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_in.setDuration(300)
+        self.fade_in.setDuration(220)
         self.fade_in.setStartValue(0.0)
         self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1111,9 +1164,10 @@ class AddModelDialog(QDialog):
     def accept(self):
         """Плавное закрытие при принятии"""
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade.setDuration(200)
+        fade.setDuration(220)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(AddModelDialog, self).accept())
         fade.start()
         self._fade = fade
@@ -1121,9 +1175,10 @@ class AddModelDialog(QDialog):
     def reject(self):
         """Плавное закрытие при отмене"""
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade.setDuration(200)
+        fade.setDuration(220)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(AddModelDialog, self).reject())
         fade.start()
         self._fade = fade
@@ -1220,9 +1275,10 @@ class ConfirmDeleteDialog(QDialog):
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
         self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_in.setDuration(300)
+        self.fade_in.setDuration(220)
         self.fade_in.setStartValue(0.0)
         self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1231,9 +1287,10 @@ class ConfirmDeleteDialog(QDialog):
     def accept(self):
         """Плавное закрытие при принятии"""
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade.setDuration(200)
+        fade.setDuration(220)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(ConfirmDeleteDialog, self).accept())
         fade.start()
         self._fade = fade
@@ -1241,9 +1298,10 @@ class ConfirmDeleteDialog(QDialog):
     def reject(self):
         """Плавное закрытие при отмене"""
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade.setDuration(200)
+        fade.setDuration(220)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(ConfirmDeleteDialog, self).reject())
         fade.start()
         self._fade = fade
@@ -1366,7 +1424,7 @@ class Fable5WarningDialog(QDialog):
         # Анимация появления через windowOpacity (не конфликтует с дочерними виджетами)
         self.setWindowOpacity(0.0)
         self.fade_in = QPropertyAnimation(self, b"windowOpacity")
-        self.fade_in.setDuration(260)
+        self.fade_in.setDuration(220)
         self.fade_in.setStartValue(0.0)
         self.fade_in.setEndValue(1.0)
         self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
@@ -1377,10 +1435,21 @@ class Fable5WarningDialog(QDialog):
 
     def accept(self):
         fade = QPropertyAnimation(self, b"windowOpacity")
-        fade.setDuration(160)
+        fade.setDuration(220)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(Fable5WarningDialog, self).accept())
+        fade.start()
+        self._fade = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(Fable5WarningDialog, self).reject())
         fade.start()
         self._fade = fade
 
@@ -1492,9 +1561,10 @@ class ConfirmActionDialog(QDialog):
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
         self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_in.setDuration(280)
+        self.fade_in.setDuration(220)
         self.fade_in.setStartValue(0.0)
         self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1502,18 +1572,20 @@ class ConfirmActionDialog(QDialog):
 
     def accept(self):
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade.setDuration(180)
+        fade.setDuration(220)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(ConfirmActionDialog, self).accept())
         fade.start()
         self._fade = fade
 
     def reject(self):
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade.setDuration(180)
+        fade.setDuration(220)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(ConfirmActionDialog, self).reject())
         fade.start()
         self._fade = fade
@@ -2022,7 +2094,7 @@ class BaseUrlManagerDialog(QDialog):
         self._opacity_effect.setOpacity(0.0)
         self.setGraphicsEffect(self._opacity_effect)
         self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
-        self._fade_anim.setDuration(200)
+        self._fade_anim.setDuration(220)
         self._fade_anim.setStartValue(0.0)
         self._fade_anim.setEndValue(1.0)
         self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
@@ -2030,6 +2102,26 @@ class BaseUrlManagerDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         self._fade_anim.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        fade.setDuration(220)
+        fade.setStartValue(self._opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(BaseUrlManagerDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        fade.setDuration(220)
+        fade.setStartValue(self._opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(BaseUrlManagerDialog, self).reject())
+        fade.start()
+        self._fade_out = fade
 
     def _update_remove_button(self):
         """Запрещает удалять дефолтные URL"""
@@ -2261,6 +2353,40 @@ class CustomTokenDialog(QDialog):
         main_layout.addWidget(container)
         self.setLayout(main_layout)
 
+        # Плавное появление и закрытие
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity", self)
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity", self)
+        fade.setDuration(220)
+        fade.setStartValue(self.opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(CustomTokenDialog, self).accept())
+        fade.start()
+        self._fade = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity", self)
+        fade.setDuration(220)
+        fade.setStartValue(self.opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(CustomTokenDialog, self).reject())
+        fade.start()
+        self._fade = fade
+
     def toggle_key_visibility(self):
         """Переключает видимость ключа"""
         if self.key_input.echoMode() == QLineEdit.Password:
@@ -2422,9 +2548,10 @@ class UpdateAppDialog(QDialog):
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
         self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_in.setDuration(300)
+        self.fade_in.setDuration(220)
         self.fade_in.setStartValue(0.0)
         self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -2440,9 +2567,10 @@ class UpdateAppDialog(QDialog):
 
     def close_animated(self):
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade.setDuration(200)
+        fade.setDuration(220)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(UpdateAppDialog, self).accept() if self.confirmed else super(UpdateAppDialog, self).reject())
         fade.start()
         self._fade = fade
@@ -2713,7 +2841,7 @@ class ClaudeInstallProgressDialog(QDialog):
         # Появление
         self.setWindowOpacity(0.0)
         self._fade_in = QPropertyAnimation(self, b"windowOpacity")
-        self._fade_in.setDuration(240)
+        self._fade_in.setDuration(220)
         self._fade_in.setStartValue(0.0)
         self._fade_in.setEndValue(1.0)
         self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
@@ -2721,6 +2849,26 @@ class ClaudeInstallProgressDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         self._fade_in.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(220)
+        fade.setStartValue(self.windowOpacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(ClaudeInstallProgressDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(220)
+        fade.setStartValue(self.windowOpacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(ClaudeInstallProgressDialog, self).reject())
+        fade.start()
+        self._fade_out = fade
 
     def mark_finished(self, actual_version=""):
         """Вызывается когда PowerShell закрылся — переключает окно в режим успеха."""
@@ -2972,7 +3120,7 @@ class PathDoneDialog(QDialog):
         # Анимация
         self.setWindowOpacity(0.0)
         self._fade = QPropertyAnimation(self, b"windowOpacity")
-        self._fade.setDuration(240)
+        self._fade.setDuration(220)
         self._fade.setStartValue(0.0)
         self._fade.setEndValue(1.0)
         self._fade.setEasingCurve(QEasingCurve.OutCubic)
@@ -2983,10 +3131,21 @@ class PathDoneDialog(QDialog):
 
     def accept(self):
         fade = QPropertyAnimation(self, b"windowOpacity")
-        fade.setDuration(160)
+        fade.setDuration(220)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(PathDoneDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(PathDoneDialog, self).reject())
         fade.start()
         self._fade_out = fade
 
@@ -3130,13 +3289,34 @@ class DownloadUpdateDialog(QDialog):
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
         self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_in.setDuration(300)
+        self.fade_in.setDuration(220)
         self.fade_in.setStartValue(0.0)
         self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
 
     def showEvent(self, event):
         super().showEvent(event)
         self.fade_in.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(self.opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(DownloadUpdateDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(self.opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(DownloadUpdateDialog, self).reject())
+        fade.start()
+        self._fade_out = fade
 
     def start_download(self):
         threading.Thread(target=self._download_worker, daemon=True).start()
