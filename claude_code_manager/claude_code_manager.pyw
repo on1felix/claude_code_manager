@@ -4,7 +4,7 @@
  Управление Omniroute и Claude Code
 =====================================================
 """
-import sys, subprocess, os, threading, time, json, socket, math, ssl
+import sys, subprocess, os, threading, time, json, socket, math, ssl, random
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "3.4.4"  # Для обновлений
+APP_VERSION = "3.4.5"  # Для обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -44,9 +44,9 @@ def load_settings():
 
                 # Дописываем недостающие поля для совместимости
                 if "custom_base_urls" not in loaded or not loaded.get("custom_base_urls"):
-                    loaded["custom_base_urls"] = ["https://cc.freemodel.dev", "https://api.inferall.ai"]
+                    loaded["custom_base_urls"] = ["https://cc.freemodel.dev"]
                 else:
-                    for u in ["https://cc.freemodel.dev", "https://api.inferall.ai"]:
+                    for u in ["https://cc.freemodel.dev"]:
                         if u not in loaded["custom_base_urls"]:
                             loaded["custom_base_urls"].insert(0, u)
                 if not loaded.get("custom_base_url"):
@@ -66,14 +66,13 @@ def load_settings():
         "custom_api_key": "",
         "custom_base_url": "https://cc.freemodel.dev",
         "custom_base_urls": [
-            "https://cc.freemodel.dev",
-            "https://api.inferall.ai"
+            "https://cc.freemodel.dev"
         ],
         "custom_model": "",
         "custom_endpoint": ""
     }
 
-DEFAULT_BASE_URLS = ["https://cc.freemodel.dev", "https://api.inferall.ai"]
+DEFAULT_BASE_URLS = ["https://cc.freemodel.dev"]
 
 def migrate_settings(settings):
     """Дописывает недостающие поля в старые настройки"""
@@ -830,13 +829,11 @@ class PickerDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)
 
-        self.container = QFrame()
+        self.container = DottedFrame()
         self.container.setObjectName("pickerContainer")
         self.container.setStyleSheet("""
             QFrame#pickerContainer {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.95),
-                    stop:1 rgba(16, 16, 20, 0.95));
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgba(110, 110, 120, 0.7);
                 border-radius: 14px;
             }
@@ -1085,12 +1082,11 @@ class AddModelDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        container = QFrame()
+        container = DottedFrame()
+        container.setObjectName("addModelContainer")
         container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.98),
-                    stop:1 rgba(16, 16, 20, 0.98));
+            QFrame#addModelContainer {
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgb(60, 60, 65);
                 border-radius: 16px;
             }
@@ -1200,12 +1196,11 @@ class ConfirmDeleteDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        container = QFrame()
+        container = DottedFrame()
+        container.setObjectName("confirmDeleteContainer")
         container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.98),
-                    stop:1 rgba(16, 16, 20, 0.98));
+            QFrame#confirmDeleteContainer {
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgb(60, 60, 65);
                 border-radius: 16px;
             }
@@ -1470,12 +1465,11 @@ class ConfirmActionDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        container = QFrame()
+        container = DottedFrame()
+        container.setObjectName("confirmActionContainer")
         container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.98),
-                    stop:1 rgba(16, 16, 20, 0.98));
+            QFrame#confirmActionContainer {
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgb(60, 60, 65);
                 border-radius: 16px;
             }
@@ -1982,7 +1976,7 @@ class _CloseButton(QPushButton):
 
 
 class BaseUrlManagerDialog(QDialog):
-    DEFAULT_URLS = ("https://cc.freemodel.dev", "https://api.inferall.ai")
+    DEFAULT_URLS = ("https://cc.freemodel.dev",)
 
     def __init__(self, urls, current, parent=None):
         super().__init__(parent)
@@ -1995,12 +1989,11 @@ class BaseUrlManagerDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        container = QFrame()
+        container = DottedFrame()
+        container.setObjectName("baseUrlManagerContainer")
         container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.98),
-                    stop:1 rgba(16, 16, 20, 0.98));
+            QFrame#baseUrlManagerContainer {
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgb(60, 60, 65);
                 border-radius: 16px;
             }
@@ -2164,7 +2157,13 @@ class BaseUrlManagerDialog(QDialog):
         self.url_combo.removeItem(idx)
 
     def get_result(self):
-        return list(self.urls), self.current
+        # Берём текущий текст комбобокса, а не закэшированный self.current —
+        # иначе после удаления/переключения возвращался бы устаревший URL,
+        # которого уже нет в списке, и Claude запускался бы с ним.
+        current_text = self.url_combo.currentText().strip()
+        if current_text not in self.urls:
+            current_text = self.urls[0] if self.urls else ""
+        return list(self.urls), current_text
 
 # ============================================================
 # ДИАЛОГ КАСТОМНЫХ НАСТРОЕК ТОКЕНА
@@ -2181,12 +2180,11 @@ class CustomTokenDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        container = QFrame()
+        container = DottedFrame()
+        container.setObjectName("customTokenContainer")
         container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.98),
-                    stop:1 rgba(16, 16, 20, 0.98));
+            QFrame#customTokenContainer {
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgb(60, 60, 65);
                 border-radius: 16px;
             }
@@ -2229,7 +2227,7 @@ class CustomTokenDialog(QDialog):
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
-        self.base_urls = list(settings.get("custom_base_urls", ["https://cc.freemodel.dev", "https://api.inferall.ai"]))
+        self.base_urls = list(settings.get("custom_base_urls", ["https://cc.freemodel.dev"]))
         self.url_combo.addItems(self.base_urls)
         saved_url = settings.get("custom_base_url", self.base_urls[0])
         if saved_url in self.base_urls:
@@ -2444,12 +2442,11 @@ class UpdateAppDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.container = QFrame()
+        self.container = DottedFrame()
+        self.container.setObjectName("updateAppContainer")
         self.container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.98),
-                    stop:1 rgba(16, 16, 20, 0.98));
+            QFrame#updateAppContainer {
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgba(100, 180, 255, 0.6);
                 border-radius: 16px;
             }
@@ -2758,14 +2755,12 @@ class ClaudeInstallProgressDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        container = QFrame()
+        container = DottedFrame()
         container.setObjectName("installContainer")
         r, g, b = self._accent
         container.setStyleSheet(f"""
             QFrame#installContainer {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.98),
-                    stop:1 rgba(16, 16, 20, 0.98));
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgba({r}, {g}, {b}, 0.55);
                 border-radius: 18px;
             }}
@@ -2982,13 +2977,11 @@ class PathDoneDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        container = QFrame()
+        container = DottedFrame()
         container.setObjectName("pathDoneContainer")
         container.setStyleSheet(f"""
             QFrame#pathDoneContainer {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.98),
-                    stop:1 rgba(16, 16, 20, 0.98));
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgba({r}, {g}, {b}, 0.55);
                 border-radius: 18px;
             }}
@@ -3170,12 +3163,11 @@ class DownloadUpdateDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.container = QFrame()
+        self.container = DottedFrame()
+        self.container.setObjectName("downloadUpdateContainer")
         self.container.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(18, 18, 22, 0.96),
-                    stop:1 rgba(16, 16, 20, 0.96));
+            QFrame#downloadUpdateContainer {
+                background-color: rgb(20, 20, 25);
                 border: 2px solid rgba(100, 180, 255, 0.6);
                 border-radius: 16px;
             }
@@ -3477,6 +3469,204 @@ class DownloadUpdateDialog(QDialog):
 # ГЛАВНОЕ ОКНО
 # ============================================================
 
+
+_ICON_SOURCE_CACHE = {"pixmap": None, "tried": False}
+_TINTED_ICON_CACHE = {}
+# Сид сессии — генерируется один раз при запуске, чтобы при каждом старте
+# приложения иконки на фоне ложились в новых позициях, но в пределах
+# одной сессии оставались стабильны (без "прыжков" при resize).
+_PATTERN_SESSION_SEED = random.randint(0, 0xFFFFFFFF)
+
+
+def _load_icon_source_pixmap():
+    """Загружает icon.png один раз и кэширует."""
+    if _ICON_SOURCE_CACHE["tried"]:
+        return _ICON_SOURCE_CACHE["pixmap"]
+    _ICON_SOURCE_CACHE["tried"] = True
+    paths = [
+        os.path.join(os.path.dirname(__file__), "icon.png"),
+        os.path.join(os.path.dirname(sys.executable), "icon.png"),
+        "icon.png",
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            pm = QPixmap(p)
+            if not pm.isNull():
+                _ICON_SOURCE_CACHE["pixmap"] = pm
+                return pm
+    return None
+
+
+def _get_tinted_icon(size, color):
+    """Возвращает кэшированную иконку нужного размера, перекрашенную в `color`
+    (сохраняя альфу оригинала)."""
+    key = (size, color.rgba())
+    if key in _TINTED_ICON_CACHE:
+        return _TINTED_ICON_CACHE[key]
+    src = _load_icon_source_pixmap()
+    if src is None:
+        _TINTED_ICON_CACHE[key] = None
+        return None
+    scaled = src.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    tinted = QPixmap(scaled.size())
+    tinted.fill(Qt.transparent)
+    p = QPainter(tinted)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.fillRect(tinted.rect(), color)
+    p.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    p.drawPixmap(0, 0, scaled)
+    p.end()
+    _TINTED_ICON_CACHE[key] = tinted
+    return tinted
+
+
+def _compute_icon_placements(width, height, icon_size, grid_step, instance_seed):
+    """Считает позиции иконок без пересечений (Poisson-disk rejection sampling).
+
+    Возвращает список `(x, y, rot_deg, scale)`. Использует общий
+    `_PATTERN_SESSION_SEED` + `instance_seed` — поэтому при каждом запуске
+    приложения и для каждого окна расклад уникальный, но в пределах одной
+    сессии стабильный.
+
+    Тяжёлая функция — результат должен быть закэширован вызывающим виджетом
+    (поэтому здесь нет painter'а и QPixmap'а).
+    """
+    step = grid_step
+    pad = step
+    ext_w = width + 2 * pad
+    ext_h = height + 2 * pad
+    target_count = max(1, (ext_w * ext_h) // (step * step))
+
+    rng = random.Random((_PATTERN_SESSION_SEED ^ instance_seed) & 0xFFFFFFFF)
+
+    placements = []
+    # Для быстрой проверки пересечений: каждая запись — (x, y, radius).
+    placed = []
+    max_attempts = 25
+    half_icon = icon_size / 2.0
+
+    for _ in range(target_count):
+        for _attempt in range(max_attempts):
+            x = rng.uniform(-pad, width + pad)
+            y = rng.uniform(-pad, height + pad)
+            scale = rng.uniform(0.75, 1.1)
+            # Радиус ограничивающей окружности иконки с учётом масштаба.
+            # Чуть-чуть уменьшаем (×0.92) — иконка не круглая, лучи можно
+            # подпустить ближе чем строгая окружность позволила бы.
+            r = half_icon * scale * 0.92
+            ok = True
+            for (px, py, pr) in placed:
+                dx = x - px
+                dy = y - py
+                min_d = r + pr
+                if dx * dx + dy * dy < min_d * min_d:
+                    ok = False
+                    break
+            if ok:
+                rot = rng.uniform(0, 360)
+                placements.append((x, y, rot, scale))
+                placed.append((x, y, r))
+                break
+            # rejected — rng уже сдвинулся, следующий attempt возьмёт новые числа
+    return placements
+
+
+def _paint_icon_placements(painter, placements, icon):
+    """Рисует ранее посчитанный список позиций. Быстро, без RNG."""
+    iw = icon.width()
+    ih = icon.height()
+    hx = iw // 2
+    hy = ih // 2
+    for (x, y, rot, scale) in placements:
+        painter.save()
+        painter.translate(x, y)
+        painter.rotate(rot)
+        painter.scale(scale, scale)
+        painter.drawPixmap(-hx, -hy, icon)
+        painter.restore()
+
+
+class DottedBackground(QWidget):
+    """Тёмный фон с разбросанными едва заметными иконками приложения."""
+
+    BASE_COLOR = QColor(20, 20, 25)
+    ICON_COLOR = QColor(38, 38, 46)  # чуть светлее фона
+    ICON_SIZE = 56
+    GRID_STEP = 130
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pattern_seed = random.randint(0, 0xFFFFFFFF)
+        self._cached_size = None
+        self._cached_placements = None
+
+    def _get_placements(self, w, h):
+        key = (w, h)
+        if self._cached_size != key:
+            self._cached_placements = _compute_icon_placements(
+                w, h, self.ICON_SIZE, self.GRID_STEP, self._pattern_seed,
+            )
+            self._cached_size = key
+        return self._cached_placements
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.fillRect(self.rect(), self.BASE_COLOR)
+        icon = _get_tinted_icon(self.ICON_SIZE, self.ICON_COLOR)
+        if icon is None or icon.isNull():
+            return
+        _paint_icon_placements(painter, self._get_placements(self.width(), self.height()), icon)
+
+
+class DottedFrame(QFrame):
+    """QFrame, поверх styled background которого отрисованы иконки приложения.
+    Сохраняет существующий QSS (border, border-radius) и добавляет паттерн внутрь.
+
+    У каждого экземпляра свой `_pattern_seed`, поэтому каждое окно при открытии
+    получает уникальный расклад иконок. Позиции пересчитываются только при
+    изменении размера.
+    """
+
+    ICON_COLOR = QColor(38, 38, 46)
+    ICON_SIZE = 44
+    GRID_STEP = 100
+    MARGIN = 14  # отступ от краёв, чтобы иконки не цеплялись за скруглённый бордер
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pattern_seed = random.randint(0, 0xFFFFFFFF)
+        self._cached_size = None
+        self._cached_placements = None
+
+    def _get_placements(self, w, h):
+        key = (w, h)
+        if self._cached_size != key:
+            self._cached_placements = _compute_icon_placements(
+                w, h, self.ICON_SIZE, self.GRID_STEP, self._pattern_seed,
+            )
+            self._cached_size = key
+        return self._cached_placements
+
+    def paintEvent(self, event):
+        super().paintEvent(event)  # стиль рисует background + border
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        m = self.MARGIN
+        inner_w = max(0, self.width() - m * 2)
+        inner_h = max(0, self.height() - m * 2)
+        if inner_w == 0 or inner_h == 0:
+            return
+        icon = _get_tinted_icon(self.ICON_SIZE, self.ICON_COLOR)
+        if icon is None or icon.isNull():
+            return
+        painter.setClipRect(m, m, inner_w, inner_h)
+        painter.translate(m, m)
+        _paint_icon_placements(painter, self._get_placements(inner_w, inner_h), icon)
+
+
 class ClaudeManager(QMainWindow):
     status_changed = Signal(bool)
     update_available = Signal(dict)  # Новый сигнал для обновлений
@@ -3512,8 +3702,8 @@ class ClaudeManager(QMainWindow):
         self.status_changed.connect(self.update_status)
         self.update_available.connect(self._show_update_notification)
 
-        # Центральный виджет
-        central = QWidget()
+        # Центральный виджет — фон в крапинку
+        central = DottedBackground()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(20, 20, 20, 20)
@@ -4143,7 +4333,7 @@ class ClaudeManager(QMainWindow):
         self.log("Приложение запущено", "info")
         self.log(f"Порт Omniroute: {OMNIROUTE_PORT}", "info")
         self.log("─" * 50, "info")
-        self.log("Для работы с Base URL (freemodel / inferall и др.):", "warning")
+        self.log("Для работы с Base URL (freemodel и др.):", "warning")
         self.log("Если впервые — запустите Claude Code и введите /logout.", "warning")
         self.log("Это нужно сделать только один раз. Даже если вы", "warning")
         self.log("поменяете API ключ — повторно вводить /logout не нужно.", "warning")
