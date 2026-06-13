@@ -16,7 +16,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "3.4.5"  # Для обновлений
+APP_VERSION = "3.5"  # Для обновлений
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -710,12 +710,14 @@ class StyledComboBox(QComboBox):
 class PickerCard(QPushButton):
     """Одна карточка-виджет в окне выбора."""
 
-    def __init__(self, text, color=None, tooltip=None, is_current=False, parent=None):
+    def __init__(self, text, color=None, tooltip=None, is_current=False,
+                 is_disabled=False, parent=None):
         super().__init__(text, parent)
         self.setCursor(Qt.PointingHandCursor)
         self.setFont(QFont("Segoe UI", 10, QFont.Medium))
         self.setMinimumHeight(42)
         self._full_text = text
+        self._is_disabled = is_disabled
         # Тултип показываем только если явно передан (нужен для длинных URL).
         # У пикера моделей tooltip=None — всплывашек быть не должно.
         if tooltip:
@@ -727,14 +729,25 @@ class PickerCard(QPushButton):
         # Цвет текста и целевой цвет рамки — под модель.
         # Если цвета нет (например, у URL) — рамка голубая по умолчанию.
         if color is not None:
-            self._text_color_str = f"rgb({color.red()}, {color.green()}, {color.blue()})"
-            self._hover_rgb = (color.red(), color.green(), color.blue())
+            if is_disabled:
+                # Затемняем цвет, но оставляем красный оттенок различимым
+                r = int(color.red() * 0.55)
+                g = int(color.green() * 0.55)
+                b = int(color.blue() * 0.55)
+                self._text_color_str = f"rgb({r}, {g}, {b})"
+                self._hover_rgb = (r, g, b)
+            else:
+                self._text_color_str = f"rgb({color.red()}, {color.green()}, {color.blue()})"
+                self._hover_rgb = (color.red(), color.green(), color.blue())
         else:
             self._text_color_str = "rgb(220, 220, 220)"
             self._hover_rgb = (60, 140, 200)
 
-        # Постоянный фон одинаков для всех карточек
-        self._bg_str = "rgba(40, 40, 45, 180)"
+        # Постоянный фон одинаков для всех карточек; у заблокированной — темнее
+        if is_disabled:
+            self._bg_str = "rgba(28, 24, 26, 200)"
+        else:
+            self._bg_str = "rgba(40, 40, 45, 180)"
 
         self._is_current = is_current
         # Анимация только рамки
@@ -816,9 +829,10 @@ class PickerDialog(QDialog):
     """Окно выбора со списком карточек (popup, не блокирующее)."""
 
     picked = Signal(str)
+    blockedPicked = Signal(str)
 
     def __init__(self, items, current, parent=None, item_colors=None,
-                 item_tooltips=None, title="Выбор"):
+                 item_tooltips=None, title="Выбор", disabled_items=None):
         super().__init__(parent)
         # Dialog + WindowModal — блокирует родительское окно, не закрывается при клике вне
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
@@ -896,6 +910,8 @@ class PickerDialog(QDialog):
 
         colors = item_colors or {}
         tooltips = item_tooltips or {}
+        disabled = set(disabled_items or ())
+        self._disabled_items = disabled
 
         for item in items:
             card = PickerCard(
@@ -903,6 +919,7 @@ class PickerDialog(QDialog):
                 color=colors.get(item),
                 tooltip=tooltips.get(item),
                 is_current=(item == current),
+                is_disabled=(item in disabled),
             )
             card.clicked.connect(lambda _checked=False, v=item: self._pick(v))
             cards_layout.addWidget(card)
@@ -945,6 +962,10 @@ class PickerDialog(QDialog):
         self._fade_out = fade
 
     def _pick(self, value):
+        if value in getattr(self, "_disabled_items", set()):
+            self.blockedPicked.emit(value)
+            self.close()
+            return
         self.picked.emit(value)
         self.close()
 
@@ -958,20 +979,25 @@ class PickerDialog(QDialog):
 class PickerComboBox(StyledComboBox):
     """ComboBox, который при клике открывает PickerDialog вместо нативного списка."""
 
+    blockedPicked = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pick_colors = {}
         self._pick_tooltips = {}
         self._pick_title = "Выбор"
+        self._pick_disabled = set()
         self._picker_dlg = None
 
-    def set_picker(self, colors=None, tooltips=None, title=None):
+    def set_picker(self, colors=None, tooltips=None, title=None, disabled=None):
         if colors is not None:
             self._pick_colors = colors
         if tooltips is not None:
             self._pick_tooltips = tooltips
         if title:
             self._pick_title = title
+        if disabled is not None:
+            self._pick_disabled = set(disabled)
 
     def showPopup(self):
         # Если уже открыт — игнорируем повторный вызов
@@ -992,8 +1018,10 @@ class PickerComboBox(StyledComboBox):
             item_colors=self._pick_colors,
             item_tooltips=tooltips,
             title=self._pick_title,
+            disabled_items=self._pick_disabled,
         )
         dlg.picked.connect(self._on_picked)
+        dlg.blockedPicked.connect(self.blockedPicked)
         dlg.destroyed.connect(self._on_picker_destroyed)
         self._picker_dlg = dlg
 
@@ -1306,7 +1334,7 @@ class ConfirmDeleteDialog(QDialog):
 # ============================================================
 
 class Fable5WarningDialog(QDialog):
-    """Предупреждение при выборе модели Fable 5."""
+    """Сообщение о блокировке модели Fable 5 правительством США."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
@@ -1321,30 +1349,48 @@ class Fable5WarningDialog(QDialog):
         container.setStyleSheet("""
             QFrame#fable5Container {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(22, 14, 14, 0.98),
-                    stop:1 rgba(18, 12, 12, 0.98));
-                border: 2px solid rgba(235, 90, 90, 0.55);
+                    stop:0 rgba(28, 12, 12, 0.99),
+                    stop:1 rgba(20, 8, 8, 0.99));
+                border: 2px solid rgba(235, 60, 60, 0.75);
                 border-radius: 18px;
             }
         """)
 
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(14)
+        layout.setContentsMargins(32, 26, 32, 26)
+        layout.setSpacing(12)
 
-        # Иконка
-        icon_label = QLabel("🔥")
-        icon_label.setFont(QFont("Segoe UI Emoji", 34))
+        # Верхняя плашка-заголовок
+        top_banner = QLabel("Fable 5 временно недоступна")
+        top_banner.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        top_banner.setStyleSheet("""
+            QLabel {
+                color: rgb(255, 220, 220);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(180, 30, 30, 0.55),
+                    stop:1 rgba(140, 20, 20, 0.55));
+                border: 1px solid rgba(255, 100, 100, 0.45);
+                border-radius: 8px;
+                padding: 7px 12px;
+                letter-spacing: 0.5px;
+            }
+        """)
+        top_banner.setAlignment(Qt.AlignCenter)
+        layout.addWidget(top_banner)
+
+        # Иконка — замок
+        icon_label = QLabel("🔒")
+        icon_label.setFont(QFont("Segoe UI Emoji", 38))
         icon_label.setStyleSheet("background: transparent; border: none;")
         icon_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(icon_label)
 
-        # Заголовок
-        title_label = QLabel("Fable 5 — Модель высшего класса")
-        title_label.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        # Главный заголовок
+        title_label = QLabel("Модель заблокирована\nправительством США")
+        title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title_label.setStyleSheet("""
             QLabel {
-                color: rgb(235, 110, 110);
+                color: rgb(245, 95, 95);
                 background: transparent;
                 border: none;
             }
@@ -1355,26 +1401,26 @@ class Fable5WarningDialog(QDialog):
         # Разделитель
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: rgba(235, 90, 90, 0.25); background: rgba(235, 90, 90, 0.25); border: none; max-height: 1px;")
+        sep.setStyleSheet("color: rgba(235, 60, 60, 0.3); background: rgba(235, 60, 60, 0.3); border: none; max-height: 1px;")
         layout.addWidget(sep)
 
-        # Описание
+        # Основное описание
         desc_label = QLabel(
-            "Один запрос при уровне /effort High может потребовать\n"
-            "до 15% вашего дневного лимита токенов.\n\n"
-            "Fable 5 на среднем уровне /effort (Medium) превосходит\n"
-            "Opus 4.8 на максимальных настройках (xHigh / Max) — разрыв\n"
-            "составляет около 5% в пользу Fable 5.\n\n"
-            "По общей мощности Fable 5 превосходит Opus 4.8\n"
-            "примерно в 2 раза — но и стоит соответственно.\n\n"
-            "Используйте эту модель только тогда, когда другие\n"
-            "уже не справляются — она стоит каждого токена,\n"
-            "но расходует их значительно быстрее."
+            "По официальному заявлению правительства США, доступ\n"
+            "к модели Fable 5 временно приостановлен на территории\n"
+            "всех юрисдикций.\n\n"
+            "Согласно решению, Fable 5 признана настолько мощной,\n"
+            "что — по словам представителей правительства — способна\n"
+            "взломать защищённые системы Пентагона. На этом основании\n"
+            "модель отнесена к технологиям двойного назначения\n"
+            "и временно изъята из публичного оборота.\n\n"
+            "Доступ будет восстановлен после завершения проверки\n"
+            "и установки регулирующих ограничений Anthropic."
         )
         desc_label.setFont(QFont("Segoe UI", 10))
         desc_label.setStyleSheet("""
             QLabel {
-                color: rgba(210, 200, 200, 0.9);
+                color: rgba(225, 205, 205, 0.92);
                 background: transparent;
                 border: none;
             }
@@ -1383,20 +1429,20 @@ class Fable5WarningDialog(QDialog):
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
 
-        # Плашка с датой релиза
-        date_label = QLabel("Выпущена Anthropic · 09 июня 2026")
-        date_label.setFont(QFont("Segoe UI", 9))
-        date_label.setStyleSheet("""
+        # Плашка-источник
+        source_label = QLabel("Источник: официальное заявление правительства США")
+        source_label.setFont(QFont("Segoe UI", 9))
+        source_label.setStyleSheet("""
             QLabel {
-                color: rgba(235, 90, 90, 0.7);
-                background: rgba(235, 90, 90, 0.08);
-                border: 1px solid rgba(235, 90, 90, 0.2);
+                color: rgba(235, 90, 90, 0.85);
+                background: rgba(235, 60, 60, 0.1);
+                border: 1px solid rgba(235, 60, 60, 0.28);
                 border-radius: 6px;
-                padding: 5px 10px;
+                padding: 6px 12px;
             }
         """)
-        date_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(date_label)
+        source_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(source_label)
 
         layout.addSpacing(4)
 
@@ -1404,8 +1450,8 @@ class Fable5WarningDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_ok = GlowDialogButton("Понятно",
-                                  base_rgb=(235, 90, 90),
-                                  hover_rgb=(235, 120, 120))
+                                  base_rgb=(235, 70, 70),
+                                  hover_rgb=(245, 100, 100))
         btn_ok.clicked.connect(self.accept)
         btn_row.addStretch()
         btn_row.addWidget(btn_ok)
@@ -1414,7 +1460,7 @@ class Fable5WarningDialog(QDialog):
 
         main_layout.addWidget(container)
         self.setLayout(main_layout)
-        self.setFixedWidth(420)
+        self.setFixedWidth(450)
 
         # Анимация появления через windowOpacity (не конфликтует с дочерними виджетами)
         self.setWindowOpacity(0.0)
@@ -2157,13 +2203,12 @@ class BaseUrlManagerDialog(QDialog):
         self.url_combo.removeItem(idx)
 
     def get_result(self):
-        # Берём текущий текст комбобокса, а не закэшированный self.current —
-        # иначе после удаления/переключения возвращался бы устаревший URL,
-        # которого уже нет в списке, и Claude запускался бы с ним.
-        current_text = self.url_combo.currentText().strip()
-        if current_text not in self.urls:
-            current_text = self.urls[0] if self.urls else ""
-        return list(self.urls), current_text
+        # Переключение селектора в диалоге игнорируется — возвращаем исходный
+        # выбранный URL. Но если он был удалён, фолбэк на первый из списка,
+        # чтобы Claude не запускался с уже несуществующим URL.
+        if self.current in self.urls:
+            return list(self.urls), self.current
+        return list(self.urls), (self.urls[0] if self.urls else "")
 
 # ============================================================
 # ДИАЛОГ КАСТОМНЫХ НАСТРОЕК ТОКЕНА
@@ -2316,8 +2361,16 @@ class CustomTokenDialog(QDialog):
         for i in range(self.model_combo.count()):
             txt = self.model_combo.itemText(i)
             if txt in _sd_model_colors:
-                self.model_combo.setItemData(i, _sd_model_colors[txt], Qt.ForegroundRole)
+                if txt == "Fable 5":
+                    # Затемнённый красный — модель видно, но она помечена как недоступная
+                    c = _sd_model_colors[txt]
+                    dim = QColor(int(c.red() * 0.55), int(c.green() * 0.55), int(c.blue() * 0.55))
+                    self.model_combo.setItemData(i, dim, Qt.ForegroundRole)
+                else:
+                    self.model_combo.setItemData(i, _sd_model_colors[txt], Qt.ForegroundRole)
             pass
+        # Fable 5 заблокирована правительством США — нельзя выбрать
+        self._fable5_index = models.index("Fable 5") if "Fable 5" in models else -1
         # Маппинг старых сохранённых значений на новые метки
         model_remap = {
             "default (claude-opus-4-8)": "Opus 4.8",
@@ -2330,8 +2383,12 @@ class CustomTokenDialog(QDialog):
         }
         saved_model = settings.get("custom_model", "Opus 4.8")
         saved_model = model_remap.get(saved_model, saved_model)
+        if saved_model == "Fable 5":
+            saved_model = "Opus 4.8"
         if saved_model in models:
             self.model_combo.setCurrentText(saved_model)
+        self._last_valid_model = self.model_combo.currentText()
+        self.model_combo.activated.connect(self._on_model_activated)
         layout.addWidget(self.model_combo)
 
         # Кнопки
@@ -2411,6 +2468,19 @@ class CustomTokenDialog(QDialog):
             self.settings["custom_base_urls"] = list(self.base_urls)
             save_settings(self.settings)
 
+    def _on_model_activated(self, idx):
+        """Блокирует выбор Fable 5 и показывает окно о блокировке."""
+        if idx == self._fable5_index:
+            # Откатываем на предыдущее валидное значение
+            prev = self._last_valid_model if self._last_valid_model != "Fable 5" else "Opus 4.8"
+            self.model_combo.blockSignals(True)
+            self.model_combo.setCurrentText(prev)
+            self.model_combo.blockSignals(False)
+            dlg = Fable5WarningDialog(self)
+            dlg.exec()
+            return
+        self._last_valid_model = self.model_combo.itemText(idx)
+
     def save_settings(self):
         """Сохраняет настройки"""
         api_key = self.key_input.text().strip()
@@ -2418,10 +2488,14 @@ class CustomTokenDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", "API ключ не может быть пустым")
             return
 
+        chosen_model = self.model_combo.currentText()
+        if chosen_model == "Fable 5":
+            chosen_model = "Opus 4.8"
+
         self.settings["custom_api_key"] = api_key
         self.settings["custom_base_url"] = self.url_combo.currentText()
         self.settings["custom_base_urls"] = list(self.base_urls)
-        self.settings["custom_model"] = self.model_combo.currentText()
+        self.settings["custom_model"] = chosen_model
         self.settings["custom_endpoint"] = ""
 
         self.accept()
@@ -4157,7 +4231,9 @@ class ClaudeManager(QMainWindow):
             colors=model_colors,
             tooltips=model_tooltips,
             title="Выбор модели",
+            disabled=["Fable 5"],
         )
+        self.fm_model_combo.blockedPicked.connect(self._fm_show_fable5_blocked)
         saved_m = self.settings.get("custom_model", "Opus 4.8")
         remap = {
             "default (claude-opus-4-8)": "Opus 4.8",
@@ -4169,6 +4245,11 @@ class ClaudeManager(QMainWindow):
             "claude-fable-5": "Fable 5",
         }
         saved_m = remap.get(saved_m, saved_m)
+        # Fable 5 заблокирована — нельзя оставлять её как сохранённую выбранную модель
+        if saved_m == "Fable 5":
+            saved_m = "Opus 4.8"
+            self.settings["custom_model"] = saved_m
+            save_settings(self.settings)
         if saved_m in fm_models:
             self.fm_model_combo.setCurrentText(saved_m)
         # Начальный цвет текста и рамки под выбранную модель
@@ -4586,17 +4667,22 @@ class ClaudeManager(QMainWindow):
 
     def _fm_model_changed(self, new_model):
         """Сохраняет выбранную модель FreeModel"""
+        # Fable 5 заблокирована — её нельзя ни выбрать, ни сохранить
+        if new_model == "Fable 5":
+            return
         if new_model:
             self.settings["custom_model"] = new_model
             save_settings(self.settings)
         if hasattr(self, "fm_model_combo"):
-            if new_model == "Fable 5":
-                dlg = Fable5WarningDialog(self)
-                dlg.exec()
             # Обновить цвет отображаемого текста и рамки под выбранную модель
             if hasattr(self, "_fm_model_colors") and new_model in self._fm_model_colors:
                 self.fm_model_combo.setTextColor(self._fm_model_colors[new_model])
                 self.fm_model_combo.setAccentColor(self._fm_model_colors[new_model])
+
+    def _fm_show_fable5_blocked(self, _model_name):
+        """Показывает окно блокировки Fable 5 при попытке выбора."""
+        dlg = Fable5WarningDialog(self)
+        dlg.exec()
 
     def _fm_toggle_key(self):
         """Показать/скрыть API ключ"""
