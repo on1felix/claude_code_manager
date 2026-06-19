@@ -26,12 +26,153 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.2.2"  # Для обновлений
+APP_VERSION = "5.2.3"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 GITHUB_API_URL = "https://api.github.com/repos/on1felix/claude_code_manager/releases/latest"
+
+# ВСТРОЕННЫЙ status line. Раньше лежал в C:\cc\statusline-command.sh — теперь
+# вшит в .exe, чтобы дистрибутив был самодостаточным. При установке записывается
+# в ~/.claude/statusline-command.sh БИНАРНО (LF, без CR), иначе bash в Git-Bash
+# на Windows падает на шебанге.
+STATUSLINE_SCRIPT = r"""#!/bin/bash
+
+# Читаем JSON из stdin
+input=$(cat)
+
+# Для отладки - сохраняем входные данные
+echo "$input" > /tmp/statusline-debug.json 2>/dev/null || true
+
+# Парсим JSON с помощью grep и sed (без jq)
+model=$(echo "$input" | grep -o '"display_name":"[^"]*"' | head -1 | sed 's/"display_name":"\([^"]*\)"/\1/')
+used_pct=$(echo "$input" | grep -o '"used_percentage":[0-9.]*' | sed 's/"used_percentage"://')
+cwd=$(echo "$input" | grep -o '"current_dir":"[^"]*"' | sed 's/"current_dir":"\([^"]*\)"/\1/' | sed 's/\\\\/\//g')
+session_id=$(echo "$input" | grep -o '"session_id":"[^"]*"' | sed 's/"session_id":"\([^"]*\)"/\1/')
+total_cost=$(echo "$input" | grep -o '"total_cost_usd":[0-9.]*' | sed 's/"total_cost_usd"://')
+transcript_path=$(echo "$input" | grep -o '"transcript_path":"[^"]*"' | sed 's/"transcript_path":"\([^"]*\)"/\1/' | sed 's/\\\\/\//g')
+
+# Получаем только output токены последнего ответа из transcript
+output_tokens=""
+if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
+    last_assistant=$(grep '"type":"assistant"' "$transcript_path" | tail -1)
+    if [ -n "$last_assistant" ]; then
+        output_tokens=$(echo "$last_assistant" | grep -o '"output_tokens":[0-9]*' | head -1 | sed 's/"output_tokens"://')
+    fi
+fi
+
+
+# Значения по умолчанию
+if [ -z "$model" ]; then
+    model="Claude"
+fi
+
+# Получаем git репозиторий
+git_repo=""
+if [ -n "$cwd" ] && [ -d "$cwd/.git" ]; then
+    git_repo=$(cd "$cwd" && git config --get remote.origin.url 2>/dev/null | sed 's/.*github\.com[:/]\(.*\)\.git/\1/' | sed 's/.*github\.com[:/]\(.*\)/\1/')
+fi
+
+# Функция для получения цвета на основе процента (плавный градиент)
+get_color() {
+    local pct=$1
+    local used_int=$(printf "%.0f" "$pct")
+
+    if [ "$used_int" -lt 10 ]; then
+        # 0-9%: ярко-зелёный
+        echo "\033[38;2;0;255;0m"
+    elif [ "$used_int" -lt 20 ]; then
+        # 10-19%: зелёный
+        echo "\033[38;2;50;255;0m"
+    elif [ "$used_int" -lt 30 ]; then
+        # 20-29%: жёлто-зелёный
+        echo "\033[38;2;150;255;0m"
+    elif [ "$used_int" -lt 40 ]; then
+        # 30-39%: лимонный
+        echo "\033[38;2;200;255;0m"
+    elif [ "$used_int" -lt 50 ]; then
+        # 40-49%: жёлто-зелёный
+        echo "\033[38;2;255;255;0m"
+    elif [ "$used_int" -lt 60 ]; then
+        # 50-59%: жёлтый
+        echo "\033[38;2;255;200;0m"
+    elif [ "$used_int" -lt 70 ]; then
+        # 60-69%: оранжевый
+        echo "\033[38;2;255;150;0m"
+    elif [ "$used_int" -lt 80 ]; then
+        # 70-79%: тёмно-оранжевый
+        echo "\033[38;2;255;100;0m"
+    elif [ "$used_int" -lt 90 ]; then
+        # 80-89%: красно-оранжевый
+        echo "\033[38;2;255;50;0m"
+    else
+        # 90-100%: красный
+        echo "\033[38;2;255;0;0m"
+    fi
+}
+
+# Создаем полоску контекста
+context_bar=""
+if [ -n "$used_pct" ]; then
+    # Округляем процент
+    used_int=$(printf "%.0f" "$used_pct")
+
+    # Создаем полоску из 20 сегментов
+    filled=$((used_int / 5))
+    empty=$((20 - filled))
+
+    context_bar="["
+    for ((i=0; i<filled; i++)); do
+        context_bar="${context_bar}="
+    done
+    for ((i=0; i<empty; i++)); do
+        context_bar="${context_bar}-"
+    done
+    context_bar="${context_bar}]"
+fi
+
+# Формируем вывод
+output=""
+
+# Модель (зелёный цвет)
+if [ -n "$model" ]; then
+    output="\033[32m$model\033[0m"
+fi
+
+# Контекст (процент и полоска с цветом в зависимости от процента)
+if [ -n "$used_pct" ]; then
+    used_display=$(printf "%.1f" "$used_pct")
+    color=$(get_color "$used_pct")
+
+    if [ -n "$output" ]; then
+        output="$output | ${color}${used_display}% ${context_bar}\033[0m"
+    else
+        output="${color}${used_display}% ${context_bar}\033[0m"
+    fi
+fi
+
+# Session ID (синий цвет, как у модели)
+if [ -n "$session_id" ]; then
+    short_id=$(echo "$session_id" | cut -c1-8)
+    if [ -n "$output" ]; then
+        output="$output | \033[36m($short_id)\033[0m"
+    else
+        output="\033[36m($short_id)\033[0m"
+    fi
+fi
+
+# Git репозиторий (фиолетовый цвет)
+if [ -n "$git_repo" ]; then
+    if [ -n "$output" ]; then
+        output="$output | \033[35m$git_repo\033[0m"
+    else
+        output="\033[35m$git_repo\033[0m"
+    fi
+fi
+
+echo -e "$output"
+"""
 
 try:
     _ssl_context = ssl.create_default_context()
@@ -3034,6 +3175,435 @@ class ClaudeInstallProgressDialog(QDialog):
 
 
 # ============================================================
+# ПРЕВЬЮ STATUS LINE (мини-имитация терминала)
+# ============================================================
+
+class StatusLinePreview(QFrame):
+    """Маленький чёрный «терминал», в котором нарисован пример того,
+    как будет выглядеть наш status line внизу окна Claude Code."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("statusLinePreview")
+        self.setStyleSheet("""
+            QFrame#statusLinePreview {
+                background-color: rgb(12, 12, 14);
+                border: 1.5px solid rgba(110, 200, 130, 0.35);
+                border-radius: 8px;
+            }
+        """)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(6)
+
+        caption = QLabel("Пример отображения в Claude Code")
+        caption.setFont(QFont("Segoe UI", 8))
+        caption.setStyleSheet("color: rgba(180, 180, 185, 0.65); background: transparent; border: none;")
+        caption.setAlignment(Qt.AlignLeft)
+        lay.addWidget(caption)
+
+        # Стилизованный «текст терминала» через rich-text HTML
+        # Цвета подобраны под реальные ANSI из statusline-command.sh
+        line = QLabel(
+            '<span style="color:#7ED88A;">claude-opus-4-7</span>'
+            '<span style="color:#888;"> | </span>'
+            '<span style="color:#C8E060;">14.2% [====----------------]</span>'
+            '<span style="color:#888;"> | </span>'
+            '<span style="color:#5BC8E0;">(a1b2c3d4)</span>'
+            '<span style="color:#888;"> | </span>'
+            '<span style="color:#C66BD8;">user/project</span>'
+        )
+        line.setFont(QFont("Consolas", 10))
+        line.setStyleSheet("background: transparent; border: none;")
+        line.setTextFormat(Qt.RichText)
+        line.setAlignment(Qt.AlignLeft)
+        lay.addWidget(line)
+
+        # Подпись — что отображается слева направо
+        legend = QLabel("модель  ·  контекст  ·  session ID  ·  git-репозиторий")
+        legend.setFont(QFont("Segoe UI", 8))
+        legend.setStyleSheet("color: rgba(150, 150, 155, 0.55); background: transparent; border: none;")
+        lay.addWidget(legend)
+
+
+# ============================================================
+# ДИАЛОГ ПОДТВЕРЖДЕНИЯ УСТАНОВКИ STATUS LINE
+# ============================================================
+
+class StatusLineInstallDialog(QDialog):
+    """Жёлтое «Внимание» с превью status line. Два режима — свежая установка
+    и замена существующего."""
+    # Коды результата: Accepted = установка, Rejected = отмена, ACTION_REMOVE = удалить
+    ACTION_REMOVE = 2
+
+    def __init__(self, has_existing=False, existing_command="", parent=None):
+        super().__init__(parent)
+        self._has_existing = has_existing
+
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        accent = (245, 200, 80)  # жёлтый
+        r, g, b = accent
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("statusLineInstallContainer")
+        container.setStyleSheet(f"""
+            QFrame#statusLineInstallContainer {{
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgba({r}, {g}, {b}, 0.55);
+                border-radius: 16px;
+            }}
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(14)
+
+        # Иконка-восклицание
+        icon_label = QLabel("!")
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet(f"""
+            QLabel {{
+                color: rgb({r}, {g}, {b});
+                font-size: 28px;
+                font-weight: bold;
+                background: rgba({r}, {g}, {b}, 0.15);
+                border: 2px solid rgba({r}, {g}, {b}, 0.4);
+                border-radius: 25px;
+                min-width: 50px; max-width: 50px;
+                min-height: 50px; max-height: 50px;
+            }}
+        """)
+        ic = QHBoxLayout()
+        ic.addStretch(); ic.addWidget(icon_label); ic.addStretch()
+        layout.addLayout(ic)
+
+        # Заголовок «Внимание» жёлтым
+        title_label = QLabel("Внимание")
+        title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title_label.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
+        )
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+
+        # Единый текст с пометкой текущего состояния
+        if has_existing:
+            state_line = (
+                '<span style="color:#F5C850;"><b>● Сейчас status line установлен.</b></span><br>'
+                "Можно <b>переустановить</b> его (наш скрипт перезапишет твой) "
+                "или <b>удалить</b> — тогда блок <code>statusLine</code> уйдёт "
+                "из <code>~/.claude/settings.json</code>, а файл "
+                "<code>~/.claude/statusline-command.sh</code> будет стёрт.<br><br>"
+            )
+        else:
+            state_line = (
+                '<span style="color:rgba(200,200,205,0.7);">● Сейчас status line не настроен.</span><br>'
+                "Менеджер скопирует <code>statusline-command.sh</code> в "
+                "<code>~/.claude/</code> и пропишет блок <code>statusLine</code> "
+                "в <code>~/.claude/settings.json</code>.<br>"
+                "Кнопка <b>«Удалить»</b> сейчас неактивна — удалять пока нечего.<br><br>"
+            )
+
+        message = (
+            state_line +
+            "Status line — это строка внизу окна Claude Code, в которой видно "
+            "текущую модель, заполненность контекста, ID сессии и git-репозиторий "
+            "рабочей папки. Ниже — как именно он будет выглядеть."
+        )
+
+        message_label = QLabel(message)
+        message_label.setFont(QFont("Segoe UI", 10))
+        message_label.setStyleSheet("color: #B5B5B5; background: transparent; border: none;")
+        message_label.setAlignment(Qt.AlignLeft)
+        message_label.setWordWrap(True)
+        message_label.setTextFormat(Qt.RichText)
+        layout.addWidget(message_label)
+
+        # Если установлен — показываем текущую команду
+        if has_existing and existing_command:
+            existing_label = QLabel(f"Текущая команда:\n{existing_command}")
+            existing_label.setFont(QFont("Consolas", 8))
+            existing_label.setStyleSheet("""
+                QLabel {
+                    color: rgba(220, 180, 100, 0.85);
+                    background: rgba(245, 200, 80, 0.08);
+                    border: 1px dashed rgba(245, 200, 80, 0.35);
+                    border-radius: 6px;
+                    padding: 6px 10px;
+                }
+            """)
+            existing_label.setWordWrap(True)
+            layout.addWidget(existing_label)
+
+        # Превью status line
+        preview = StatusLinePreview()
+        layout.addWidget(preview)
+
+        # Кнопки: Отмена · Удалить · Установить
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+
+        self.cancel_btn = StyledButton("Отмена")
+        self.cancel_btn.setMinimumHeight(40)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+
+        self.remove_btn = StyledButton("Удалить")
+        self.remove_btn.setMinimumHeight(40)
+        self.remove_btn.set_hover_color(235, 90, 90)
+        self.remove_btn.setEnabled(has_existing)
+        self.remove_btn.clicked.connect(lambda: self.done(self.ACTION_REMOVE))
+        btn_layout.addWidget(self.remove_btn)
+
+        self.confirm_btn = GreenButton("Переустановить" if has_existing else "Установить")
+        self.confirm_btn.setMinimumHeight(40)
+        self.confirm_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.confirm_btn)
+
+        layout.addLayout(btn_layout)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.adjustSize()
+        self.setMinimumWidth(500)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        self._fade_out_and(lambda: super(StatusLineInstallDialog, self).accept())
+
+    def reject(self):
+        self._fade_out_and(lambda: super(StatusLineInstallDialog, self).reject())
+
+    def done(self, code):
+        # Поддержка кастомного кода (ACTION_REMOVE) с той же fade-анимацией
+        if code == self.ACTION_REMOVE:
+            self._fade_out_and(lambda: QDialog.done(self, self.ACTION_REMOVE))
+        else:
+            super().done(code)
+
+    def _fade_out_and(self, then):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0); fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(then)
+        fade.start(); self._fade = fade
+
+
+# ============================================================
+# ДИАЛОГ ПРОГРЕССА УСТАНОВКИ STATUS LINE
+# ============================================================
+
+class StatusLineProgressDialog(QDialog):
+    """Окно с анимированным процент-баром: копирование sh-скрипта,
+    запись settings.json. После 100% превращается в окно «Успешно установлено»."""
+    progress_signal = Signal(int)
+    finished_signal = Signal(bool, str)   # ok, error_message
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._done = False
+
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        accent = (120, 200, 130)  # зелёный
+        r, g, b = accent
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("statusLineProgressContainer")
+        container.setStyleSheet(f"""
+            QFrame#statusLineProgressContainer {{
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgba({r}, {g}, {b}, 0.55);
+                border-radius: 16px;
+            }}
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(34, 28, 34, 26)
+        layout.setSpacing(14)
+
+        self.icon_label = QLabel("⌁")
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        self.icon_label.setStyleSheet(f"""
+            QLabel {{
+                color: rgb({r}, {g}, {b});
+                font-size: 26px; font-weight: bold;
+                background: rgba({r}, {g}, {b}, 0.15);
+                border: 2px solid rgba({r}, {g}, {b}, 0.4);
+                border-radius: 25px;
+                min-width: 50px; max-width: 50px;
+                min-height: 50px; max-height: 50px;
+            }}
+        """)
+        ic = QHBoxLayout()
+        ic.addStretch(); ic.addWidget(self.icon_label); ic.addStretch()
+        layout.addLayout(ic)
+
+        self.title_lbl = QLabel("Установка status line")
+        self.title_lbl.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        self.title_lbl.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
+        )
+        self.title_lbl.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.title_lbl)
+
+        self.progress_bar = AnimatedProgressBar("#78C882")
+        layout.addWidget(self.progress_bar)
+
+        self.status_lbl = QLabel("Подготовка…")
+        self.status_lbl.setFont(QFont("Segoe UI", 10))
+        self.status_lbl.setStyleSheet(
+            "color: rgba(210, 210, 215, 0.9); background: transparent; border: none;"
+        )
+        self.status_lbl.setAlignment(Qt.AlignCenter)
+        self.status_lbl.setWordWrap(True)
+        layout.addWidget(self.status_lbl)
+
+        self.btn_ok = GreenButton("Готово")
+        self.btn_ok.setMinimumHeight(38)
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_ok.hide()
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(); btn_row.addWidget(self.btn_ok); btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(420)
+
+        self.progress_signal.connect(self._on_progress)
+        self.finished_signal.connect(self._on_finished)
+
+        # Плавная анимация процентов: тикаем сами, чтобы пользователь видел движение
+        self._target_pct = 0
+        self._pending_success = False
+        self._tick = QTimer(self)
+        self._tick.timeout.connect(self._anim_tick)
+        self._tick.start(20)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        self._tick.stop()
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0); fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(StatusLineProgressDialog, self).accept())
+        fade.start(); self._fade = fade
+
+    def reject(self):
+        self._tick.stop()
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0); fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(StatusLineProgressDialog, self).reject())
+        fade.start(); self._fade = fade
+
+    def set_target(self, pct, status_text=None):
+        self._target_pct = max(0, min(100, pct))
+        if status_text is not None:
+            self.status_lbl.setText(status_text)
+
+    def _anim_tick(self):
+        cur = self.progress_bar._progress
+        if cur < self._target_pct:
+            # Финал — догоняем быстрее, чтобы success-state не показывался при 46%
+            step = 4 if self._target_pct >= 100 else 2
+            cur = min(self._target_pct, cur + step)
+            self.progress_bar.set_progress(cur)
+        # Когда воркер уже завершился и бар добил до 100 — переключаем в success
+        if self._pending_success and cur >= 100:
+            self._pending_success = False
+            self._show_success_state()
+
+    def _on_progress(self, pct):
+        self.set_target(pct)
+
+    def mark_success(self):
+        if self._done: return
+        self._done = True
+        self.set_target(100)
+        # Не по фиксированному таймауту, а по факту: ждём пока бар реально дойдёт до 100
+        self._pending_success = True
+
+    def _show_success_state(self):
+        self._tick.stop()
+        self.icon_label.setText("✓")
+        self.title_lbl.setText("Status line установлен ✓")
+        self.status_lbl.setText(
+            "Скрипт скопирован в ~/.claude/statusline-command.sh,\n"
+            "блок statusLine прописан в ~/.claude/settings.json.\n"
+            "Запусти Claude Code — строка появится внизу окна."
+        )
+        self.btn_ok.show()
+
+    def mark_failed(self, message):
+        if self._done: return
+        self._done = True
+        self._tick.stop()
+        accent = (235, 110, 110)
+        r, g, b = accent
+        self.icon_label.setText("✗")
+        self.icon_label.setStyleSheet(f"""
+            QLabel {{
+                color: rgb({r}, {g}, {b});
+                font-size: 26px; font-weight: bold;
+                background: rgba({r}, {g}, {b}, 0.15);
+                border: 2px solid rgba({r}, {g}, {b}, 0.4);
+                border-radius: 25px;
+                min-width: 50px; max-width: 50px;
+                min-height: 50px; max-height: 50px;
+            }}
+        """)
+        self.title_lbl.setText("Не удалось установить")
+        self.title_lbl.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
+        )
+        self.status_lbl.setText(message or "Неизвестная ошибка")
+        self.btn_ok.show()
+
+    def _on_finished(self, ok, err):
+        if ok:
+            self.mark_success()
+        else:
+            self.mark_failed(err)
+
+
+# ============================================================
 # ОТСЛЕЖИВАНИЕ ЗАВЕРШЕНИЯ ПРОЦЕССА POWERSHELL
 # ============================================================
 
@@ -3694,6 +4264,12 @@ class ClaudeManager(QMainWindow):
         self.btn_uninstall_claude.set_hover_color(235, 90, 90)  # красный hover
         self.btn_uninstall_claude.clicked.connect(self._uninstall_claude_code)
         install_row.addWidget(self.btn_uninstall_claude)
+
+        self.btn_install_statusline = StyledButton("Status line")
+        self.btn_install_statusline.setFixedHeight(34)
+        self.btn_install_statusline.set_hover_color(120, 180, 230)  # нейтральный голубоватый hover
+        self.btn_install_statusline.clicked.connect(self._on_statusline_button_clicked)
+        install_row.addWidget(self.btn_install_statusline)
 
         install_row.addStretch()
         main_layout.addLayout(install_row)
@@ -4976,6 +5552,254 @@ class ClaudeManager(QMainWindow):
                 self.log(f"Claude Code запущен ({model})", "success")
         except Exception as e:
             self.log(f"Ошибка запуска: {e}", "error")
+
+    def _statusline_bash_command(self):
+        """Возвращает строку для поля statusLine.command в settings.json.
+        Принципиально та же конвенция, что и в стандартном клиенте Claude Code:
+        /c/Users/<user>/.claude/statusline-command.sh"""
+        target = os.path.join(os.path.expanduser("~"), ".claude", "statusline-command.sh")
+        # C:\Users\danii\.claude\statusline-command.sh -> /c/Users/danii/.claude/statusline-command.sh
+        target = target.replace("\\", "/")
+        if len(target) >= 2 and target[1] == ":":
+            target = "/" + target[0].lower() + target[2:]
+        return target
+
+    def _read_existing_statusline(self):
+        """Читает текущий блок statusLine из ~/.claude/settings.json. Возвращает
+        (есть_ли, представление_команды_для_показа)."""
+        try:
+            path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+            if not os.path.exists(path):
+                return False, ""
+            with open(path, 'r', encoding='utf-8') as f:
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError:
+                    return False, ""
+            sl = data.get("statusLine")
+            if not isinstance(sl, dict):
+                return False, ""
+            cmd = sl.get("command") or ""
+            if not cmd:
+                return False, ""
+            # Сравниваем с тем, что мы бы поставили — если уже наше,
+            # это всё равно «уже есть» (предупреждаем о замене).
+            return True, cmd
+        except Exception:
+            return False, ""
+
+    def _install_status_line(self):
+        """Совместимость со старыми вызовами: показывает единый диалог."""
+        self._on_statusline_button_clicked()
+
+    def _perform_status_line_install(self):
+        """Записывает встроенный sh-скрипт в ~/.claude/ и прописывает блок statusLine.
+        Показывает только окно прогресса (без подтверждения)."""
+        # Запускаем окно прогресса + фоновый поток
+        progress = StatusLineProgressDialog(parent=self)
+
+        def worker():
+            try:
+                claude_dir = os.path.join(os.path.expanduser("~"), ".claude")
+                os.makedirs(claude_dir, exist_ok=True)
+                dst = os.path.join(claude_dir, "statusline-command.sh")
+                settings_path = os.path.join(claude_dir, "settings.json")
+
+                progress.progress_signal.emit(8)
+                time.sleep(0.15)
+
+                # 1) Пишем sh-скрипт из встроенной константы. ВАЖНО: только LF,
+                #    Git-Bash в Windows падает на шебанге с CRLF.
+                progress.progress_signal.emit(25)
+                script_bytes = STATUSLINE_SCRIPT.replace("\r\n", "\n").encode("utf-8")
+                with open(dst, 'wb') as fdst:
+                    fdst.write(script_bytes)
+                time.sleep(0.2)
+                progress.progress_signal.emit(55)
+
+                # 2) Обновляем settings.json
+                settings = {}
+                if os.path.exists(settings_path):
+                    try:
+                        with open(settings_path, 'r', encoding='utf-8') as f:
+                            settings = json.load(f)
+                            if not isinstance(settings, dict):
+                                settings = {}
+                    except json.JSONDecodeError:
+                        settings = {}
+
+                settings["statusLine"] = {
+                    "type": "command",
+                    "command": self._statusline_bash_command(),
+                }
+                progress.progress_signal.emit(80)
+
+                with open(settings_path, 'w', encoding='utf-8') as f:
+                    json.dump(settings, f, indent=2, ensure_ascii=False)
+
+                time.sleep(0.2)
+                progress.progress_signal.emit(100)
+                progress.finished_signal.emit(True, "")
+                try:
+                    self.log("Status line установлен в ~/.claude/settings.json", "success")
+                except Exception:
+                    pass
+            except Exception as e:
+                progress.finished_signal.emit(False, str(e))
+                try:
+                    self.log(f"Ошибка установки status line: {e}", "error")
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+        progress.exec()
+
+    def _is_status_line_installed(self):
+        """True, если в ~/.claude/settings.json прописан непустой statusLine.command."""
+        has, _ = self._read_existing_statusline()
+        return has
+
+    def _update_statusline_button_state(self):
+        """Заглушка — кнопка теперь всегда называется «Status line»,
+        окно после клика выбирается динамически. Оставлено для совместимости
+        с местами, где этот метод раньше вызывался."""
+        return
+
+    def _on_statusline_button_clicked(self):
+        """Открывает единое окно «Внимание» с тремя кнопками
+        (Отмена · Удалить · Установить/Переустановить).
+        Для переустановки и удаления — мини-подтверждение «вы уверены?»."""
+        has_existing, existing_cmd = self._read_existing_statusline()
+        dlg = StatusLineInstallDialog(
+            has_existing=has_existing,
+            existing_command=existing_cmd,
+            parent=self,
+        )
+        result = dlg.exec()
+
+        if result == QDialog.Accepted:
+            # Переустановка существующего — спрашиваем подтверждение.
+            # Свежая установка — без второго окна, текст уже был наверху.
+            if has_existing:
+                if not self._confirm_statusline_action(
+                    title="Переустановить status line?",
+                    message=(
+                        "Вы действительно хотите переустановить status line? "
+                        "Ваш текущий блок statusLine в ~/.claude/settings.json "
+                        "и файл ~/.claude/statusline-command.sh будут полностью "
+                        "перезаписаны нашей версией. Откатить это нельзя."
+                    ),
+                    detail=existing_cmd or None,
+                    confirm_text="Да, переустановить",
+                    icon="↻",
+                    icon_color=(245, 180, 60),
+                ):
+                    self.log("Переустановка status line отменена", "info")
+                    return
+            self._perform_status_line_install()
+
+        elif result == StatusLineInstallDialog.ACTION_REMOVE:
+            if not self._confirm_statusline_action(
+                title="Удалить status line?",
+                message=(
+                    "Вы действительно хотите удалить status line? "
+                    "Блок statusLine уйдёт из ~/.claude/settings.json, "
+                    "а файл ~/.claude/statusline-command.sh — будет стёрт. "
+                    "Остальные настройки Claude Code останутся как есть."
+                ),
+                detail=existing_cmd or None,
+                confirm_text="Да, удалить",
+                icon="×",
+                icon_color=(235, 90, 90),
+            ):
+                self.log("Удаление status line отменено", "info")
+                return
+            self._perform_status_line_remove()
+
+        else:
+            self.log("Действие со status line отменено", "info")
+
+    def _confirm_statusline_action(self, title, message, detail, confirm_text, icon, icon_color):
+        """Маленькое окно подтверждения «вы действительно хотите…»."""
+        dlg = ConfirmActionDialog(
+            title=title,
+            message=message,
+            detail=detail,
+            confirm_text=confirm_text,
+            icon=icon,
+            icon_color=icon_color,
+            parent=self,
+        )
+        return dlg.exec() == QDialog.Accepted
+
+    def _uninstall_status_line(self):
+        """Совместимость со старыми вызовами."""
+        self._perform_status_line_remove()
+
+    def _perform_status_line_remove(self):
+        """Удаляет блок statusLine из ~/.claude/settings.json и сам sh-скрипт.
+        Без подтверждения — оно уже было в общем окне."""
+        progress = StatusLineProgressDialog(parent=self)
+        progress.title_lbl.setText("Удаление status line")
+        progress.status_lbl.setText("Подготовка…")
+
+        def worker():
+            try:
+                claude_dir = os.path.join(os.path.expanduser("~"), ".claude")
+                settings_path = os.path.join(claude_dir, "settings.json")
+                sh_path = os.path.join(claude_dir, "statusline-command.sh")
+
+                progress.progress_signal.emit(10)
+                time.sleep(0.12)
+
+                # 1) Выпиливаем statusLine из settings.json
+                if os.path.exists(settings_path):
+                    try:
+                        with open(settings_path, 'r', encoding='utf-8') as f:
+                            settings = json.load(f)
+                        if not isinstance(settings, dict):
+                            settings = {}
+                    except json.JSONDecodeError:
+                        settings = {}
+                    if "statusLine" in settings:
+                        del settings["statusLine"]
+                        with open(settings_path, 'w', encoding='utf-8') as f:
+                            json.dump(settings, f, indent=2, ensure_ascii=False)
+                progress.progress_signal.emit(60)
+                time.sleep(0.15)
+
+                # 2) Удаляем sh-скрипт
+                if os.path.exists(sh_path):
+                    try:
+                        os.remove(sh_path)
+                    except Exception:
+                        pass
+                progress.progress_signal.emit(100)
+                progress.finished_signal.emit(True, "")
+                try:
+                    self.log("Status line удалён из ~/.claude/settings.json", "success")
+                except Exception:
+                    pass
+            except Exception as e:
+                progress.finished_signal.emit(False, str(e))
+                try:
+                    self.log(f"Ошибка удаления status line: {e}", "error")
+                except Exception:
+                    pass
+
+        # Подменяем тексты success/failed под удаление
+        orig_show_success = progress._show_success_state
+        def _show_success_uninstall():
+            orig_show_success()
+            progress.title_lbl.setText("Status line удалён ✓")
+            progress.status_lbl.setText(
+                "Блок statusLine удалён из ~/.claude/settings.json,\n"
+                "файл ~/.claude/statusline-command.sh стёрт."
+            )
+        progress._show_success_state = _show_success_uninstall
+
+        threading.Thread(target=worker, daemon=True).start()
+        progress.exec()
 
     def _install_claude_code(self):
         """Устанавливает/переустанавливает Claude Code v{REQUIRED_CLAUDE_VERSION} через npm в PowerShell"""
