@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.1.1"  # Для обновлений
+APP_VERSION = "5.2"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -609,6 +609,16 @@ class StyledComboBox(QComboBox):
         self._accent_color = None  # (r,g,b) — если задан, рамка всегда окрашена в этот цвет
         self.setMouseTracking(True)
         self.setCursor(Qt.PointingHandCursor)
+        # Колесо мыши НЕ должно перебирать пункты, когда юзер просто наводит курсор
+        # на комбобокс и крутит скролл главного окна — иначе случайно меняется модель/URL/effort.
+        # Поставим политику фокуса StrongFocus, чтобы комбо не реагировал на wheel без клика.
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event):
+        # Игнорируем колесо мыши, чтобы случайный скролл не менял выбранный пункт.
+        # event.ignore() пробрасывает событие дальше — родительский ScrollArea/окно
+        # сможет проскроллиться нормально.
+        event.ignore()
 
         self.setStyleSheet("""
             QComboBox {
