@@ -16,7 +16,8 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "3.5"  # Для обновлений
+APP_VERSION = "5.0"  # Для обновлений
+REQUIRED_CLAUDE_VERSION = "2.1.178"  # Жёстко фиксированная версия Claude Code, которая работает со сторонними base url
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -1581,15 +1582,15 @@ class ConfirmActionDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        btn_no = RedButton("Отмена")
-        btn_no.setMinimumHeight(40)
-        btn_no.clicked.connect(self.reject)
-        btn_layout.addWidget(btn_no)
+        self.cancel_btn = RedButton("Отмена")
+        self.cancel_btn.setMinimumHeight(40)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
 
-        btn_yes = GreenButton(confirm_text)
-        btn_yes.setMinimumHeight(40)
-        btn_yes.clicked.connect(self.accept)
-        btn_layout.addWidget(btn_yes)
+        self.confirm_btn = GreenButton(confirm_text)
+        self.confirm_btn.setMinimumHeight(40)
+        self.confirm_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.confirm_btn)
 
         layout.addLayout(btn_layout)
 
@@ -2968,8 +2969,8 @@ class ClaudeInstallProgressDialog(QDialog):
                 self.sub_lbl.setText("")
             self.status_lbl.setText(
                 "Установка завершена успешно.\n"
-                "Если команда claude не найдена — нажмите\n"
-                "«Добавить в PATH» в главном окне."
+                "Если команда claude не найдена — открой новое окно консоли\n"
+                "(npm обычно сам прописывает её в PATH)."
             )
         self.btn_ok.show()
 
@@ -3034,188 +3035,6 @@ class _ProcessWaiter(QObject):
 # ============================================================
 # МОДАЛЬНОЕ ОКНО РЕЗУЛЬТАТА ДОБАВЛЕНИЯ В PATH
 # ============================================================
-
-class PathDoneDialog(QDialog):
-    """Показывает результат операции добавления в PATH."""
-    def __init__(self, added, skipped, error="", parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setWindowModality(Qt.ApplicationModal)
-
-        success = not error and (added or skipped)
-        accent = (100, 200, 130) if success else (235, 90, 90)
-        r, g, b = accent
-        icon = "✓" if success else "✕"
-
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
-
-        container = DottedFrame()
-        container.setObjectName("pathDoneContainer")
-        container.setStyleSheet(f"""
-            QFrame#pathDoneContainer {{
-                background-color: rgb(20, 20, 25);
-                border: 2px solid rgba({r}, {g}, {b}, 0.55);
-                border-radius: 18px;
-            }}
-        """)
-
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(32, 26, 32, 26)
-        layout.setSpacing(12)
-
-        # Иконка
-        icon_lbl = QLabel(icon)
-        icon_lbl.setFont(QFont("Segoe UI", 30, QFont.Bold))
-        icon_lbl.setStyleSheet(
-            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
-        )
-        icon_lbl.setAlignment(Qt.AlignCenter)
-        layout.addWidget(icon_lbl)
-
-        # Заголовок
-        title_lbl = QLabel("PATH обновлён" if success else "Ошибка обновления PATH")
-        title_lbl.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        title_lbl.setStyleSheet(
-            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
-        )
-        title_lbl.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_lbl)
-
-        # Разделитель
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet(
-            f"background: rgba({r}, {g}, {b}, 0.2); border: none; max-height: 1px;"
-        )
-        layout.addWidget(sep)
-
-        if error:
-            err_lbl = QLabel(f"Не удалось обновить PATH:\n{error}")
-            err_lbl.setFont(QFont("Segoe UI", 9))
-            err_lbl.setStyleSheet(
-                "color: rgba(210,200,200,0.9); background: transparent; border: none;"
-            )
-            err_lbl.setAlignment(Qt.AlignCenter)
-            err_lbl.setWordWrap(True)
-            layout.addWidget(err_lbl)
-        else:
-            if added:
-                added_lbl = QLabel("Добавлено в PATH:")
-                added_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
-                added_lbl.setStyleSheet(
-                    "color: rgb(100,200,130); background: transparent; border: none;"
-                )
-                added_lbl.setAlignment(Qt.AlignCenter)
-                layout.addWidget(added_lbl)
-                for p in added:
-                    pl = QLabel(p)
-                    pl.setFont(QFont("Consolas", 8))
-                    pl.setStyleSheet("""
-                        QLabel {
-                            color: rgba(200,220,200,0.85);
-                            background: rgba(100,200,130,0.07);
-                            border: 1px solid rgba(100,200,130,0.2);
-                            border-radius: 4px;
-                            padding: 4px 8px;
-                        }
-                    """)
-                    pl.setAlignment(Qt.AlignCenter)
-                    pl.setWordWrap(True)
-                    layout.addWidget(pl)
-
-            if skipped:
-                skip_lbl = QLabel("Уже был в PATH:")
-                skip_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
-                skip_lbl.setStyleSheet(
-                    "color: rgba(180,180,190,0.7); background: transparent; border: none;"
-                )
-                skip_lbl.setAlignment(Qt.AlignCenter)
-                layout.addWidget(skip_lbl)
-                for p in skipped:
-                    pl = QLabel(p)
-                    pl.setFont(QFont("Consolas", 8))
-                    pl.setStyleSheet("""
-                        QLabel {
-                            color: rgba(180,180,190,0.65);
-                            background: rgba(120,120,130,0.07);
-                            border: 1px solid rgba(120,120,130,0.2);
-                            border-radius: 4px;
-                            padding: 4px 8px;
-                        }
-                    """)
-                    pl.setAlignment(Qt.AlignCenter)
-                    pl.setWordWrap(True)
-                    layout.addWidget(pl)
-
-            if success and added:
-                hint_lbl = QLabel(
-                    "Откройте новое окно консоли или IDE,\n"
-                    "чтобы изменения вступили в силу."
-                )
-                hint_lbl.setFont(QFont("Segoe UI", 9))
-                hint_lbl.setStyleSheet(
-                    "color: rgba(180,180,190,0.7); background: transparent; border: none;"
-                )
-                hint_lbl.setAlignment(Qt.AlignCenter)
-                layout.addWidget(hint_lbl)
-
-        layout.addSpacing(4)
-
-        # Кнопка
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_ok = GlowDialogButton("Понятно", base_rgb=accent,
-                                  hover_rgb=tuple(min(255, c + 30) for c in accent))
-        btn_ok.clicked.connect(self.accept)
-        btn_row.addWidget(btn_ok)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        main_layout.addWidget(container)
-        self.setLayout(main_layout)
-        self.setFixedWidth(400)
-
-        # Тень
-        shadow = QGraphicsDropShadowEffect(container)
-        shadow.setBlurRadius(40)
-        shadow.setOffset(0, 8)
-        shadow.setColor(QColor(0, 0, 0, 160))
-        container.setGraphicsEffect(shadow)
-
-        # Анимация
-        self.setWindowOpacity(0.0)
-        self._fade = QPropertyAnimation(self, b"windowOpacity")
-        self._fade.setDuration(220)
-        self._fade.setStartValue(0.0)
-        self._fade.setEndValue(1.0)
-        self._fade.setEasingCurve(QEasingCurve.OutCubic)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._fade.start()
-
-    def accept(self):
-        fade = QPropertyAnimation(self, b"windowOpacity")
-        fade.setDuration(220)
-        fade.setStartValue(1.0)
-        fade.setEndValue(0.0)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(lambda: super(PathDoneDialog, self).accept())
-        fade.start()
-        self._fade_out = fade
-
-    def reject(self):
-        fade = QPropertyAnimation(self, b"windowOpacity")
-        fade.setDuration(220)
-        fade.setStartValue(1.0)
-        fade.setEndValue(0.0)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(lambda: super(PathDoneDialog, self).reject())
-        fade.start()
-        self._fade_out = fade
-
 
 class DownloadUpdateDialog(QDialog):
     progress_updated = Signal(int, float, float)
@@ -3744,7 +3563,6 @@ class DottedFrame(QFrame):
 class ClaudeManager(QMainWindow):
     status_changed = Signal(bool)
     update_available = Signal(dict)  # Новый сигнал для обновлений
-    path_add_finished = Signal(list, list, str)  # added, skipped, error
     claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
     claude_install_finished = Signal(object)  # context dict
 
@@ -3842,19 +3660,20 @@ class ClaudeManager(QMainWindow):
         mode_row.addStretch()
         main_layout.addLayout(mode_row)
 
-        # Ряд кнопок установки Claude Code и добавления в PATH
+        # Ряд кнопок: установка фиксированной версии Claude Code + удаление
         install_row = QHBoxLayout()
         install_row.addStretch()
 
-        self.btn_install_claude = StyledButton("Установить Claude Code")
+        self.btn_install_claude = StyledButton(f"Установить Claude Code v{REQUIRED_CLAUDE_VERSION}")
         self.btn_install_claude.setFixedHeight(34)
         self.btn_install_claude.clicked.connect(self._install_claude_code)
         install_row.addWidget(self.btn_install_claude)
 
-        self.btn_add_to_path = StyledButton("Добавить в PATH")
-        self.btn_add_to_path.setFixedHeight(34)
-        self.btn_add_to_path.clicked.connect(self._add_npm_to_path)
-        install_row.addWidget(self.btn_add_to_path)
+        self.btn_uninstall_claude = StyledButton("Удалить Claude Code")
+        self.btn_uninstall_claude.setFixedHeight(34)
+        self.btn_uninstall_claude.set_hover_color(235, 90, 90)  # красный hover
+        self.btn_uninstall_claude.clicked.connect(self._uninstall_claude_code)
+        install_row.addWidget(self.btn_uninstall_claude)
 
         install_row.addStretch()
         main_layout.addLayout(install_row)
@@ -4258,6 +4077,37 @@ class ClaudeManager(QMainWindow):
             self.fm_model_combo.setAccentColor(model_colors[saved_m])
         self.fm_model_combo.currentTextChanged.connect(self._fm_model_changed)
         model_row.addWidget(self.fm_model_combo, 1)
+
+        # Effort selector для FreeModel (без отдельного лейбла — сам комбобокс показывает уровень)
+        self.fm_effort_combo = PickerComboBox()
+        self.fm_effort_combo.setFont(QFont("Segoe UI", 9))
+        fm_efforts = ["low", "medium", "high", "xhigh", "max"]
+        self.fm_effort_combo.addItems(fm_efforts)
+        saved_fm_effort = self.settings.get("reasoning_effort", "high")
+        if saved_fm_effort in fm_efforts:
+            self.fm_effort_combo.setCurrentText(saved_fm_effort)
+        else:
+            self.fm_effort_combo.setCurrentText("high")
+        self.fm_effort_combo.setMaxVisibleItems(5)
+        fm_effort_colors = {
+            "low": QColor(120, 220, 120),
+            "medium": QColor(180, 210, 130),
+            "high": QColor(235, 180, 110),
+            "xhigh": QColor(235, 150, 130),
+            "max": QColor(235, 90, 90),
+        }
+        self._fm_effort_colors = fm_effort_colors
+        self.fm_effort_combo.set_picker(
+            colors=fm_effort_colors,
+            title="Reasoning Effort"
+        )
+        # Начальный цвет текста и рамки под выбранный effort
+        if saved_fm_effort in fm_effort_colors:
+            self.fm_effort_combo.setTextColor(fm_effort_colors[saved_fm_effort])
+            self.fm_effort_combo.setAccentColor(fm_effort_colors[saved_fm_effort])
+        self.fm_effort_combo.currentTextChanged.connect(self._on_effort_changed)
+        model_row.addWidget(self.fm_effort_combo, 0)
+
         freemodel_layout.addLayout(model_row)
 
         # Скрытая кнопка для совместимости со старым кодом
@@ -4397,12 +4247,26 @@ class ClaudeManager(QMainWindow):
         # Стартовая проверка состояния кнопки Установить Claude
         self._update_install_button_state()
 
-        # Периодическая проверка (на случай если поставили вручную)
-        self._install_check_timer = QTimer(self)
-        self._install_check_timer.timeout.connect(self._update_install_button_state)
-        self._install_check_timer.start(5000)
+        # Тихо чиним installMethod в ~/.claude.json (native → global), чтобы
+        # Claude Code при запуске не ругался на отсутствующий ~/.local/bin/claude.exe
+        try:
+            self._fix_claude_install_method()
+        except Exception:
+            pass
 
-        # Запуск фоновой проверки версии Claude (сразу + раз в час)
+        # Подпись текущего бинарника (путь + mtime + size) — чтобы дёшево детектить
+        # внешнюю установку/обновление/удаление без ежесекундного запуска `claude --version`
+        self._claude_binary_signature = self._compute_claude_binary_signature()
+        self._version_check_running = False
+
+        # Периодическая проверка (на случай если поставили вручную):
+        # обновляем UI + смотрим, не поменялся ли бинарь — если да, перечитываем версию
+        self._install_check_timer = QTimer(self)
+        self._install_check_timer.timeout.connect(self._poll_claude_binary)
+        self._install_check_timer.start(3000)
+
+        # Стартовая фоновая проверка версии + редкий backstop раз в час
+        # (на случай если бинарь подменили без изменения mtime — крайне маловероятно)
         threading.Thread(target=self._check_claude_version, daemon=True).start()
         self._claude_version_timer = QTimer(self)
         self._claude_version_timer.timeout.connect(
@@ -4421,6 +4285,27 @@ class ClaudeManager(QMainWindow):
         self.log("Приложение автоматически подставит ключ и Base URL.", "warning")
         self.log("─" * 50, "info")
         self.check_status_async()
+
+        # Проверка наличия Node.js/npm — если нет, показываем окно с прямой ссылкой
+        # на скачивание. Через singleShot, чтобы UI успел полностью отрисоваться.
+        QTimer.singleShot(400, self._check_nodejs_on_startup)
+
+    def _check_nodejs_on_startup(self):
+        """Однократная проверка npm при старте. Если npm нет — показывает окно
+        со ссылкой на nodejs.org. Срабатывает не чаще одного раза за сессию."""
+        if getattr(self, "_node_missing_shown", False):
+            return
+        try:
+            if self._is_npm_installed():
+                return
+        except Exception:
+            return
+        self._node_missing_shown = True
+        self.log("Node.js (npm) не найден — открываю окно с инструкцией", "warning")
+        try:
+            self._show_npm_missing_dialog()
+        except Exception:
+            pass
 
     def log(self, message, level="info"):
         """Добавляет сообщение в консоль с цветовым форматированием"""
@@ -4684,6 +4569,19 @@ class ClaudeManager(QMainWindow):
         dlg = Fable5WarningDialog(self)
         dlg.exec()
 
+    def _on_effort_changed(self, effort):
+        """Сохраняет выбранный reasoning effort, пишет в ~/.claude/settings.json и обновляет цвет рамки"""
+        self.settings["reasoning_effort"] = effort
+        save_settings(self.settings)
+        # Сразу прописываем в настройки самого Claude Code (поле effortLevel)
+        self._write_claude_effort_setting(effort)
+        self.log(f"Reasoning effort изменён на: {effort}", "info")
+
+        if hasattr(self, "fm_effort_combo") and hasattr(self, "_fm_effort_colors"):
+            if effort in self._fm_effort_colors:
+                self.fm_effort_combo.setTextColor(self._fm_effort_colors[effort])
+                self.fm_effort_combo.setAccentColor(self._fm_effort_colors[effort])
+
     def _fm_toggle_key(self):
         """Показать/скрыть API ключ"""
         if self.fm_key_input.echoMode() == QLineEdit.Password:
@@ -4890,8 +4788,64 @@ class ClaudeManager(QMainWindow):
         except Exception as e:
             self.log(f"Не удалось записать модель в настройки Claude: {e}", "warning")
 
+    def _fix_claude_install_method(self):
+        """Если в ~/.claude.json стоит installMethod=native (остаток install.ps1),
+        меняем на global. Иначе Claude Code при запуске ругается
+        'claude command at ~/.local/bin/claude.exe missing or broken'."""
+        try:
+            path = os.path.join(os.path.expanduser("~"), ".claude.json")
+            if not os.path.exists(path):
+                return
+            with open(path, 'r', encoding='utf-8') as f:
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError:
+                    return
+            if data.get("installMethod") == "native":
+                data["installMethod"] = "global"
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                try:
+                    self.log("installMethod в ~/.claude.json: native → global", "info")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _write_claude_effort_setting(self, effort):
+        """Записывает reasoning effort в ~/.claude/settings.json (поле effortLevel)"""
+        if effort not in ("low", "medium", "high", "xhigh", "max"):
+            return
+        try:
+            claude_dir = os.path.join(os.path.expanduser("~"), ".claude")
+            os.makedirs(claude_dir, exist_ok=True)
+            claude_settings_path = os.path.join(claude_dir, "settings.json")
+            claude_settings = {}
+            if os.path.exists(claude_settings_path):
+                with open(claude_settings_path, 'r', encoding='utf-8') as f:
+                    try:
+                        claude_settings = json.load(f)
+                    except json.JSONDecodeError:
+                        claude_settings = {}
+            claude_settings["effortLevel"] = effort
+            with open(claude_settings_path, 'w', encoding='utf-8') as f:
+                json.dump(claude_settings, f, indent=2)
+        except Exception as e:
+            self.log(f"Не удалось записать effort в настройки Claude: {e}", "warning")
+
     def launch_claude(self):
         """Запускает Claude Code с выбранной моделью"""
+        # Жёсткая проверка: установленная версия не должна быть выше REQUIRED_CLAUDE_VERSION
+        local = self._get_installed_claude_version() or getattr(self, "_claude_local_version", "")
+        if local:
+            try:
+                cmp = compare_versions(local, REQUIRED_CLAUDE_VERSION)
+            except Exception:
+                cmp = 0
+            if cmp > 0:
+                self._show_version_block_dialog(local)
+                return
+
         model = self.model_combo.currentText()
 
         # Рабочая директория
@@ -4925,6 +4879,16 @@ class ClaudeManager(QMainWindow):
         # Устанавливаем переменные окружения и запускаем
         env = os.environ.copy()
 
+        # Reasoning effort — пишем во все три места (CLI флаг, env var, settings.json),
+        # потому что у settings.json есть баг с потерей "max" и схема режет верхние уровни.
+        # --effort на CLI перебивает всё и работает даже при багах конфига.
+        effort = self.settings.get("reasoning_effort", "high")
+        if effort not in ("low", "medium", "high", "xhigh", "max"):
+            effort = "high"
+        env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
+        self._write_claude_effort_setting(effort)
+        effort_flag = f" --effort {effort}"
+
         if use_custom:
             # Кастомные настройки (BaseURL)
             custom_api_key = self.settings.get("custom_api_key", "")
@@ -4951,8 +4915,9 @@ class ClaudeManager(QMainWindow):
             cli_cmd = "claude"
             if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
                 cli_cmd += f" --model {model_id}"
+            cli_cmd += effort_flag
 
-            self.log(f"Используется кастомный токен для {custom_base_url}", "info")
+            self.log(f"Используется кастомный токен для {custom_base_url} (effort={effort})", "info")
         else:
             # Обычные настройки через Omniroute
             env["ANTHROPIC_BASE_URL"] = "http://localhost:20128/v1"
@@ -4963,8 +4928,8 @@ class ClaudeManager(QMainWindow):
             env["ANTHROPIC_MODEL"] = model
             env["ANTHROPIC_SMALL_FAST_MODEL"] = model
 
-            # Форсируем модель через --model, чтобы старые чаты не переключались
-            cli_cmd = f"claude --model {model}"
+            # Форсируем модель через --model + effort, чтобы старые чаты не переключались
+            cli_cmd = f"claude --model {model}{effort_flag}"
 
         try:
             subprocess.Popen(
@@ -4983,52 +4948,85 @@ class ClaudeManager(QMainWindow):
             self.log(f"Ошибка запуска: {e}", "error")
 
     def _install_claude_code(self):
-        """Запускает официальный скрипт установки/обновления Claude Code от Anthropic в PowerShell"""
+        """Устанавливает/переустанавливает Claude Code v{REQUIRED_CLAUDE_VERSION} через npm в PowerShell"""
         installed = self._is_claude_installed()
         local = getattr(self, "_claude_local_version", "")
-        latest = getattr(self, "_claude_latest_version", "")
-        is_update = False
-        if installed and local and latest:
-            try:
-                is_update = compare_versions(latest, local) > 0
-            except Exception:
-                is_update = False
+        required = REQUIRED_CLAUDE_VERSION
 
-        if is_update:
-            dlg = ConfirmActionDialog(
-                title=f"Обновление Claude Code до v{latest}",
-                message=f"Будет запущен официальный скрипт от Anthropic для обновления "
-                        f"с v{local} до v{latest}. Твои настройки в %USERPROFILE%\\.claude "
-                        "не пострадают.",
-                detail="irm https://claude.ai/install.ps1 | iex",
-                confirm_text="Обновить",
-                icon="↑",
-                icon_color=(245, 180, 60),  # жёлто-оранжевый
-                parent=self
+        # Определяем сценарий: install / downgrade / reinstall
+        needs_change = True
+        is_update = False
+        is_downgrade = False
+        if installed and local:
+            try:
+                cmp = compare_versions(local, required)
+            except Exception:
+                cmp = 0
+            if cmp == 0:
+                needs_change = False
+            elif cmp > 0:
+                is_downgrade = True
+            else:
+                is_update = True
+
+        if not needs_change:
+            self.log(f"Claude Code v{required} уже установлен", "info")
+            return
+
+        if is_downgrade:
+            title = f"Откат Claude Code до v{required}"
+            message = (
+                f"У тебя установлена v{local}. Новые версии Claude Code блокируют сторонние "
+                f"Base URL и API ключи, поэтому для работы приложения нужна именно v{required}.\n\n"
+                "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude "
+                "не пострадают."
             )
+            confirm_text = "Откатить"
+            icon = "↓"
+            icon_color = (235, 150, 90)
+        elif is_update:
+            title = f"Установка Claude Code v{required}"
+            message = (
+                f"У тебя установлена v{local}. Будет установлена фиксированная v{required}, "
+                "с которой работает это приложение."
+            )
+            confirm_text = "Установить"
+            icon = "↑"
+            icon_color = (245, 180, 60)
         else:
-            dlg = ConfirmActionDialog(
-                title="Установка Claude Code",
-                message="Будет запущен официальный скрипт установки Claude Code от Anthropic. "
-                        "Откроется окно PowerShell, где пойдёт установка.",
-                detail="irm https://claude.ai/install.ps1 | iex",
-                confirm_text="Установить",
-                icon="↓",
-                icon_color=(120, 200, 130),  # зелёный
-                parent=self
+            title = f"Установка Claude Code v{required}"
+            message = (
+                f"Будет установлена фиксированная версия v{required} через npm.\n\n"
+                "Откроется окно PowerShell, где пойдёт установка."
             )
+            confirm_text = "Установить"
+            icon = "↓"
+            icon_color = (120, 200, 130)
+
+        dlg = ConfirmActionDialog(
+            title=title,
+            message=message,
+            detail=f"npm install -g @anthropic-ai/claude-code@{required}",
+            confirm_text=confirm_text,
+            icon=icon,
+            icon_color=icon_color,
+            parent=self
+        )
         if dlg.exec() != QDialog.Accepted:
             self.log("Операция отменена", "info")
             return
 
-        action_word = "обновление" if is_update else "установку"
-        self.log(f"Запускаю {action_word} Claude Code в окне PowerShell...", "info")
+        if not self._is_npm_installed():
+            self._show_npm_missing_dialog()
+            return
 
-        # Открываем модальное окно прогресса
+        action_word = "переустановку" if installed else "установку"
+        self.log(f"Запускаю {action_word} Claude Code v{required} через npm...", "info")
+
         progress_dlg = ClaudeInstallProgressDialog(
-            is_update=is_update,
+            is_update=installed,
             old_version=local,
-            new_version=latest,
+            new_version=required,
             parent=self,
         )
         self._claude_install_dlg = progress_dlg
@@ -5036,10 +5034,25 @@ class ClaudeManager(QMainWindow):
         try:
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                "Write-Host 'Установка Claude Code (официальный скрипт Anthropic)...' -ForegroundColor Cyan; "
-                "try { irm https://claude.ai/install.ps1 | iex } catch { Write-Host $_ -ForegroundColor Red }; "
+                # 1) Прибить все запущенные claude.exe — иначе файл залочен и npm падает с EBUSY
+                "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
+                "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 600; "
+                # 2) Снести старую установку через install.ps1 (живёт в ~/.local/bin и ~/.claude/local) —
+                #    иначе её битый shim перехватывает команду 'claude' в PATH
+                "Write-Host 'Удаляю старую установку Claude Code (install.ps1)...' -ForegroundColor Cyan; "
+                "$localBin = Join-Path $env:USERPROFILE '.local\\bin'; "
+                "if (Test-Path $localBin) { "
+                "  Get-ChildItem $localBin -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue; "
+                "} "
+                "$claudeLocal = Join-Path $env:USERPROFILE '.claude\\local'; "
+                "if (Test-Path $claudeLocal) { "
+                "  Remove-Item -Recurse -Force $claudeLocal -ErrorAction SilentlyContinue; "
+                "} "
+                # 3) Установка через npm
+                f"Write-Host 'Установка Claude Code v{required} через npm...' -ForegroundColor Cyan; "
+                f"npm install -g @anthropic-ai/claude-code@{required}; "
                 "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
-                "Write-Host 'Если команда не найдена — нажми Добавить в PATH в приложении.' -ForegroundColor Yellow; "
                 "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
@@ -5136,6 +5149,13 @@ class ClaudeManager(QMainWindow):
         if new_local:
             self._claude_local_version = new_local
 
+        # После npm-установки чиним installMethod, иначе Claude всё ещё думает
+        # что он "native" и ищет ~/.local/bin/claude.exe
+        try:
+            self._fix_claude_install_method()
+        except Exception:
+            pass
+
         if dlg_alive:
             try:
                 if is_update:
@@ -5162,6 +5182,153 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
 
+    def _show_version_block_dialog(self, current_version):
+        """Показывает окно блокировки запуска: установленная версия Claude Code слишком новая."""
+        required = REQUIRED_CLAUDE_VERSION
+        message = (
+            f"У тебя установлена Claude Code v{current_version}, "
+            f"а приложение работает только с v{required}.\n\n"
+            f"В версиях выше v{required} Anthropic заблокировала использование сторонних "
+            "Base URL и API ключей — запросы уходят только в официальный сервис Anthropic. "
+            "Поэтому через FreeModel / Omniroute / любые прокси такая версия CLI работать не будет.\n\n"
+            f"Нажми «Откатить» — npm переустановит CLI на v{required}, и запуск снова заработает."
+        )
+        dlg = ConfirmActionDialog(
+            title="Запуск заблокирован",
+            message=message,
+            detail=f"npm install -g @anthropic-ai/claude-code@{required}",
+            confirm_text=f"Откатить до v{required}",
+            icon="!",
+            icon_color=(235, 90, 90),
+            parent=self
+        )
+        self.log(
+            f"Запуск заблокирован: установлена v{current_version}, требуется v{required}",
+            "warning"
+        )
+        if dlg.exec() == QDialog.Accepted:
+            self._install_claude_code()
+
+    def _is_npm_installed(self):
+        """True если в системе есть npm (нужен для установки Claude Code).
+        На Windows npm — это npm.cmd, поэтому ищем через PATHEXT вручную и
+        также пробуем shell=True как фолбэк."""
+        # 1) Прямой поиск исполняемого файла через PATH + PATHEXT
+        try:
+            import shutil
+            if shutil.which("npm"):
+                return True
+            for name in ("npm.cmd", "npm.exe", "npm.bat", "npm"):
+                if shutil.which(name):
+                    return True
+        except Exception:
+            pass
+
+        # 2) Фолбэк: запуск через shell (на Windows .cmd резолвится только так)
+        try:
+            result = subprocess.run(
+                "npm --version",
+                shell=True,
+                capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _is_winget_available(self):
+        """True если в системе есть winget (встроен в Windows 10 1809+ и Windows 11)."""
+        try:
+            import shutil
+            if shutil.which("winget"):
+                return True
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                "winget --version",
+                shell=True, capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+            return r.returncode == 0
+        except Exception:
+            return False
+
+    def _show_npm_missing_dialog(self):
+        """Сообщает пользователю что нужен Node.js / npm. Если в системе есть
+        winget — предлагает поставить Node.js LTS прямо в PowerShell. Иначе —
+        fallback на открытие официальной страницы скачивания."""
+        download_url = "https://nodejs.org/en/download"
+        has_winget = self._is_winget_available()
+
+        if has_winget:
+            message = (
+                "В системе не найден npm — он входит в состав Node.js. "
+                "Без npm Claude Code установить нельзя.\n\n"
+                "Нажми «Установить Node.js» — откроется окно PowerShell, "
+                "в котором winget автоматически скачает и поставит Node.js LTS "
+                "с официального источника (OpenJS.NodeJS.LTS).\n\n"
+                "После окончания установки закрой и заново открой это приложение, "
+                "чтобы оно увидело npm в обновлённом PATH."
+            )
+            detail = "winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements"
+            confirm_text = "Установить Node.js"
+        else:
+            message = (
+                "В системе не найден npm — он входит в состав Node.js. "
+                "Без npm Claude Code установить нельзя.\n\n"
+                "На твоей системе нет winget, поэтому установить автоматически не получится. "
+                "Нажми «Скачать Node.js» — откроется официальная страница "
+                "nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, "
+                "поставь его и перезапусти это приложение."
+            )
+            detail = download_url
+            confirm_text = "Скачать Node.js"
+
+        dlg = ConfirmActionDialog(
+            title="Нужен Node.js (npm)",
+            message=message,
+            detail=detail,
+            confirm_text=confirm_text,
+            icon="!",
+            icon_color=(235, 180, 110),
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        if has_winget:
+            self._install_nodejs_via_winget()
+        else:
+            try:
+                import webbrowser
+                webbrowser.open(download_url)
+                self.log(f"Открыта страница скачивания Node.js: {download_url}", "info")
+            except Exception as e:
+                self.log(f"Не удалось открыть браузер: {e}", "warning")
+
+    def _install_nodejs_via_winget(self):
+        """Запускает PowerShell с winget install OpenJS.NodeJS.LTS — пользователь
+        видит весь процесс. После завершения окно ждёт нажатия клавиши."""
+        self.log("Запускаю установку Node.js LTS через winget...", "info")
+        try:
+            subprocess.Popen([
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                "Write-Host 'Устанавливаю Node.js LTS через winget...' -ForegroundColor Cyan; "
+                "Write-Host 'Источник: OpenJS.NodeJS.LTS (winget по умолчанию берёт официальный пакет с nodejs.org)' -ForegroundColor DarkGray; "
+                "winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements; "
+                "if ($LASTEXITCODE -eq 0) { "
+                "  Write-Host '`nNode.js установлен. Перезапусти Claude Code Manager, чтобы он подхватил npm в PATH.' -ForegroundColor Green; "
+                "} else { "
+                "  Write-Host '`nУстановка завершилась с ошибкой. Код выхода:' $LASTEXITCODE -ForegroundColor Yellow; "
+                "  Write-Host 'Можно поставить вручную с https://nodejs.org/en/download' -ForegroundColor Yellow; "
+                "} "
+                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+            ])
+        except Exception as e:
+            self.log(f"Не удалось запустить установку Node.js: {e}", "error")
+
     def _detect_claude_install_dirs(self):
         """Возвращает список существующих папок где может лежать claude"""
         candidates = [
@@ -5179,39 +5346,56 @@ class ClaudeManager(QMainWindow):
         return False
 
     def _update_install_button_state(self):
-        """Обновляет кнопку и индикатор по состоянию (установлен / не установлен / есть обновление)"""
+        """Обновляет кнопки и индикатор по состоянию (нет / нужная версия / другая версия)"""
         installed = self._is_claude_installed()
         local = getattr(self, "_claude_local_version", "")
-        latest = getattr(self, "_claude_latest_version", "")
-        latest_date = getattr(self, "_claude_latest_date", "")
+        required = REQUIRED_CLAUDE_VERSION
 
-        update_available = False
-        if installed and local and latest:
+        version_match = False
+        version_higher = False
+        version_unknown = installed and not local  # бинарь есть, но версию ещё не успели прочитать
+        if installed and local:
             try:
-                update_available = compare_versions(latest, local) > 0
+                cmp = compare_versions(local, required)
             except Exception:
-                update_available = False
+                cmp = 0
+            version_match = (cmp == 0)
+            version_higher = (cmp > 0)
 
         if hasattr(self, "btn_install_claude"):
             if not installed:
                 self.btn_install_claude.setEnabled(True)
-                self.btn_install_claude.setText("Установить Claude Code")
-                self.btn_install_claude.set_hover_color(80, 200, 110)  # зелёный
-            elif update_available:
-                self.btn_install_claude.setEnabled(True)
-                self.btn_install_claude.setText("Обновить Claude Code")
-                self.btn_install_claude.set_hover_color(245, 180, 60)  # жёлто-оранжевый
-            else:
+                self.btn_install_claude.setText(f"Установить Claude Code v{required}")
+                self.btn_install_claude.set_hover_color(80, 200, 110)
+            elif version_unknown:
+                # Не знаем версию — не показываем «установлен», ждём перепроверки
                 self.btn_install_claude.setEnabled(False)
-                self.btn_install_claude.setText("Claude Code установлен")
+                self.btn_install_claude.setText("Проверка версии…")
+            elif version_match:
+                self.btn_install_claude.setEnabled(False)
+                self.btn_install_claude.setText(f"Claude Code v{required} установлен")
+            elif version_higher:
+                self.btn_install_claude.setEnabled(True)
+                self.btn_install_claude.setText(f"Откатить до v{required}")
+                self.btn_install_claude.set_hover_color(235, 150, 90)
+            else:
+                self.btn_install_claude.setEnabled(True)
+                self.btn_install_claude.setText(f"Установить v{required}")
+                self.btn_install_claude.set_hover_color(245, 180, 60)
+
+        if hasattr(self, "btn_uninstall_claude"):
+            self.btn_uninstall_claude.setEnabled(installed)
 
         if hasattr(self, "claude_install_indicator"):
             if not installed:
                 self.claude_install_indicator.set_state("off")
-            elif update_available:
+            elif version_unknown:
+                # Нейтральное «проверяю» — не зелёный, не красный
                 self.claude_install_indicator.set_state("warn")
-            else:
+            elif version_match:
                 self.claude_install_indicator.set_state("on")
+            else:
+                self.claude_install_indicator.set_state("warn")
 
         if hasattr(self, "claude_install_status_label"):
             if not installed:
@@ -5219,18 +5403,29 @@ class ClaudeManager(QMainWindow):
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(220, 120, 120); background: transparent; border: none;"
                 )
-            elif update_available:
+            elif version_unknown:
+                self.claude_install_status_label.setText("Проверяю версию…")
+                self.claude_install_status_label.setStyleSheet(
+                    "color: rgb(180, 180, 190); background: transparent; border: none;"
+                )
+            elif version_match:
+                self.claude_install_status_label.setText(f"Установлен v{local}")
+                self.claude_install_status_label.setStyleSheet(
+                    "color: rgb(120, 220, 140); background: transparent; border: none;"
+                )
+            elif version_higher:
                 self.claude_install_status_label.setText(
-                    f"Доступно обновление: v{local} → v{latest}"
+                    f"Установлен v{local} — нужна v{required} (запуск заблокирован)"
+                )
+                self.claude_install_status_label.setStyleSheet(
+                    "color: rgb(235, 150, 90); background: transparent; border: none;"
+                )
+            else:
+                self.claude_install_status_label.setText(
+                    f"Установлен v{local} → нужна v{required}"
                 )
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(245, 180, 60); background: transparent; border: none;"
-                )
-            else:
-                version_part = f" v{local}" if local else ""
-                self.claude_install_status_label.setText(f"Установлен{version_part}")
-                self.claude_install_status_label.setStyleSheet(
-                    "color: rgb(120, 220, 140); background: transparent; border: none;"
                 )
 
     def _format_date(self, iso_date):
@@ -5270,29 +5465,55 @@ class ClaudeManager(QMainWindow):
         except Exception:
             return ""
 
+    def _compute_claude_binary_signature(self):
+        """Сигнатура установленного claude (путь + mtime + size). Меняется при
+        любой внешней установке/обновлении/удалении — без вызова subprocess."""
+        parts = []
+        for d in self._detect_claude_install_dirs():
+            for name in ("claude.exe", "claude.cmd", "claude.bat", "claude"):
+                p = os.path.join(d, name)
+                try:
+                    st = os.stat(p)
+                    parts.append((p, int(st.st_mtime), st.st_size))
+                except (FileNotFoundError, OSError):
+                    continue
+        return tuple(parts)
+
+    def _poll_claude_binary(self):
+        """Тикает раз в N секунд: если бинарь claude поменялся снаружи приложения —
+        моментально перечитываем версию и обновляем кнопки. Иначе только UI-апдейт."""
+        try:
+            sig = self._compute_claude_binary_signature()
+        except Exception:
+            sig = ()
+        prev = getattr(self, "_claude_binary_signature", None)
+        if sig != prev:
+            self._claude_binary_signature = sig
+            # КРИТИЧНО: бинарь сменился — кэш версии устарел. Чистим, чтобы UI не
+            # показывал зелёный «v2.1.178 установлен» по старому значению, пока
+            # фоновая перепроверка не отработает.
+            self._claude_local_version = ""
+            if not getattr(self, "_version_check_running", False):
+                threading.Thread(target=self._check_claude_version, daemon=True).start()
+        self._update_install_button_state()
+
     def _check_claude_version(self):
-        """Фоновая проверка локальной и актуальной версии Claude Code"""
-        local = self._get_installed_claude_version()
-        latest = ""
-        latest_date = ""
+        """Фоновая проверка локальной версии Claude Code. Целевая версия всегда жёстко зафиксирована."""
+        if getattr(self, "_version_check_running", False):
+            return
+        self._version_check_running = True
         try:
-            req = Request(
-                "https://registry.npmjs.org/@anthropic-ai/claude-code",
-                headers={"Accept": "application/vnd.npm.install-v1+json, application/json",
-                         "User-Agent": "ClaudeCodeManager"}
-            )
-            ctx = ssl.create_default_context()
-            with urlopen(req, timeout=8, context=ctx) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="replace"))
-            latest = data.get("dist-tags", {}).get("latest", "") or ""
-            if latest:
-                latest_date = (data.get("time", {}) or {}).get(latest, "") or ""
-        except Exception:
-            pass
-        try:
-            self.claude_version_checked.emit(local, latest, latest_date)
-        except Exception:
-            pass
+            local = self._get_installed_claude_version()
+            try:
+                self._claude_binary_signature = self._compute_claude_binary_signature()
+            except Exception:
+                pass
+            try:
+                self.claude_version_checked.emit(local, REQUIRED_CLAUDE_VERSION, "")
+            except Exception:
+                pass
+        finally:
+            self._version_check_running = False
 
     def _on_claude_version_checked(self, local, latest, latest_date):
         """Получили результат проверки версии из фонового потока"""
@@ -5301,122 +5522,97 @@ class ClaudeManager(QMainWindow):
         self._claude_latest_date = latest_date
         self._update_install_button_state()
 
-    def _add_npm_to_path(self):
-        """Добавляет существующие папки с claude в пользовательский PATH (полностью внутри приложения)"""
-        existing = self._detect_claude_install_dirs()
-
-        if not existing:
-            self.log("Не найдены папки с claude. Сначала установите Claude Code.", "warning")
+    def _uninstall_claude_code(self):
+        """Удаляет Claude Code через npm uninstall с подтверждением"""
+        if not self._is_claude_installed():
+            self.log("Claude Code не установлен", "info")
             return
 
-        # Подтверждение
-        paths_str = "\n".join(existing)
+        local = getattr(self, "_claude_local_version", "") or self._get_installed_claude_version()
+        version_part = f" v{local}" if local else ""
+
         dlg = ConfirmActionDialog(
-            title="Добавить в PATH",
-            message="Следующие пути будут добавлены в пользовательский PATH Windows, "
-                    "чтобы команда claude была доступна из любого места.",
-            detail=paths_str,
-            confirm_text="Добавить",
+            title="Удалить Claude Code",
+            message=(
+                f"Будет удалён глобальный npm-пакет Claude Code{version_part}. "
+                "Настройки в %USERPROFILE%\\.claude не пострадают — удалится только бинарь."
+            ),
+            detail="npm uninstall -g @anthropic-ai/claude-code",
+            confirm_text="Удалить",
+            icon="×",
+            icon_color=(235, 90, 90),
             parent=self
         )
         if dlg.exec() != QDialog.Accepted:
-            self.log("Добавление в PATH отменено", "info")
+            self.log("Удаление отменено", "info")
             return
 
-        # Блокируем кнопку и запускаем спиннер
-        self.btn_add_to_path.setEnabled(False)
-        self._path_spinner_phase = 0
-        self._path_spinner_timer = QTimer(self)
-        self._path_spinner_timer.timeout.connect(self._tick_path_spinner)
-        self._path_spinner_timer.start(80)
+        if not self._is_npm_installed():
+            self._show_npm_missing_dialog()
+            return
 
-        # Подключаем сигнал завершения один раз
-        if not getattr(self, "_path_signal_connected", False):
-            self.path_add_finished.connect(self._finish_add_to_path)
-            self._path_signal_connected = True
-
-        # Запускаем работу в фоне чтобы UI не зависал
-        threading.Thread(target=self._do_add_to_path, args=(existing,), daemon=True).start()
-
-    def _tick_path_spinner(self):
-        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        self._path_spinner_phase = (self._path_spinner_phase + 1) % len(frames)
-        self.btn_add_to_path.setText(f"{frames[self._path_spinner_phase]}  Обновление PATH...")
-
-    def _do_add_to_path(self, paths_to_add):
-        """Фоновая работа: правка реестра HKCU\\Environment\\Path + broadcast WM_SETTINGCHANGE"""
-        added, skipped, error = [], [], ""
+        self.log("Запускаю удаление Claude Code через npm...", "info")
         try:
-            import winreg, ctypes
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,
-                                winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
-                try:
-                    current, vtype = winreg.QueryValueEx(key, "Path")
-                except FileNotFoundError:
-                    current, vtype = "", winreg.REG_EXPAND_SZ
-
-                existing_norm = {p.strip().rstrip("\\").lower()
-                                 for p in current.split(";") if p.strip()}
-                new_value = current
-                for p in paths_to_add:
-                    if p.strip().rstrip("\\").lower() in existing_norm:
-                        skipped.append(p)
-                        continue
-                    if new_value and not new_value.endswith(";"):
-                        new_value += ";"
-                    new_value += p
-                    added.append(p)
-                    existing_norm.add(p.strip().rstrip("\\").lower())
-
-                if added:
-                    winreg.SetValueEx(key, "Path", 0, vtype, new_value)
-
-            if added:
-                try:
-                    HWND_BROADCAST = 0xFFFF
-                    WM_SETTINGCHANGE = 0x001A
-                    SMTO_ABORTIFHUNG = 0x0002
-                    result = ctypes.c_ulong()
-                    ctypes.windll.user32.SendMessageTimeoutW(
-                        HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-                        ctypes.c_wchar_p("Environment"),
-                        SMTO_ABORTIFHUNG, 3000, ctypes.byref(result)
-                    )
-                except Exception:
-                    # Не критично — PATH уже записан
-                    pass
+            subprocess.Popen([
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                # 1) Прибить все запущенные claude.exe / node, держащие бинарь — иначе npm падает с EBUSY
+                "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
+                "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 600; "
+                # 2) Основная попытка удаления npm-версии
+                "Write-Host 'Удаление Claude Code (npm)...' -ForegroundColor Cyan; "
+                "npm uninstall -g @anthropic-ai/claude-code; "
+                # 3) Если файл всё ещё залочен и остался — повторная попытка после паузы
+                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@anthropic-ai\\claude-code'; "
+                "if (Test-Path $npmDir) { "
+                "  Write-Host '`nПовторная попытка (файл был залочен)...' -ForegroundColor Yellow; "
+                "  Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "  Start-Sleep -Seconds 2; "
+                "  npm uninstall -g @anthropic-ai/claude-code; "
+                "} "
+                "if (Test-Path $npmDir) { "
+                "  Write-Host '`nNPM не смог удалить — удаляю папку напрямую...' -ForegroundColor Yellow; "
+                "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
+                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
+                # 4) Снести установку через install.ps1 (~/.local/bin + ~/.claude/local)
+                "Write-Host '`nУдаление Claude Code (install.ps1)...' -ForegroundColor Cyan; "
+                "$localBin = Join-Path $env:USERPROFILE '.local\\bin'; "
+                "if (Test-Path $localBin) { "
+                "  Get-ChildItem $localBin -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue; "
+                "} "
+                "$claudeLocal = Join-Path $env:USERPROFILE '.claude\\local'; "
+                "if (Test-Path $claudeLocal) { "
+                "  Remove-Item -Recurse -Force $claudeLocal -ErrorAction SilentlyContinue; "
+                "} "
+                # 5) Финальная проверка
+                "$leftNpm = Test-Path $npmDir; "
+                "$leftLocal = (Test-Path $claudeLocal) -or (Test-Path (Join-Path $localBin 'claude.exe')); "
+                "if ($leftNpm -or $leftLocal) { "
+                "  Write-Host '`nНе всё удалось удалить — закрой все окна Claude Code и попробуй снова.' -ForegroundColor Red; "
+                "} else { "
+                "  Write-Host '`nClaude Code полностью удалён.' -ForegroundColor Green; "
+                "} "
+                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+            ])
         except Exception as e:
-            error = str(e) or repr(e) or "unknown error"
+            self.log(f"Не удалось запустить удаление: {e}", "error")
+            return
 
-        # Возвращаемся в UI-поток через сигнал (потокобезопасно)
-        try:
-            self.path_add_finished.emit(added, skipped, error)
-        except Exception:
-            pass
+        # Через несколько секунд обновим состояние кнопок/индикаторов
+        def _refresh_after_delay():
+            try:
+                time.sleep(2.0)
+                self.claude_version_checked.emit(
+                    self._get_installed_claude_version(),
+                    REQUIRED_CLAUDE_VERSION,
+                    ""
+                )
+            except Exception:
+                pass
 
-    def _finish_add_to_path(self, added, skipped, error):
-        if getattr(self, "_path_spinner_timer", None):
-            self._path_spinner_timer.stop()
-            self._path_spinner_timer = None
-        self.btn_add_to_path.setText("Добавить в PATH")
-        self.btn_add_to_path.setEnabled(True)
-
-        # Лог в консоль
-        if error:
-            self.log(f"Не удалось обновить PATH: {error}", "error")
-        else:
-            for p in added:
-                self.log(f"Добавлено в PATH: {p}", "success")
-            for p in skipped:
-                self.log(f"Уже было в PATH: {p}", "info")
-            if added:
-                self.log("PATH обновлён. Перезапусти открытые терминалы, чтобы изменения подхватились.", "warning")
-            else:
-                self.log("Нечего добавлять — все пути уже были в PATH", "info")
-
-        # Модальное окно результата
-        dlg = PathDoneDialog(added=added, skipped=skipped, error=error, parent=self)
-        dlg.exec()
+        threading.Thread(target=_refresh_after_delay, daemon=True).start()
 
     def add_model(self):
         """Добавляет новую модель"""
