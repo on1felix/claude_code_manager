@@ -2,8 +2,18 @@
 =====================================================
  Claude Code Manager — PySide6 Edition
  Управление Omniroute и Claude Code
+-----------------------------------------------------
+ Автор / Author: on1felix
+   Discord:  on1felix
+   GitHub:   https://github.com/on1felix/claude_code_manager
+ © 2026 on1felix. Приватная утилита, без публичной лицензии.
 =====================================================
 """
+
+# Контакты автора (используются в логах при старте и в футере)
+AUTHOR_NAME = "on1felix"
+AUTHOR_DISCORD = "on1felix"
+AUTHOR_GITHUB = "https://github.com/on1felix/claude_code_manager"
 import sys, subprocess, os, threading, time, json, socket, math, ssl, random
 from pathlib import Path
 from urllib.request import urlopen, Request
@@ -16,8 +26,8 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.0"  # Для обновлений
-REQUIRED_CLAUDE_VERSION = "2.1.178"  # Жёстко фиксированная версия Claude Code, которая работает со сторонними base url
+APP_VERSION = "5.1.1"  # Для обновлений
+REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -4223,10 +4233,18 @@ class ClaudeManager(QMainWindow):
         main_layout.addStretch(1)
 
         # Футер
-        footer = QLabel("© 2026 Claude Code Manager v" + APP_VERSION)
+        footer = QLabel(
+            f"© 2026 Claude Code Manager v{APP_VERSION}   ·   "
+            f"by {AUTHOR_NAME}   ·   Discord: {AUTHOR_DISCORD}"
+        )
         footer.setFont(QFont("Segoe UI", 8))
         footer.setAlignment(Qt.AlignCenter)
         footer.setStyleSheet("color: rgb(100, 100, 100);")
+        footer.setToolTip(
+            f"Автор: {AUTHOR_NAME}\n"
+            f"Discord: {AUTHOR_DISCORD}\n"
+            f"GitHub: {AUTHOR_GITHUB}"
+        )
         main_layout.addWidget(footer)
 
         # Стиль окна
@@ -4277,6 +4295,8 @@ class ClaudeManager(QMainWindow):
         # Первая проверка
         self.log("Приложение запущено", "info")
         self.log(f"Порт Omniroute: {OMNIROUTE_PORT}", "info")
+        self.log(f"Автор: {AUTHOR_NAME}  ·  Discord: {AUTHOR_DISCORD}", "info")
+        self.log(f"GitHub: {AUTHOR_GITHUB}", "info")
         self.log("─" * 50, "info")
         self.log("Для работы с Base URL (freemodel и др.):", "warning")
         self.log("Если впервые — запустите Claude Code и введите /logout.", "warning")
@@ -4976,8 +4996,11 @@ class ClaudeManager(QMainWindow):
         if is_downgrade:
             title = f"Откат Claude Code до v{required}"
             message = (
-                f"У тебя установлена v{local}. Новые версии Claude Code блокируют сторонние "
-                f"Base URL и API ключи, поэтому для работы приложения нужна именно v{required}.\n\n"
+                f"У тебя установлена v{local}. v{required} — последняя стабильная версия, "
+                f"на которой приложение проверено целиком. Более новые версии могут работать "
+                f"нестабильно или вовсе не запускаться, а начиная с v2.1.181 Anthropic "
+                f"заблокировала сторонние Base URL и API ключи — все запросы уходят только "
+                f"в официальный сервис Anthropic, и FreeModel / Omniroute / прокси не работают.\n\n"
                 "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude "
                 "не пострадают."
             )
@@ -4987,8 +5010,9 @@ class ClaudeManager(QMainWindow):
         elif is_update:
             title = f"Установка Claude Code v{required}"
             message = (
-                f"У тебя установлена v{local}. Будет установлена фиксированная v{required}, "
-                "с которой работает это приложение."
+                f"У тебя установлена v{local}. Будет установлена фиксированная v{required} — "
+                "последняя стабильная версия, с которой это приложение работает гарантированно. "
+                "Более новые версии могут работать нестабильно или совсем не запускаться."
             )
             confirm_text = "Установить"
             icon = "↑"
@@ -4996,7 +5020,10 @@ class ClaudeManager(QMainWindow):
         else:
             title = f"Установка Claude Code v{required}"
             message = (
-                f"Будет установлена фиксированная версия v{required} через npm.\n\n"
+                f"Будет установлена фиксированная версия v{required} через npm — "
+                "последняя стабильная, на которой проверено это приложение. "
+                "Более новые версии могут работать нестабильно или вовсе не запускаться, "
+                "а версии с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.\n\n"
                 "Откроется окно PowerShell, где пойдёт установка."
             )
             confirm_text = "Установить"
@@ -5188,9 +5215,11 @@ class ClaudeManager(QMainWindow):
         message = (
             f"У тебя установлена Claude Code v{current_version}, "
             f"а приложение работает только с v{required}.\n\n"
-            f"В версиях выше v{required} Anthropic заблокировала использование сторонних "
-            "Base URL и API ключей — запросы уходят только в официальный сервис Anthropic. "
-            "Поэтому через FreeModel / Omniroute / любые прокси такая версия CLI работать не будет.\n\n"
+            f"v{required} — последняя стабильная версия, на которой это приложение проверено целиком. "
+            "Более новые версии могут работать нестабильно или вовсе не запускаться.\n\n"
+            "Кроме того, начиная с v2.1.181 Anthropic заблокировала использование сторонних "
+            "Base URL и API ключей — запросы уходят только в официальный сервис Anthropic, "
+            "поэтому через FreeModel / Omniroute / любые прокси такая версия CLI работать не будет.\n\n"
             f"Нажми «Откатить» — npm переустановит CLI на v{required}, и запуск снова заработает."
         )
         dlg = ConfirmActionDialog(
@@ -5490,7 +5519,7 @@ class ClaudeManager(QMainWindow):
         if sig != prev:
             self._claude_binary_signature = sig
             # КРИТИЧНО: бинарь сменился — кэш версии устарел. Чистим, чтобы UI не
-            # показывал зелёный «v2.1.178 установлен» по старому значению, пока
+            # показывал зелёный «v2.1.173 установлен» по старому значению, пока
             # фоновая перепроверка не отработает.
             self._claude_local_version = ""
             if not getattr(self, "_version_check_running", False):
@@ -5521,6 +5550,53 @@ class ClaudeManager(QMainWindow):
         self._claude_latest_version = latest
         self._claude_latest_date = latest_date
         self._update_install_button_state()
+        # Если установлена версия НИЖЕ требуемой — предупреждаем (раз за сессию)
+        try:
+            self._maybe_warn_outdated_version()
+        except Exception:
+            pass
+
+    def _maybe_warn_outdated_version(self):
+        """Если установленная версия Claude Code меньше REQUIRED_CLAUDE_VERSION,
+        показывает окно с рекомендацией обновиться. Срабатывает один раз за
+        сессию (флаг _outdated_warning_shown)."""
+        if getattr(self, "_outdated_warning_shown", False):
+            return
+        local = getattr(self, "_claude_local_version", "") or ""
+        if not local:
+            return
+        required = REQUIRED_CLAUDE_VERSION
+        try:
+            cmp = compare_versions(local, required)
+        except Exception:
+            return
+        if cmp >= 0:
+            return  # либо ровно required, либо выше — там своя логика блокировки
+
+        self._outdated_warning_shown = True
+        self.log(
+            f"Установлена устаревшая Claude Code v{local} — рекомендуется обновить до v{required}",
+            "warning"
+        )
+        dlg = ConfirmActionDialog(
+            title="Устаревшая версия Claude Code",
+            message=(
+                f"У тебя установлена Claude Code v{local} — это устаревшая версия.\n\n"
+                f"Проверенная и стабильная версия, на которой это приложение работает "
+                f"гарантированно, — v{required}. На более старых версиях возможны "
+                "несовместимости (изменения в формате settings.json, путях, флагах CLI), "
+                "из-за которых запуск через Omniroute / FreeModel может вести себя нестабильно.\n\n"
+                f"Рекомендуем обновить до v{required} — npm переустановит пакет, "
+                "настройки в %USERPROFILE%\\.claude не пострадают."
+            ),
+            detail=f"npm install -g @anthropic-ai/claude-code@{required}",
+            confirm_text=f"Обновить до v{required}",
+            icon="↑",
+            icon_color=(245, 180, 60),
+            parent=self
+        )
+        if dlg.exec() == QDialog.Accepted:
+            self._install_claude_code()
 
     def _uninstall_claude_code(self):
         """Удаляет Claude Code через npm uninstall с подтверждением"""
