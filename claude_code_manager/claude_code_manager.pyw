@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.2"  # Для обновлений
+APP_VERSION = "5.2.2"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -614,12 +614,6 @@ class StyledComboBox(QComboBox):
         # Поставим политику фокуса StrongFocus, чтобы комбо не реагировал на wheel без клика.
         self.setFocusPolicy(Qt.StrongFocus)
 
-    def wheelEvent(self, event):
-        # Игнорируем колесо мыши, чтобы случайный скролл не менял выбранный пункт.
-        # event.ignore() пробрасывает событие дальше — родительский ScrollArea/окно
-        # сможет проскроллиться нормально.
-        event.ignore()
-
         self.setStyleSheet("""
             QComboBox {
                 background-color: rgba(40, 40, 45, 200);
@@ -652,6 +646,12 @@ class StyledComboBox(QComboBox):
                 background: rgba(80, 200, 255, 200);
             }
         """ % self._text_color)
+
+    def wheelEvent(self, event):
+        # Игнорируем колесо мыши, чтобы случайный скролл не менял выбранный пункт.
+        # event.ignore() пробрасывает событие дальше — родительский ScrollArea/окно
+        # сможет проскроллиться нормально.
+        event.ignore()
 
     def enterEvent(self, event):
         self._is_hovered = True
