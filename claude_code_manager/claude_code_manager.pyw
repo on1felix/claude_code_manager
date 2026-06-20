@@ -6014,75 +6014,6 @@ class ClaudeManager(QMainWindow):
 
     # ----- Fix Claude (~/.claude.json → .bak) -----
 
-    def _restart_application(self):
-        """Перезапускает приложение с эффектом «открылось поверх».
-
-        ИДЕЯ: визуально должно быть как при запуске уже открытого приложения
-        — новое окно появляется ПОВЕРХ старого, а старое тихо исчезает.
-        Никаких пауз, никакой пустоты между ними.
-
-        КАК: стартуем новый instance ОТДЕЛЁННЫМ процессом сразу через Popen,
-        даём ему ~350мс на отрисовку (за это время окно успевает появиться
-        поверх нашего) — и только потом os._exit(0) мгновенно гасит текущий
-        процесс. Получается плавный overlap-перезапуск.
-
-        Почему os._exit, а НЕ QApplication.quit:
-            quit() мягкий — ждёт event loop, фоновые daemon-треды и т.п.
-            Из-за этого старое окно остаётся ещё 100–200мс после запуска
-            нового — и пользователь надолго видит ДВА окна. os._exit
-            обрубает процесс мгновенно, без хвоста.
-
-        Работает в двух режимах:
-          - .exe (PyInstaller): тот же .exe.
-          - .pyw (исходники): pythonw.exe + scriptpath.
-        """
-        try:
-            current_exe = sys.executable
-            is_compiled = (
-                current_exe.lower().endswith('.exe') and
-                'python' not in os.path.basename(current_exe).lower()
-            )
-
-            if is_compiled:
-                argv = [current_exe]
-                cwd = os.path.dirname(current_exe) or None
-            else:
-                # У .pyw sys.executable — это pythonw.exe (без консоли),
-                # его и используем для нового instance.
-                script = (
-                    os.path.abspath(sys.argv[0])
-                    if sys.argv and sys.argv[0] else os.path.abspath(__file__)
-                )
-                argv = [current_exe, script]
-                cwd = os.path.dirname(script) or None
-
-            # Отделённый процесс, отвязанный от нашего: переживёт нашу смерть,
-            # не унаследует stdio, не попадёт в наш job-объект.
-            DETACHED_PROCESS = 0x00000008
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
-            subprocess.Popen(
-                argv,
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                cwd=cwd,
-                close_fds=True,
-            )
-
-            try:
-                self.log("Перезапуск приложения…", "info")
-            except Exception:
-                pass
-
-            # Даём новому окну ~350мс на старт и появление поверх нас,
-            # затем мгновенно гасим текущий процесс. Через QTimer, чтобы
-            # Qt успел дорисовать клик кнопки и не зависнуть на закрытии диалога.
-            QTimer.singleShot(350, lambda: os._exit(0))
-        except Exception as e:
-            # Если перезапустить не удалось — расскажем пользователю и не закрываемся.
-            try:
-                self.log(f"Не удалось перезапустить приложение: {e}", "error")
-            except Exception:
-                pass
-
     def _ensure_auto_updates_false_in_claude_json(self):
         """Молча проверяет, что в ~/.claude.json стоит autoUpdates=false.
         Если нет — дописывает. Все остальные ключи (numStartups,
@@ -6286,31 +6217,32 @@ class ClaudeManager(QMainWindow):
             settings_ok = result_state.get("settings_ok", True)
             if settings_ok:
                 tail = (
-                    "DISABLE_UPDATES=1 прописан в env-блоке\n"
-                    "~/.claude/settings.json. Перезапусти приложение,\n"
-                    "чтобы оно подхватило новые настройки."
+                    "DISABLE_UPDATES=1 прописан в env-блоке "
+                    "~/.claude/settings.json."
                 )
             else:
                 tail = (
-                    "Не удалось записать DISABLE_UPDATES в settings.json —\n"
+                    "Не удалось записать DISABLE_UPDATES в settings.json — "
                     "смотри лог. Автообновление может остаться включённым."
                 )
-            progress.status_lbl.setText(
-                f"Старый файл сохранён как {backup_short}.\n" + tail
+            # Rich text: красным выделяем ключевое предупреждение про
+            # необходимость ручного перезапуска. QLabel автоматически
+            # рендерит HTML, никаких setTextFormat не нужно.
+            html = (
+                f"Старый файл сохранён как {backup_short}.<br>"
+                f"{tail}<br><br>"
+                "<span style='color:#E55A5A; font-weight:600;'>"
+                "Необходимо вручную перезапустить приложение, "
+                "чтобы изменения вступили в силу."
+                "</span>"
             )
-            # Меняем «Готово» на «Перезапустить приложение».
-            # Отвязываем старый clicked (закрытие диалога) и привязываем перезапуск.
+            progress.status_lbl.setText(html)
+            # Меняем «Готово» на «Понятно». Стандартный clicked
+            # (закрытие диалога через accept) трогать не нужно — он
+            # настроен в __init__ и просто закроет окно.
             try:
-                progress.btn_ok.setText("Перезапустить приложение")
-                try:
-                    progress.btn_ok.clicked.disconnect()
-                except Exception:
-                    # Если ни одного коннекта не было — это норма, идём дальше.
-                    pass
-                progress.btn_ok.clicked.connect(self._restart_application)
+                progress.btn_ok.setText("Понятно")
             except Exception:
-                # Если что-то пойдёт не так с переподписью —
-                # пусть остаётся старая «Готово», лишь бы окно закрывалось.
                 pass
         progress._show_success_state = _show_success_fix
 
@@ -6353,13 +6285,21 @@ class ClaudeManager(QMainWindow):
                     progress.progress_signal.emit(55)
                     time.sleep(0.1)
 
-                    # Создаём свежий ~/.claude.json только с installMethod=global.
-                    # autoUpdates=false тут НЕ ставим — этот ключ не задокументирован
-                    # и игнорируется (см. issues #11263, #13213 в anthropics/claude-code),
-                    # плюс CLI всё равно перетирает ~/.claude.json при запуске.
-                    # installMethod=global CLI и сам бы дописал — мы просто опережаем.
+                    # Создаём свежий ~/.claude.json со всем, что обычно туда
+                    # дописывает стартовый страж (_ensure_auto_updates_false_in_claude_json).
+                    # Раньше autoUpdates тут не было — добавлялся только при следующем
+                    # запуске приложения, и пользователь видел его «появление» как побочный
+                    # эффект перезапуска. Пишем сразу: пусть всё нужное окажется на месте
+                    # без всяких ожиданий и перезагрузок.
+                    # Замечание про autoUpdates: ключ не задокументирован
+                    # (issues #11263, #13213 в anthropics/claude-code) и реально
+                    # автообновление выключается ниже через DISABLE_UPDATES=1
+                    # в settings.json. autoUpdates тут — подстраховка/совместимость:
+                    # если какая-то ветка кода CLI всё-таки его уважает —
+                    # нам ничего не стоит её закрыть.
                     stub = {
                         "installMethod": "global",
+                        "autoUpdates": False,
                     }
                     stub_ok = True
                     try:
