@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.2.3"  # Для обновлений
+APP_VERSION = "5.3"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -3604,6 +3604,191 @@ class StatusLineProgressDialog(QDialog):
 
 
 # ============================================================
+# ДИАЛОГ «FIX CLAUDE» — переименование ~/.claude.json в .bak
+# ============================================================
+
+class ClaudeJsonFixDialog(QDialog):
+    """Красное окно «Внимание» с описанием проблемы ~/.claude.json и кнопкой
+    исправления. Файл не удаляется — переименовывается в .bak, можно откатить."""
+
+    def __init__(self, json_path, json_exists, backup_target, parent=None):
+        super().__init__(parent)
+
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        accent = (235, 90, 90)  # красная рамка, как просили
+        r, g, b = accent
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("claudeJsonFixContainer")
+        container.setStyleSheet(f"""
+            QFrame#claudeJsonFixContainer {{
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgba({r}, {g}, {b}, 0.65);
+                border-radius: 16px;
+            }}
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(14)
+
+        # Иконка-восклицание (красная)
+        icon_label = QLabel("!")
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet(f"""
+            QLabel {{
+                color: rgb({r}, {g}, {b});
+                font-size: 28px;
+                font-weight: bold;
+                background: rgba({r}, {g}, {b}, 0.15);
+                border: 2px solid rgba({r}, {g}, {b}, 0.4);
+                border-radius: 25px;
+                min-width: 50px; max-width: 50px;
+                min-height: 50px; max-height: 50px;
+            }}
+        """)
+        ic = QHBoxLayout()
+        ic.addStretch(); ic.addWidget(icon_label); ic.addStretch()
+        layout.addLayout(ic)
+
+        # Заголовок «Внимание» красным
+        title_label = QLabel("Внимание")
+        title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title_label.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
+        )
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+
+        # Текст с описанием проблемы и тем, что произойдёт
+        if json_exists:
+            state_line = (
+                f'<span style="color:#EB5A5A;"><b>● Найден файл ~/.claude.json.</b></span><br>'
+                "У многих пользователей старые/несовместимые настройки из этого файла "
+                "ломают первый запуск Claude Code: <b>ошибки API</b>, "
+                "<b>Claude вообще не отвечает</b>, странные сбои авторизации. "
+                "Особенно если ты раньше пользовался Claude Code через другие способы.<br><br>"
+            )
+        else:
+            state_line = (
+                '<span style="color:rgba(200,200,205,0.7);">● Файл ~/.claude.json не найден.</span><br>'
+                "Исправлять нечего — этот фикс нужен только когда Claude Code "
+                "не отвечает или возвращает ошибки API при первом запуске "
+                "именно из-за старого <code>~/.claude.json</code>.<br><br>"
+            )
+
+        message = (
+            state_line +
+            "<b>Что сделает кнопка «Исправить»:</b><br>"
+            f"• переименует <code>{self._short(json_path)}</code> "
+            f"→ <code>{self._short(backup_target)}</code><br>"
+            "• <b>ничего не удалит</b> — оригинал останется как <code>.bak</code>, "
+            "его можно вернуть, если что-то пойдёт не так.<br>"
+            "• создаст свежий <code>~/.claude.json</code> с "
+            "<code>installMethod=global</code>.<br>"
+            "• пропишет <code>DISABLE_UPDATES=1</code> в env-блок "
+            "<code>~/.claude/settings.json</code> — это официальный способ "
+            "выключить автообновление Claude Code; без него CLI рано или "
+            "поздно обновится с зафиксированной v" + REQUIRED_CLAUDE_VERSION +
+            " до более новой версии, где FreeModel / Omniroute / прокси "
+            "уже не работают."
+        )
+
+        message_label = QLabel(message)
+        message_label.setFont(QFont("Segoe UI", 10))
+        message_label.setStyleSheet("color: #B5B5B5; background: transparent; border: none;")
+        message_label.setAlignment(Qt.AlignLeft)
+        message_label.setWordWrap(True)
+        message_label.setTextFormat(Qt.RichText)
+        layout.addWidget(message_label)
+
+        # Подсказка «когда нажимать»
+        hint_label = QLabel(
+            "Нажимай, только если у тебя реально проблемы: "
+            "Claude Code не отвечает, выдаёт ошибки API, или ведёт себя странно "
+            "после смены способа авторизации."
+        )
+        hint_label.setFont(QFont("Segoe UI", 9))
+        hint_label.setStyleSheet(f"""
+            QLabel {{
+                color: rgba(235, 140, 140, 0.95);
+                background: rgba({r}, {g}, {b}, 0.08);
+                border: 1px dashed rgba({r}, {g}, {b}, 0.35);
+                border-radius: 6px;
+                padding: 8px 12px;
+            }}
+        """)
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+
+        # Кнопки
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+
+        self.cancel_btn = StyledButton("Отмена")
+        self.cancel_btn.setMinimumHeight(40)
+        self.cancel_btn.set_hover_color(235, 90, 90)  # красный hover — согласуется с акцентом окна
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+
+        self.confirm_btn = GreenButton("Исправить")
+        self.confirm_btn.setMinimumHeight(40)
+        self.confirm_btn.setEnabled(json_exists)
+        self.confirm_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.confirm_btn)
+
+        layout.addLayout(btn_layout)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.adjustSize()
+        self.setMinimumWidth(520)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    @staticmethod
+    def _short(path):
+        """~ вместо домашней папки + прямые слэши — компактно для текста."""
+        try:
+            home = os.path.expanduser("~")
+            if path.lower().startswith(home.lower()):
+                path = "~" + path[len(home):]
+        except Exception:
+            pass
+        return path.replace("\\", "/")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        self._fade_out_and(lambda: super(ClaudeJsonFixDialog, self).accept())
+
+    def reject(self):
+        self._fade_out_and(lambda: super(ClaudeJsonFixDialog, self).reject())
+
+    def _fade_out_and(self, then):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0); fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(then)
+        fade.start(); self._fade = fade
+
+
+# ============================================================
 # ОТСЛЕЖИВАНИЕ ЗАВЕРШЕНИЯ ПРОЦЕССА POWERSHELL
 # ============================================================
 
@@ -4239,6 +4424,23 @@ class ClaudeManager(QMainWindow):
         self.update_info = None
         threading.Thread(target=self._check_for_updates, daemon=True).start()
 
+        # Один общий лок на чтение-запись ~/.claude.json и ~/.claude/settings.json.
+        # Берётся стартовыми стражами и Fix Claude — чтобы не было «last write wins»,
+        # если пользователь нажмёт Fix Claude в первые миллисекунды после старта,
+        # когда стартовый страж ещё не закончил мержить settings.json.
+        self._claude_files_lock = threading.Lock()
+
+        # Тихо подстраховываемся: дописываем env.DISABLE_UPDATES=1 в
+        # ~/.claude/settings.json, если его там нет. Без этого Claude Code
+        # рано или поздно самообновится и сломает FreeModel/Omniroute.
+        threading.Thread(target=self._ensure_disable_updates_in_settings, daemon=True).start()
+
+        # Дублирующая подстраховка: дописываем autoUpdates=false в ~/.claude.json,
+        # если его там нет. Этот ключ официально не задокументирован и часто
+        # игнорируется CLI, но если вдруг его уважает — нам ничего не стоит
+        # его поставить. Основное выключение всё равно идёт через DISABLE_UPDATES.
+        threading.Thread(target=self._ensure_auto_updates_false_in_claude_json, daemon=True).start()
+
         main_layout.addLayout(title_layout)
 
         # Переключатель режимов FreeModel ↔ Omniroute (под заголовком, по центру)
@@ -4270,6 +4472,15 @@ class ClaudeManager(QMainWindow):
         self.btn_install_statusline.set_hover_color(120, 180, 230)  # нейтральный голубоватый hover
         self.btn_install_statusline.clicked.connect(self._on_statusline_button_clicked)
         install_row.addWidget(self.btn_install_statusline)
+
+        # Fix Claude — переименовывает проблемный ~/.claude.json в .bak.
+        # Нужен пользователям, у которых Claude Code не отвечает / выдаёт ошибки API
+        # после миграции с других способов запуска.
+        self.btn_fix_claude = StyledButton("Fix Claude")
+        self.btn_fix_claude.setFixedHeight(34)
+        self.btn_fix_claude.set_hover_color(235, 90, 90)  # красный hover — это «лечебное» действие
+        self.btn_fix_claude.clicked.connect(self._on_fix_claude_button_clicked)
+        install_row.addWidget(self.btn_fix_claude)
 
         install_row.addStretch()
         main_layout.addLayout(install_row)
@@ -5797,6 +6008,441 @@ class ClaudeManager(QMainWindow):
                 "файл ~/.claude/statusline-command.sh стёрт."
             )
         progress._show_success_state = _show_success_uninstall
+
+        threading.Thread(target=worker, daemon=True).start()
+        progress.exec()
+
+    # ----- Fix Claude (~/.claude.json → .bak) -----
+
+    def _restart_application(self):
+        """Перезапускает приложение с эффектом «открылось поверх».
+
+        ИДЕЯ: визуально должно быть как при запуске уже открытого приложения
+        — новое окно появляется ПОВЕРХ старого, а старое тихо исчезает.
+        Никаких пауз, никакой пустоты между ними.
+
+        КАК: стартуем новый instance ОТДЕЛЁННЫМ процессом сразу через Popen,
+        даём ему ~350мс на отрисовку (за это время окно успевает появиться
+        поверх нашего) — и только потом os._exit(0) мгновенно гасит текущий
+        процесс. Получается плавный overlap-перезапуск.
+
+        Почему os._exit, а НЕ QApplication.quit:
+            quit() мягкий — ждёт event loop, фоновые daemon-треды и т.п.
+            Из-за этого старое окно остаётся ещё 100–200мс после запуска
+            нового — и пользователь надолго видит ДВА окна. os._exit
+            обрубает процесс мгновенно, без хвоста.
+
+        Работает в двух режимах:
+          - .exe (PyInstaller): тот же .exe.
+          - .pyw (исходники): pythonw.exe + scriptpath.
+        """
+        try:
+            current_exe = sys.executable
+            is_compiled = (
+                current_exe.lower().endswith('.exe') and
+                'python' not in os.path.basename(current_exe).lower()
+            )
+
+            if is_compiled:
+                argv = [current_exe]
+                cwd = os.path.dirname(current_exe) or None
+            else:
+                # У .pyw sys.executable — это pythonw.exe (без консоли),
+                # его и используем для нового instance.
+                script = (
+                    os.path.abspath(sys.argv[0])
+                    if sys.argv and sys.argv[0] else os.path.abspath(__file__)
+                )
+                argv = [current_exe, script]
+                cwd = os.path.dirname(script) or None
+
+            # Отделённый процесс, отвязанный от нашего: переживёт нашу смерть,
+            # не унаследует stdio, не попадёт в наш job-объект.
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            subprocess.Popen(
+                argv,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                cwd=cwd,
+                close_fds=True,
+            )
+
+            try:
+                self.log("Перезапуск приложения…", "info")
+            except Exception:
+                pass
+
+            # Даём новому окну ~350мс на старт и появление поверх нас,
+            # затем мгновенно гасим текущий процесс. Через QTimer, чтобы
+            # Qt успел дорисовать клик кнопки и не зависнуть на закрытии диалога.
+            QTimer.singleShot(350, lambda: os._exit(0))
+        except Exception as e:
+            # Если перезапустить не удалось — расскажем пользователю и не закрываемся.
+            try:
+                self.log(f"Не удалось перезапустить приложение: {e}", "error")
+            except Exception:
+                pass
+
+    def _ensure_auto_updates_false_in_claude_json(self):
+        """Молча проверяет, что в ~/.claude.json стоит autoUpdates=false.
+        Если нет — дописывает. Все остальные ключи (numStartups,
+        installMethod, oauthAccount, projects, …) остаются нетронутыми.
+
+        Важно: реально автообновление выключает env.DISABLE_UPDATES=1
+        в ~/.claude/settings.json (см. _ensure_disable_updates_in_settings).
+        Этот флаг — подстраховка/совместимость: если CLI всё-таки где-то
+        смотрит autoUpdates в .claude.json, нам ничего не стоит его поставить.
+        Запускается из фонового потока при старте."""
+        try:
+            path = os.path.join(os.path.expanduser("~"), ".claude.json")
+
+            # Лок на read→modify→write, чтобы не конфликтовать с
+            # _perform_claude_json_fix (он тоже трогает ~/.claude.json).
+            with self._claude_files_lock:
+                data = {}
+                existed = os.path.exists(path)
+                if existed:
+                    try:
+                        with open(path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        if not isinstance(data, dict):
+                            # Не словарь — НЕ трогаем, чтобы ничего не сломать.
+                            try:
+                                self.log(
+                                    "Авто-фикс autoUpdates: ~/.claude.json не является JSON-объектом, "
+                                    "пропускаем",
+                                    "warning",
+                                )
+                            except Exception:
+                                pass
+                            return
+                    except json.JSONDecodeError:
+                        # Битый JSON — НЕ перезаписываем (это работа Fix Claude).
+                        try:
+                            self.log(
+                                "Авто-фикс autoUpdates: ~/.claude.json повреждён, "
+                                "пропускаем (используй кнопку Fix Claude)",
+                                "warning",
+                            )
+                        except Exception:
+                            pass
+                        return
+
+                # Уже стоит правильное значение → ничего не пишем.
+                if data.get("autoUpdates") is False:
+                    return
+
+                data["autoUpdates"] = False
+
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+
+            try:
+                action = "обновлён" if existed else "создан"
+                self.log(
+                    f"Авто-фикс autoUpdates=false {action} в ~/.claude.json",
+                    "success",
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                self.log(f"Авто-фикс autoUpdates не удался: {e}", "warning")
+            except Exception:
+                pass
+
+    def _ensure_disable_updates_in_settings(self):
+        """Молча проверяет, что в ~/.claude/settings.json есть env.DISABLE_UPDATES=1.
+        Если нет — дописывает. Все остальные ключи (statusLine, model, theme, …)
+        остаются нетронутыми. Запускается из фонового потока при старте.
+
+        Зачем: это единственное место, где автообновление Claude Code реально
+        выключается (см. логику Fix Claude). Без него CLI рано или поздно уедет
+        с зафиксированной версии на свежую, где Anthropic блокирует сторонние
+        Base URL — и FreeModel / Omniroute / прокси перестанут работать.
+        Делаем это автоматически при старте, чтобы пользователю не приходилось
+        каждый раз нажимать Fix Claude вручную."""
+        try:
+            claude_dir = os.path.join(os.path.expanduser("~"), ".claude")
+            settings_path = os.path.join(claude_dir, "settings.json")
+
+            # Лок на всю критическую секцию read→modify→write, чтобы не
+            # конфликтовать с _perform_claude_json_fix (он тоже пишет сюда).
+            with self._claude_files_lock:
+                settings = {}
+                if os.path.exists(settings_path):
+                    try:
+                        with open(settings_path, 'r', encoding='utf-8') as f:
+                            settings = json.load(f)
+                        if not isinstance(settings, dict):
+                            settings = {}
+                    except json.JSONDecodeError:
+                        # Битый JSON — НЕ трогаем, чтобы не затереть пользовательские
+                        # настройки. Этот случай разруливает уже сам Fix Claude.
+                        try:
+                            self.log(
+                                "Авто-фикс DISABLE_UPDATES: ~/.claude/settings.json повреждён, "
+                                "пропускаем (используй кнопку Fix Claude)",
+                                "warning",
+                            )
+                        except Exception:
+                            pass
+                        return
+
+                env_block = settings.get("env")
+                if not isinstance(env_block, dict):
+                    env_block = {}
+
+                # Уже стоит правильное значение → ничего не пишем, не дёргаем диск.
+                if env_block.get("DISABLE_UPDATES") == "1":
+                    return
+
+                os.makedirs(claude_dir, exist_ok=True)
+                env_block["DISABLE_UPDATES"] = "1"
+                settings["env"] = env_block
+
+                with open(settings_path, 'w', encoding='utf-8') as f:
+                    json.dump(settings, f, indent=2, ensure_ascii=False)
+
+            try:
+                self.log(
+                    "Авто-фикс DISABLE_UPDATES=1 добавлен в ~/.claude/settings.json "
+                    "(автообновление Claude Code выключено)",
+                    "success",
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            # Любой сбой — это не критично, пользователь всё ещё может
+            # руками нажать Fix Claude. Не падаем, не показываем модалок.
+            try:
+                self.log(f"Авто-фикс DISABLE_UPDATES не удался: {e}", "warning")
+            except Exception:
+                pass
+
+    def _claude_json_path(self):
+        """Путь к проблемному файлу — ~/.claude.json (это НЕ ~/.claude/settings.json)."""
+        return os.path.join(os.path.expanduser("~"), ".claude.json")
+
+    def _claude_json_backup_target(self):
+        """Подбираем .bak-имя так, чтобы не затереть уже существующий бэкап.
+        Сначала .bak, затем .bak.2, .bak.3 и т.д."""
+        base = self._claude_json_path() + ".bak"
+        if not os.path.exists(base):
+            return base
+        i = 2
+        while True:
+            candidate = f"{base}.{i}"
+            if not os.path.exists(candidate):
+                return candidate
+            i += 1
+
+    def _on_fix_claude_button_clicked(self):
+        """Показывает красное окно «Внимание» с предложением переименовать
+        ~/.claude.json в .bak. При успехе запускает прогресс-диалог."""
+        json_path = self._claude_json_path()
+        exists = os.path.exists(json_path)
+        backup_target = self._claude_json_backup_target() if exists else (json_path + ".bak")
+
+        dlg = ClaudeJsonFixDialog(
+            json_path=json_path,
+            json_exists=exists,
+            backup_target=backup_target,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            try:
+                self.log("Fix Claude отменён", "info")
+            except Exception:
+                pass
+            return
+
+        # Передаём заранее посчитанный backup_target, чтобы пользователь увидел
+        # в success-сообщении ровно тот путь, что был показан в окне-предупреждении.
+        # Worker всё равно проверит, что путь свободен, и если нет — подберёт новый.
+        self._perform_claude_json_fix(preferred_backup=backup_target if exists else None)
+
+    def _perform_claude_json_fix(self, preferred_backup=None):
+        """Переименовывает ~/.claude.json → ~/.claude.json.bak (с числовым суффиксом,
+        если такой бэкап уже есть). Показывает прогресс-диалог.
+        Если передан `preferred_backup` — пытается использовать именно его,
+        иначе подбирает новое имя сам."""
+        progress = StatusLineProgressDialog(parent=self)
+        progress.title_lbl.setText("Fix Claude")
+        progress.status_lbl.setText("Подготовка…")
+
+        # Подменяем success-текст под наш сценарий
+        orig_show_success = progress._show_success_state
+        # state, чтобы worker сохранил путь бэкапа для success-сообщения
+        result_state = {"backup": None}
+
+        def _show_success_fix():
+            orig_show_success()
+            progress.title_lbl.setText("Claude исправлен ✓")
+            backup = result_state.get("backup") or "~/.claude.json.bak"
+            backup_short = ClaudeJsonFixDialog._short(backup)
+            # Честно показываем, какие из подопераций прошли —
+            # если settings.json не записался, пользователь должен это знать.
+            settings_ok = result_state.get("settings_ok", True)
+            if settings_ok:
+                tail = (
+                    "DISABLE_UPDATES=1 прописан в env-блоке\n"
+                    "~/.claude/settings.json. Перезапусти приложение,\n"
+                    "чтобы оно подхватило новые настройки."
+                )
+            else:
+                tail = (
+                    "Не удалось записать DISABLE_UPDATES в settings.json —\n"
+                    "смотри лог. Автообновление может остаться включённым."
+                )
+            progress.status_lbl.setText(
+                f"Старый файл сохранён как {backup_short}.\n" + tail
+            )
+            # Меняем «Готово» на «Перезапустить приложение».
+            # Отвязываем старый clicked (закрытие диалога) и привязываем перезапуск.
+            try:
+                progress.btn_ok.setText("Перезапустить приложение")
+                try:
+                    progress.btn_ok.clicked.disconnect()
+                except Exception:
+                    # Если ни одного коннекта не было — это норма, идём дальше.
+                    pass
+                progress.btn_ok.clicked.connect(self._restart_application)
+            except Exception:
+                # Если что-то пойдёт не так с переподписью —
+                # пусть остаётся старая «Готово», лишь бы окно закрывалось.
+                pass
+        progress._show_success_state = _show_success_fix
+
+        def worker():
+            try:
+                src = self._claude_json_path()
+                progress.progress_signal.emit(10)
+                time.sleep(0.12)
+
+                # Лок на всю транзакцию: переименование + засев нового .claude.json
+                # + мерж DISABLE_UPDATES в settings.json. Если параллельно работает
+                # стартовый страж (_ensure_*) — он подождёт, и мы не потеряем
+                # ничьих изменений.
+                with self._claude_files_lock:
+                    if not os.path.exists(src):
+                        # Файла нет — фиксить нечего, но это не ошибка
+                        progress.progress_signal.emit(100)
+                        progress.finished_signal.emit(True, "")
+                        try:
+                            self.log("Fix Claude: файл ~/.claude.json не найден — ничего не делаем", "info")
+                        except Exception:
+                            pass
+                        return
+
+                    # Подбираем имя бэкапа. Если есть preferred_backup из диалога
+                    # и он всё ещё свободен — берём его (так пользователь увидит
+                    # в success тот же путь, что был обещан в окне). Иначе
+                    # подбираем заново — закрываем TOCTOU.
+                    if preferred_backup and not os.path.exists(preferred_backup):
+                        dst = preferred_backup
+                    else:
+                        dst = self._claude_json_backup_target()
+                    result_state["backup"] = dst
+                    progress.progress_signal.emit(45)
+                    time.sleep(0.18)
+
+                    # Используем os.rename, чтобы при гонке (если кто-то создал dst
+                    # прямо сейчас) словить ошибку, а не молча затереть бэкап.
+                    os.rename(src, dst)
+                    progress.progress_signal.emit(55)
+                    time.sleep(0.1)
+
+                    # Создаём свежий ~/.claude.json только с installMethod=global.
+                    # autoUpdates=false тут НЕ ставим — этот ключ не задокументирован
+                    # и игнорируется (см. issues #11263, #13213 в anthropics/claude-code),
+                    # плюс CLI всё равно перетирает ~/.claude.json при запуске.
+                    # installMethod=global CLI и сам бы дописал — мы просто опережаем.
+                    stub = {
+                        "installMethod": "global",
+                    }
+                    stub_ok = True
+                    try:
+                        with open(src, 'w', encoding='utf-8') as f:
+                            json.dump(stub, f, indent=2, ensure_ascii=False)
+                    except Exception as seed_err:
+                        # Не критично: даже если запись стаба сорвётся,
+                        # основной фикс (перенос в .bak) уже состоялся.
+                        stub_ok = False
+                        try:
+                            self.log(
+                                f"Fix Claude: не удалось засеять новый ~/.claude.json: {seed_err}",
+                                "warning",
+                            )
+                        except Exception:
+                            pass
+
+                    progress.progress_signal.emit(80)
+                    time.sleep(0.1)
+
+                    # Реально выключаем автообновление — через DISABLE_UPDATES=1
+                    # в блоке env внутри ~/.claude/settings.json. Это
+                    # официально задокументированный механизм (code.claude.com/docs/en/setup):
+                    # CLI читает env-блок при старте и пробрасывает переменные себе
+                    # в окружение. DISABLE_UPDATES жёстче DISABLE_AUTOUPDATER — он
+                    # блокирует и фоновую самообновлялку, и ручной `claude update`;
+                    # нам именно это и нужно, так как версии после 2.1.180 ломают
+                    # FreeModel / Omniroute / прокси (Anthropic блокирует сторонние
+                    # Base URL). settings.json CLI не перезаписывает при запуске,
+                    # поэтому флаг прилипает надёжно.
+                    settings_ok = True
+                    try:
+                        claude_dir = os.path.join(os.path.expanduser("~"), ".claude")
+                        os.makedirs(claude_dir, exist_ok=True)
+                        settings_path = os.path.join(claude_dir, "settings.json")
+
+                        settings = {}
+                        if os.path.exists(settings_path):
+                            try:
+                                with open(settings_path, 'r', encoding='utf-8') as f:
+                                    settings = json.load(f)
+                                if not isinstance(settings, dict):
+                                    settings = {}
+                            except json.JSONDecodeError:
+                                # Битый settings.json не перезаписываем —
+                                # отмечаем как «не выполнено», но фикс продолжаем.
+                                raise RuntimeError("settings.json повреждён")
+
+                        env_block = settings.get("env")
+                        if not isinstance(env_block, dict):
+                            env_block = {}
+                        env_block["DISABLE_UPDATES"] = "1"
+                        settings["env"] = env_block
+
+                        with open(settings_path, 'w', encoding='utf-8') as f:
+                            json.dump(settings, f, indent=2, ensure_ascii=False)
+                    except Exception as seed_err:
+                        # Тоже не критично — основной фикс уже состоялся.
+                        settings_ok = False
+                        try:
+                            self.log(
+                                f"Fix Claude: не удалось записать DISABLE_UPDATES в settings.json: {seed_err}",
+                                "warning",
+                            )
+                        except Exception:
+                            pass
+
+                    # Запоминаем для success-сообщения, какие из подопераций прошли.
+                    result_state["stub_ok"] = stub_ok
+                    result_state["settings_ok"] = settings_ok
+
+                progress.progress_signal.emit(100)
+                progress.finished_signal.emit(True, "")
+                try:
+                    self.log(f"Fix Claude: ~/.claude.json → {dst}", "success")
+                except Exception:
+                    pass
+            except Exception as e:
+                progress.finished_signal.emit(False, str(e))
+                try:
+                    self.log(f"Ошибка Fix Claude: {e}", "error")
+                except Exception:
+                    pass
 
         threading.Thread(target=worker, daemon=True).start()
         progress.exec()
