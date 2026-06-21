@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.3"  # Для обновлений
+APP_VERSION = "5.4"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -1653,6 +1653,183 @@ class Fable5WarningDialog(QDialog):
         fade.setEndValue(0.0)
         fade.setEasingCurve(QEasingCurve.OutCubic)
         fade.finished.connect(lambda: super(Fable5WarningDialog, self).reject())
+        fade.start()
+        self._fade = fade
+
+
+# ============================================================
+# ОКНО-ПРЕДУПРЕЖДЕНИЕ «НЕТ ПРАВ АДМИНИСТРАТОРА»
+# ============================================================
+
+class AdminWarningDialog(QDialog):
+    """Показывается при запуске, если приложение запущено БЕЗ прав админа.
+
+    Цель — заранее предупредить пользователя: часть операций (удаление CLI,
+    запись в %ProgramFiles%, чистка залоченных файлов) требует админ-прав
+    и без них может падать с PermissionDenied.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowModality(Qt.ApplicationModal)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QFrame()
+        container.setObjectName("adminWarnContainer")
+        container.setStyleSheet("""
+            QFrame#adminWarnContainer {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(30, 24, 14, 0.99),
+                    stop:1 rgba(22, 18, 10, 0.99));
+                border: 2px solid rgba(245, 196, 74, 0.7);
+                border-radius: 18px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(32, 26, 32, 26)
+        layout.setSpacing(12)
+
+        # Верхняя плашка-заголовок
+        top_banner = QLabel("Запуск без прав администратора")
+        top_banner.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        top_banner.setStyleSheet("""
+            QLabel {
+                color: rgb(255, 235, 190);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(170, 120, 30, 0.55),
+                    stop:1 rgba(130, 90, 20, 0.55));
+                border: 1px solid rgba(245, 196, 74, 0.45);
+                border-radius: 8px;
+                padding: 7px 12px;
+                letter-spacing: 0.5px;
+            }
+        """)
+        top_banner.setAlignment(Qt.AlignCenter)
+        layout.addWidget(top_banner)
+
+        # Иконка — щит с восклицательным знаком
+        icon_label = QLabel("🛡")
+        icon_label.setFont(QFont("Segoe UI Emoji", 38))
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(icon_label)
+
+        # Главный заголовок
+        title_label = QLabel("Рекомендуется запустить\nот имени администратора")
+        title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title_label.setStyleSheet("""
+            QLabel {
+                color: rgb(245, 196, 74);
+                background: transparent;
+                border: none;
+            }
+        """)
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+
+        # Разделитель
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(
+            "color: rgba(245, 196, 74, 0.3); "
+            "background: rgba(245, 196, 74, 0.3); "
+            "border: none; max-height: 1px;"
+        )
+        layout.addWidget(sep)
+
+        # Основное описание
+        desc_label = QLabel(
+            "Сейчас приложение работает в обычном режиме и часть\n"
+            "операций может завершаться ошибкой PermissionDenied.\n\n"
+            "Без админ-прав могут не сработать:\n"
+            "  •  установка Node.js (инсталлятор пишет в %ProgramFiles%)\n"
+            "  •  установка Claude Code (npm i -g в системные папки)\n"
+            "  •  полное удаление Claude Code и чистка залоченных файлов\n"
+            "  •  запись в системные папки (%ProgramFiles%, %ProgramData%)\n"
+            "  •  правки в чужих профилях и общих директориях\n\n"
+            "Базовые сценарии — Fix Claude, смена модели и API-ключа —\n"
+            "работают и без админа."
+        )
+        desc_label.setFont(QFont("Segoe UI", 10))
+        desc_label.setStyleSheet("""
+            QLabel {
+                color: rgba(230, 215, 185, 0.92);
+                background: transparent;
+                border: none;
+            }
+        """)
+        desc_label.setAlignment(Qt.AlignCenter)
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        # Плашка-совет внизу
+        hint_label = QLabel(
+            "Совет:  закройте приложение и запустите от имени администратора"
+        )
+        hint_label.setFont(QFont("Segoe UI", 9))
+        hint_label.setStyleSheet("""
+            QLabel {
+                color: rgba(245, 196, 74, 0.9);
+                background: rgba(245, 196, 74, 0.1);
+                border: 1px solid rgba(245, 196, 74, 0.28);
+                border-radius: 6px;
+                padding: 6px 12px;
+            }
+        """)
+        hint_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint_label)
+
+        layout.addSpacing(4)
+
+        # Кнопка «Понятно» — янтарная, по центру
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_ok = GlowDialogButton("Понятно",
+                                  base_rgb=(210, 160, 60),
+                                  hover_rgb=(245, 196, 74))
+        btn_ok.clicked.connect(self.accept)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_ok)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(480)
+
+        # Fade-in: меняем windowOpacity, не конфликтует с дочерними виджетами.
+        self.setWindowOpacity(0.0)
+        self.fade_in = QPropertyAnimation(self, b"windowOpacity")
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(AdminWarningDialog, self).accept())
+        fade.start()
+        self._fade = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(AdminWarningDialog, self).reject())
         fade.start()
         self._fade = fade
 
@@ -3688,14 +3865,20 @@ class ClaudeJsonFixDialog(QDialog):
             "<b>Что сделает кнопка «Исправить»:</b><br>"
             f"• переименует <code>{self._short(json_path)}</code> "
             f"→ <code>{self._short(backup_target)}</code><br>"
-            "• <b>ничего не удалит</b> — оригинал останется как <code>.bak</code>, "
-            "его можно вернуть, если что-то пойдёт не так.<br>"
+            "• оригинал <code>~/.claude.json</code> <b>не удаляется</b> — "
+            "остаётся как <code>.bak</code>, можно вернуть.<br>"
             "• создаст свежий <code>~/.claude.json</code> с "
-            "<code>installMethod=global</code>.<br>"
-            "• пропишет <code>DISABLE_UPDATES=1</code> в env-блок "
-            "<code>~/.claude/settings.json</code> — это официальный способ "
-            "выключить автообновление Claude Code; без него CLI рано или "
-            "поздно обновится с зафиксированной v" + REQUIRED_CLAUDE_VERSION +
+            "<code>installMethod=global</code> и <code>autoUpdates=false</code>.<br>"
+            "• <b>пересоздаст</b> <code>~/.claude/settings.json</code> с нуля, "
+            "оставив только <code>env.DISABLE_UPDATES=1</code>. "
+            "Это убирает «зависшие» ключи вроде <code>apiKeyHelper</code>, "
+            "которые ломают авторизацию (Claude ругается «auth may not work» "
+            "и виснет на Retrying). Модель, эффорт и токен приложение "
+            "пропишет туда обратно само — настройки лежат в нём отдельно "
+            "и не теряются.<br>"
+            "• <code>DISABLE_UPDATES=1</code> — официальный способ выключить "
+            "автообновление Claude Code; без него CLI рано или поздно "
+            "обновится с зафиксированной v" + REQUIRED_CLAUDE_VERSION +
             " до более новой версии, где FreeModel / Omniroute / прокси "
             "уже не работают."
         )
@@ -6217,13 +6400,15 @@ class ClaudeManager(QMainWindow):
             settings_ok = result_state.get("settings_ok", True)
             if settings_ok:
                 tail = (
-                    "DISABLE_UPDATES=1 прописан в env-блоке "
-                    "~/.claude/settings.json."
+                    "~/.claude/settings.json пересоздан: оставлен только "
+                    "env.DISABLE_UPDATES=1. Зависшие ключи (apiKeyHelper и т.п.), "
+                    "которые ломали авторизацию, удалены. Модель, эффорт и токен "
+                    "подхватятся из настроек приложения автоматически."
                 )
             else:
                 tail = (
-                    "Не удалось записать DISABLE_UPDATES в settings.json — "
-                    "смотри лог. Автообновление может остаться включённым."
+                    "Не удалось пересоздать settings.json — смотри лог. "
+                    "Автообновление и зависшие ключи могут остаться."
                 )
             # Rich text: красным выделяем ключевое предупреждение про
             # необходимость ручного перезапуска. QLabel автоматически
@@ -6320,12 +6505,27 @@ class ClaudeManager(QMainWindow):
                     progress.progress_signal.emit(80)
                     time.sleep(0.1)
 
-                    # Реально выключаем автообновление — через DISABLE_UPDATES=1
-                    # в блоке env внутри ~/.claude/settings.json. Это
-                    # официально задокументированный механизм (code.claude.com/docs/en/setup):
-                    # CLI читает env-блок при старте и пробрасывает переменные себе
-                    # в окружение. DISABLE_UPDATES жёстче DISABLE_AUTOUPDATER — он
-                    # блокирует и фоновую самообновлялку, и ручной `claude update`;
+                    # Пересоздаём ~/.claude/settings.json с нуля — НЕ мерж.
+                    # Раньше мы аккуратно мержили только env.DISABLE_UPDATES в
+                    # существующий файл, чтобы не потерять пользовательские
+                    # ключи (model, effortLevel, statusLine, apiKeyHelper, …).
+                    # На практике именно эти «зависшие» ключи (типа apiKeyHelper
+                    # от старой установки) и ломают авторизацию — Claude видит
+                    # одновременно apiKeyHelper и ANTHROPIC_API_KEY, ругается
+                    # «auth may not work as expected» и виснет на Retrying.
+                    # Поэтому Fix теперь работает как чистый сброс: всё, что
+                    # пользователь настраивает через наше приложение (модель,
+                    # эффорт, токены), хранится в настройках самого приложения
+                    # и перезаписывается в settings.json при следующем
+                    # взаимодействии — так что ничего «потерять» нельзя.
+                    # А вот зависшие чужие ключи уходят, и авторизация снова
+                    # становится однозначной.
+                    #
+                    # Замечание про DISABLE_UPDATES: это официально
+                    # задокументированный механизм (code.claude.com/docs/en/setup):
+                    # CLI читает env-блок при старте и пробрасывает переменные
+                    # себе в окружение. DISABLE_UPDATES жёстче DISABLE_AUTOUPDATER —
+                    # он блокирует и фоновую самообновлялку, и ручной `claude update`;
                     # нам именно это и нужно, так как версии после 2.1.180 ломают
                     # FreeModel / Omniroute / прокси (Anthropic блокирует сторонние
                     # Base URL). settings.json CLI не перезаписывает при запуске,
@@ -6336,32 +6536,20 @@ class ClaudeManager(QMainWindow):
                         os.makedirs(claude_dir, exist_ok=True)
                         settings_path = os.path.join(claude_dir, "settings.json")
 
-                        settings = {}
-                        if os.path.exists(settings_path):
-                            try:
-                                with open(settings_path, 'r', encoding='utf-8') as f:
-                                    settings = json.load(f)
-                                if not isinstance(settings, dict):
-                                    settings = {}
-                            except json.JSONDecodeError:
-                                # Битый settings.json не перезаписываем —
-                                # отмечаем как «не выполнено», но фикс продолжаем.
-                                raise RuntimeError("settings.json повреждён")
-
-                        env_block = settings.get("env")
-                        if not isinstance(env_block, dict):
-                            env_block = {}
-                        env_block["DISABLE_UPDATES"] = "1"
-                        settings["env"] = env_block
+                        fresh_settings = {
+                            "env": {
+                                "DISABLE_UPDATES": "1",
+                            },
+                        }
 
                         with open(settings_path, 'w', encoding='utf-8') as f:
-                            json.dump(settings, f, indent=2, ensure_ascii=False)
+                            json.dump(fresh_settings, f, indent=2, ensure_ascii=False)
                     except Exception as seed_err:
                         # Тоже не критично — основной фикс уже состоялся.
                         settings_ok = False
                         try:
                             self.log(
-                                f"Fix Claude: не удалось записать DISABLE_UPDATES в settings.json: {seed_err}",
+                                f"Fix Claude: не удалось пересоздать settings.json: {seed_err}",
                                 "warning",
                             )
                         except Exception:
@@ -7209,6 +7397,32 @@ def main():
     app = QApplication(sys.argv)
     window = ClaudeManager()
     window.show()
+
+    # Если приложение запущено БЕЗ прав администратора — показываем окно-предупреждение
+    # один раз при старте. Окно модальное относительно главного, не блокирует процесс
+    # и закрывается одной кнопкой «Понятно». Если IsUserAnAdmin() недоступна
+    # (нестандартное окружение) — молча пропускаем, чтобы не пугать ложным алертом.
+    try:
+        import ctypes
+        is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        is_admin = True
+
+    if not is_admin:
+        try:
+            # Небольшая задержка через singleShot, чтобы главное окно успело
+            # отрендериться — диалог красивее «всплывает» поверх готового UI,
+            # а не поверх пустого холста на первом фрейме.
+            from PySide6.QtCore import QTimer
+            def _show_admin_warn():
+                try:
+                    AdminWarningDialog(window).exec()
+                except Exception:
+                    pass
+            QTimer.singleShot(250, _show_admin_warn)
+        except Exception:
+            pass
+
     sys.exit(app.exec())
 
 if __name__ == "__main__":
