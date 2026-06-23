@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.4"  # Для обновлений
+APP_VERSION = "5.5"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -4025,8 +4025,8 @@ class DownloadUpdateDialog(QDialog):
         """)
 
         cl = QVBoxLayout()
-        cl.setContentsMargins(30, 25, 30, 25)
-        cl.setSpacing(15)
+        cl.setContentsMargins(28, 20, 28, 20)
+        cl.setSpacing(10)
 
         # Иконка
         self.icon_label = QLabel("↓")
@@ -4092,10 +4092,6 @@ class DownloadUpdateDialog(QDialog):
         """)
         self.message_label.hide()
 
-        # Кнопки
-        self.cancel_btn = RedButton("Отмена")
-        self.cancel_btn.clicked.connect(self._cancel_download)
-
         # Горизонтальный layout для кнопок после скачивания
         self.success_buttons_layout = QHBoxLayout()
         self.success_buttons_layout.setSpacing(12)
@@ -4121,13 +4117,12 @@ class DownloadUpdateDialog(QDialog):
         cl.addWidget(self.version_label)
         cl.addWidget(self.progress_bar)
         cl.addWidget(self.message_label)
-        cl.addWidget(self.cancel_btn)
         cl.addWidget(self.success_buttons_widget)
 
         self.container.setLayout(cl)
         main_layout.addWidget(self.container)
         self.setLayout(main_layout)
-        self.setFixedSize(380, 340)
+        self.setFixedSize(360, 270)
 
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
@@ -4167,8 +4162,20 @@ class DownloadUpdateDialog(QDialog):
     def _download_worker(self):
         new_exe_path = None
         try:
-            downloads = os.path.join(os.path.expanduser("~"), "Downloads")
-            new_exe_path = os.path.join(downloads, f"ClaudeCodeManager_v{self.update_info['latest']}.exe")
+            # По умолчанию складываем рядом со старым .exe — так пользователь
+            # увидит обновление в той же папке, где запускал приложение раньше.
+            # Если запущены из python.exe (не скомпилировано) — fallback в Downloads.
+            current_exe = sys.executable
+            is_compiled = current_exe.lower().endswith('.exe') and 'python' not in current_exe.lower()
+            if is_compiled and os.path.exists(current_exe):
+                target_dir = os.path.dirname(current_exe)
+            else:
+                target_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+
+            # Имя нового файла содержит новую версию — НЕ совпадает с именем
+            # запущенного .exe, чтобы не пытаться писать в файл, открытый ОС.
+            # Это и было причиной "Could not load PKG archive" в прошлых попытках.
+            new_exe_path = os.path.join(target_dir, f"ClaudeCodeManager_v{self.update_info['latest']}.exe")
             url = self.update_info['download_url']
 
             req = Request(url, headers={'User-Agent': 'ClaudeManager-Updater'})
@@ -4244,11 +4251,15 @@ class DownloadUpdateDialog(QDialog):
                 }
             """)
 
-            self.message_label.setText("Выберите действие:")
+            # Кнопки выбора больше не нужны — финал авто-завершается:
+            # старый .exe удаляется, открывается папка с новым файлом.
+            self.message_label.setText("Завершаем обновление…")
             self.message_label.show()
+            self.success_buttons_widget.hide()
 
-            self.cancel_btn.hide()
-            self.success_buttons_widget.show()
+            # Небольшая задержка, чтобы пользователь успел увидеть «Обновление скачано!»
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(1200, self._delete_old_and_open)
         else:
             self.title_label.setText("Ошибка скачивания")
             self.icon_label.setText("✗")
@@ -4278,42 +4289,121 @@ class DownloadUpdateDialog(QDialog):
             self.message_label.setText(f"Ошибка: {message}")
             self.message_label.show()
 
-    def _cancel_download(self):
-        self._cancelled = True
-        self.reject()
-
     def _open_folder(self):
         """Просто открывает папку с новой версией"""
         subprocess.Popen(f'explorer /select,"{self.downloaded_path}"')
         self.accept()
 
     def _delete_old_and_open(self):
-        """Удаляет старую версию, закрывает приложение и открывает папку с новой"""
+        """Завершает старый процесс, удаляет его .exe в фоне и запускает новую версию.
+
+        Поток событий:
+        1. Этот процесс пишет batch и **жёстко** убивает себя через os._exit() —
+           QApplication.quit() не помогает, потому что мы внутри nested event
+           loop модального диалога: quit() не разрывает его, процесс продолжает
+           жить, файл .exe остаётся залоченным, batch ждёт PID впустую.
+        2. Batch активно опрашивает tasklist по PID; как только процесса нет —
+           ждёт ещё 2 секунды (на освобождение _MEI-папки PyInstaller),
+           удаляет старый .exe, запускает новый и стирает сам себя.
+        3. Если процесс почему-то не умер за 30 секунд — batch добивает его
+           taskkill /F. Без этого fallback'а старый .exe навсегда залип бы
+           на диске, как и сообщил пользователь.
+        """
         current_exe = sys.executable
         is_compiled = current_exe.lower().endswith('.exe') and 'python' not in current_exe.lower()
 
-        if is_compiled and os.path.exists(current_exe):
-            # Создаем batch скрипт во временной папке
+        if not (is_compiled and os.path.exists(current_exe)):
+            # Не скомпилировано (запуск из python) — нечего удалять,
+            # просто открываем папку с новым файлом и закрываем диалог.
+            try:
+                subprocess.Popen(f'explorer /select,"{self.downloaded_path}"')
+            except Exception:
+                pass
+            self.accept()
+            return
+
+        try:
             temp_dir = os.path.join(os.getenv('TEMP'), 'claude_update')
             os.makedirs(temp_dir, exist_ok=True)
             batch_path = os.path.join(temp_dir, "update_claude_code_manager.bat")
+            vbs_path = os.path.join(temp_dir, "run_update.vbs")
+            log_path = os.path.join(temp_dir, "update.log")
+            pid = os.getpid()
 
-            try:
-                with open(batch_path, 'w') as f:
-                    f.write('@echo off\n')
-                    f.write('timeout /t 2 /nobreak >nul\n')
-                    f.write(f'del /f /q "{current_exe}"\n')
-                    f.write(f'start "" explorer /select,"{self.downloaded_path}"\n')
-                    f.write(f'del /f /q "{batch_path}"\n')
+            # Batch использует ping вместо timeout: timeout требует консольный
+            # ввод и валится в detached/no-window режиме, из-за чего пауза не
+            # срабатывала и файл не успевал разлочиться. ping -n N localhost
+            # надёжно ждёт N-1 секунд без зависимости от консоли.
+            script = (
+                '@echo off\r\n'
+                'setlocal\r\n'
+                f'set "PID={pid}"\r\n'
+                f'set "OLD_EXE={current_exe}"\r\n'
+                f'set "NEW_EXE={self.downloaded_path}"\r\n'
+                f'set "LOG={log_path}"\r\n'
+                'echo [start] PID=%PID% OLD=%OLD_EXE% NEW=%NEW_EXE% > "%LOG%"\r\n'
+                'set /a TRIES=0\r\n'
+                ':wait_loop\r\n'
+                'tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL\r\n'
+                'if errorlevel 1 goto proc_dead\r\n'
+                'set /a TRIES+=1\r\n'
+                'if %TRIES% GEQ 30 goto force_kill\r\n'
+                'ping -n 2 127.0.0.1 >NUL\r\n'
+                'goto wait_loop\r\n'
+                ':force_kill\r\n'
+                'echo [force_kill] PID still alive, killing >> "%LOG%"\r\n'
+                'taskkill /F /PID %PID% >>"%LOG%" 2>&1\r\n'
+                'ping -n 3 127.0.0.1 >NUL\r\n'
+                ':proc_dead\r\n'
+                'echo [proc_dead] waiting for file unlock >> "%LOG%"\r\n'
+                # 3 секунды на освобождение .exe и cleanup _MEI у PyInstaller
+                'ping -n 4 127.0.0.1 >NUL\r\n'
+                'echo [del] deleting old exe >> "%LOG%"\r\n'
+                'del /f /q "%OLD_EXE%" >>"%LOG%" 2>&1\r\n'
+                # Если первая попытка не сработала (Windows ещё держит handle),
+                # ждём ещё и пробуем повторно. Раньше старый .exe оставался на
+                # диске именно из-за этого race condition.
+                'if exist "%OLD_EXE%" (\r\n'
+                '  echo [del] retry after wait >> "%LOG%"\r\n'
+                '  ping -n 4 127.0.0.1 >NUL\r\n'
+                '  del /f /q "%OLD_EXE%" >>"%LOG%" 2>&1\r\n'
+                ')\r\n'
+                'echo [launch] starting new exe >> "%LOG%"\r\n'
+                'start "" "%NEW_EXE%"\r\n'
+                'echo [done] >> "%LOG%"\r\n'
+                'endlocal\r\n'
+                '(goto) 2>NUL & del /f /q "%~f0"\r\n'
+            )
+            with open(batch_path, 'w', encoding='cp866', errors='replace') as f:
+                f.write(script)
 
-                # Запускаем batch и закрываем приложение
-                subprocess.Popen(batch_path, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                QApplication.quit()
-            except Exception as e:
-                self.message_label.setText(f"Ошибка: {e}")
-        else:
-            # Если не скомпилировано, просто открываем папку
-            subprocess.Popen(f'explorer /select,"{self.downloaded_path}"')
+            # VBS-обёртка: WScript.Shell.Run с флагом 0 запускает batch
+            # абсолютно невидимо — никакого мелька консоли. Это
+            # самый надёжный способ скрыть процесс на Windows; CREATE_NO_WINDOW
+            # на cmd.exe всё равно даёт миллисекундную вспышку.
+            # В VBS Chr(34) — это символ ", им обрамляем путь к .bat,
+            # чтобы корректно отработать на путях с пробелами.
+            vbs_content = (
+                'Set oShell = CreateObject("WScript.Shell")\r\n'
+                f'oShell.Run "cmd /c " & Chr(34) & "{batch_path}" & Chr(34), 0, False\r\n'
+            )
+            with open(vbs_path, 'w', encoding='ascii', errors='replace') as f:
+                f.write(vbs_content)
+
+            # wscript.exe — оконный хост скриптов: не создаёт консоль вообще,
+            # никаких терминалов мелькать не будет.
+            subprocess.Popen(
+                ['wscript.exe', vbs_path],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                close_fds=True,
+            )
+
+            # Жёсткий выход — QApplication.quit() застревает в nested event
+            # loop модального диалога и процесс продолжает жить, держа .exe
+            # залоченным. os._exit гарантирует мгновенную смерть процесса.
+            os._exit(0)
+        except Exception as e:
+            self.message_label.setText(f"Ошибка: {e}")
             self.accept()
 
 # ============================================================
@@ -7038,7 +7128,7 @@ class ClaudeManager(QMainWindow):
             if not installed:
                 self.claude_install_status_label.setText("Не установлен")
                 self.claude_install_status_label.setStyleSheet(
-                    "color: rgb(220, 120, 120); background: transparent; border: none;"
+                    "color: rgb(255, 50, 50); background: transparent; border: none;"
                 )
             elif version_unknown:
                 self.claude_install_status_label.setText("Проверяю версию…")
@@ -7349,37 +7439,32 @@ class ClaudeManager(QMainWindow):
             pass
 
     def _show_update_notification(self, update_info):
-        """Показывает индикатор и диалог обновления (вызывается в главном потоке)"""
+        """Авто-запуск скачивания обновления без подтверждения от пользователя."""
         try:
-            # Показываем индикатор
+            # Показываем индикатор в углу
             self.update_indicator.setVisible(True)
             self.update_indicator.show()
             self.update_indicator.raise_()
 
-            # Автоматически показываем диалог
-            dialog = UpdateAppDialog(update_info, self)
-            result = dialog.exec()
-
-            if result == QDialog.Accepted and dialog.confirmed:
-                self._start_update_download()
-        except Exception as e:
+            # Сразу стартуем скачивание — без UpdateAppDialog и без кнопки «Обновить»
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(600, self._start_update_download)
+        except Exception:
             pass
 
     def _on_update_indicator_clicked(self):
-        """Обработчик клика по индикатору обновления"""
-        if not self.update_info:
-            return
-
-        # Показываем диалог обновления
-        dialog = UpdateAppDialog(self.update_info, self)
-        if dialog.exec() == QDialog.Accepted and dialog.confirmed:
-            # Пользователь подтвердил обновление
-            self._start_update_download()
+        """Клик по индикатору — обновление уже идёт автоматически, ничего не делаем."""
+        # Авто-обновление само открывает окно скачивания; повторный запуск не нужен.
+        return
 
     def _start_update_download(self):
-        """Запускает скачивание обновления"""
+        """Запускает скачивание обновления (один раз)."""
         if not self.update_info or not self.update_info.get('download_url'):
             return
+        # Защита от повторного запуска (auto-start + ручной клик в редком случае)
+        if getattr(self, '_update_download_started', False):
+            return
+        self._update_download_started = True
 
         download_dialog = DownloadUpdateDialog(self.update_info, self)
         download_dialog.start_download()
@@ -7388,6 +7473,9 @@ class ClaudeManager(QMainWindow):
         # Если скачивание успешно, скрываем индикатор
         if download_dialog.download_success:
             self.update_indicator.setVisible(False)
+        else:
+            # Скачивание не прошло — разрешим повторную попытку при следующем чек-цикле
+            self._update_download_started = False
 
 # ============================================================
 # ЗАПУСК ПРИЛОЖЕНИЯ
