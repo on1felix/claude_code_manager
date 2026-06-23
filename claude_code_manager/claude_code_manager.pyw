@@ -22,11 +22,11 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
                                QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QPainterPath, QFontMetrics
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.5"  # Для обновлений
+APP_VERSION = "5.5.5"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -315,7 +315,7 @@ class StatusIndicator(QWidget):
         super().__init__(parent)
         self.setFixedSize(20, 20)
         self._is_active = False
-        self._state = "off"  # "off" (red), "on" (green), "warn" (yellow)
+        self._state = "off"  # "off" (red), "on" (green), "warn" (yellow), "neutral" (grey)
         self._pulse_time = 0.0
         self._pulse_timer = QTimer()
         self._pulse_timer.timeout.connect(self._animate_pulse)
@@ -328,7 +328,7 @@ class StatusIndicator(QWidget):
         self.update()
 
     def set_state(self, state):
-        """state: 'on' (зелёный), 'off' (красный), 'warn' (жёлтый)"""
+        """state: 'on' (зелёный), 'off' (красный), 'warn' (жёлтый), 'neutral' (серый)"""
         self._state = state
         self._is_active = (state == "on")
         self.update()
@@ -345,29 +345,987 @@ class StatusIndicator(QWidget):
         w, h = self.width(), self.height()
         center = QPointF(w / 2, h / 2)
         pulse = 0.75 + 0.25 * math.sin(self._pulse_time)
+        scale = min(w, h) / 20.0  # базовый размер — 20×20
 
         # Цвет точки и свечения по состоянию
         if self._state == "on":
             glow = (0, 255, 100, int(60 * pulse))
             brightness = int(180 + 75 * pulse)
             core = (0, brightness, int(brightness * 0.4))
+        elif self._state == "fm_ok":
+            # Зелёный точно как текст «freemodel» (#34d399) — для бейджа freemodel.dev
+            glow = (52, 211, 153, int(70 * pulse))
+            t = 0.85 + 0.15 * pulse
+            core = (int(52 * t), int(211 * t), int(153 * t))
         elif self._state == "warn":
             # жёлто-оранжевый
             glow = (255, 170, 30, int(70 * pulse))
             brightness = int(180 + 75 * pulse)
             core = (brightness, int(brightness * 0.62), int(brightness * 0.10))
+        elif self._state == "neutral":
+            # серый, мягкая пульсация
+            glow = (156, 163, 175, int(28 * pulse))
+            brightness = int(140 + 25 * pulse)
+            core = (int(brightness * 0.72), int(brightness * 0.76), int(brightness * 0.85))
         else:
             glow = (255, 50, 50, int(50 * pulse))
             brightness = int(180 + 75 * pulse)
             core = (brightness, 50, 50)
 
-        glow_radius = 5.0 + 2.5 * pulse
+        glow_radius = (5.0 + 2.5 * pulse) * scale
         painter.setBrush(QColor(*glow))
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(center, glow_radius, glow_radius)
 
         painter.setBrush(QColor(*core))
-        painter.drawEllipse(center, 4.5, 4.5)
+        painter.drawEllipse(center, 4.5 * scale, 4.5 * scale)
+
+# ============================================================
+# БЕЙДЖ freemodel.dev (логотип + индикатор статуса сервиса)
+# ============================================================
+
+class FreemodelBrand(QWidget):
+    """Логотип «freemodel.dev» + индикатор-точка справа.
+    «freemodel» — зелёный (#34d399, как на сайте fm.bluealitas.com),
+    «.dev» — мягкий белый (#d1d5db). Цвет точки управляется через
+    set_status(overall) по значениям API /api/status.
+    Клик по бейджу эмитит сигнал `clicked` — главное окно открывает
+    модальный диалог со статистикой freemodel.dev в реальном времени."""
+
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self.dot = StatusIndicator()
+        self.dot.setFixedSize(19, 19)
+        self.dot.set_state("neutral")
+        # Прижимаем к нижней кромке, чтобы точка вставала по базовой линии текста,
+        # а не «висела» выше — иначе индикатор выглядит выше глифов.
+        layout.addWidget(self.dot, 0, Qt.AlignBottom)
+
+        self.label = QLabel()
+        self.label.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
+        self.label.setTextFormat(Qt.RichText)
+        self.label.setText(
+            '<span style="color:#34d399; font-weight:700;">freemodel</span>'
+            '<span style="color:#d1d5db; font-weight:500;">.dev</span>'
+        )
+        self.label.setStyleSheet("background: transparent;")
+        layout.addWidget(self.label, 0, Qt.AlignBottom)
+
+        self.adjustSize()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def set_status(self, overall):
+        """overall: 'ok' | 'warn' | 'confirming' | 'bad' | 'down' | 'unknown' | None
+        'confirming' трактуем как warn — сайт делает то же самое."""
+        if overall == "ok":
+            # «ok» — в цвет текста freemodel (#34d399)
+            self.dot.set_state("fm_ok")
+        elif overall in ("warn", "confirming"):
+            self.dot.set_state("warn")
+        elif overall in ("bad", "down"):
+            self.dot.set_state("off")
+        else:
+            self.dot.set_state("neutral")
+
+# ============================================================
+# ПОДСКАЗКА «клик» с изогнутой стрелкой, указывает на бейдж freemodel.dev
+# ============================================================
+
+class _FmClickHint(QWidget):
+    """Короткая изогнутая серая стрелка с подписью «клик», указывает на
+    бейдж freemodel.dev. Виджет прозрачен для мыши, поэтому не перехватывает
+    клики по самому бейджу. Изгиб уходит снизу-влево и возвращается к тексту,
+    наконечник упирается под низ текста freemodel.dev."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(150, 70)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setRenderHint(QPainter.TextAntialiasing, True)
+
+        line_color = QColor("#6a6a72")
+        text_color = QColor("#7d7d85")
+
+        # Подпись «клик» — справа-снизу, рядом с хвостом стрелки
+        font = QFont("Segoe UI", 9)
+        font.setItalic(True)
+        p.setFont(font)
+        p.setPen(text_color)
+        p.drawText(QRectF(96, 38, 60, 22), Qt.AlignLeft | Qt.AlignVCenter, "клик")
+
+        # Изогнутая стрелка: начинается слева от слова «клик», уходит вниз-влево,
+        # выгибается через левую сторону и упирается наконечником вверх в бейдж.
+        pen = QPen(line_color, 1.4)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+
+        start = QPointF(92, 47)
+        c1 = QPointF(55, 62)
+        c2 = QPointF(8, 38)
+        end = QPointF(45, 8)
+
+        path = QPainterPath()
+        path.moveTo(start)
+        path.cubicTo(c1, c2, end)
+        p.drawPath(path)
+
+        # Наконечник стрелки. Касательная в конце пути ≈ направление (c2 → end).
+        dx = end.x() - c2.x()
+        dy = end.y() - c2.y()
+        angle = math.atan2(dy, dx)
+        head = 7.5
+        spread = math.pi / 7
+        a1 = QPointF(
+            end.x() - head * math.cos(angle - spread),
+            end.y() - head * math.sin(angle - spread),
+        )
+        a2 = QPointF(
+            end.x() - head * math.cos(angle + spread),
+            end.y() - head * math.sin(angle + spread),
+        )
+        p.drawLine(end, a1)
+        p.drawLine(end, a2)
+
+# ============================================================
+# ДИАЛОГ СТАТИСТИКИ freemodel.dev (открывается по клику на бейдж)
+# ============================================================
+
+# Цветовая палитра — взята 1:1 с CSS-переменных сайта fm.bluealitas.com.
+_FM_COLORS = {
+    "bg":         "#0d0d0d",
+    "bg_warm":    "#161616",
+    "bg_card":    "#1a1a1a",
+    "ink":        "#f3f4f6",
+    "ink_soft":   "#d1d5db",
+    "ink_muted":  "#9ca3af",
+    "line":       "#2a2a2a",
+    "line_soft":  "#1f1f1f",
+    "ok":         "#34d399",
+    "warn":       "#fbbf24",
+    "bad":        "#f87171",
+    "down":       "#ef4444",
+    "slow":       "#60a5fa",
+    "very_slow":  "#fbbf24",
+    # 'failed' пробы — красные. Ключа не было → бары падали в ink_muted (серый),
+    # из-за чего пользователю казалось, что красных шкал нет.
+    "failed":     "#f87171",
+}
+
+def _fm_classify_probe(probe):
+    """Категория пробы: 'failed' | 'very_slow' | 'slow' | 'ok'.
+    Пороги взяты 1:1 из JS сайта fm.bluealitas.com:
+       latency > 4000  → very_slow (жёлтый)
+       latency > 1500  → slow      (голубой)
+       иначе           → ok        (зелёный)
+       !ok             → failed    (красный)"""
+    if not probe or not probe.get("ok", False):
+        return "failed"
+    lat = probe.get("latency") or 0
+    if lat > 4000:
+        return "very_slow"
+    if lat > 1500:
+        return "slow"
+    return "ok"
+
+def _fm_fmt_eta(ms_remaining):
+    """5_271_000 ms → '1h 27m 51s' / '23m 11s' / '45s'."""
+    if ms_remaining is None or ms_remaining < 0:
+        ms_remaining = 0
+    total_s = int(ms_remaining // 1000)
+    h, rem = divmod(total_s, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+def _fm_fmt_age(ms_age):
+    """Сколько назад: '6m ago', '23s ago', '1h 12m ago'."""
+    if ms_age is None or ms_age < 0:
+        return "—"
+    total_s = int(ms_age // 1000)
+    if total_s < 60:
+        return f"{total_s}s ago"
+    h, rem = divmod(total_s, 3600)
+    m, _ = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m ago"
+    return f"{m}m ago"
+
+def _fm_fmt_ms(value):
+    """5276.123 → '5 276'. Тысячи разделены пробелом — как на сайте."""
+    if value is None:
+        return "—"
+    try:
+        return f"{int(round(float(value))):,}".replace(",", " ")
+    except Exception:
+        return "—"
+
+
+class LatencyHistogram(QWidget):
+    """Гистограмма последних N проб freemodel.dev — бар на каждый probe.
+    Цвет по категории. Бары рисуются с лёгким вертикальным градиентом сверху-вниз
+    и тонкой базовой линией для визуального якоря."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Прозрачный фон, чтобы под виджетом просвечивала карточка-родитель —
+        # иначе Windows зальёт виджет дефолтной серой подложкой.
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setMinimumHeight(118)
+        self._samples = []
+
+    def set_samples(self, samples):
+        self._samples = samples[-110:]
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self.width(), self.height()
+
+        # Базовая линия — едва заметная горизонталь под барами
+        baseline_y = h - 4
+        p.setPen(QPen(QColor(_FM_COLORS["line_soft"]), 1))
+        p.drawLine(0, int(baseline_y) + 1, w, int(baseline_y) + 1)
+
+        if not self._samples:
+            p.setPen(QColor(_FM_COLORS["ink_muted"]))
+            p.setFont(QFont("Segoe UI", 10))
+            p.drawText(self.rect(), Qt.AlignCenter, "нет данных")
+            return
+
+        max_lat = max((s[2] for s in self._samples if s[2]), default=1.0) or 1.0
+        max_lat *= 1.05
+        gap = 2.0
+        n = len(self._samples)
+        bar_w = max(1.5, (w - gap * (n - 1)) / n)
+
+        for i, (ts, cat, lat) in enumerate(self._samples):
+            base_color = QColor(_FM_COLORS.get(cat, _FM_COLORS["ink_muted"]))
+            if cat == "failed":
+                bar_h = 8.0
+            else:
+                bar_h = max(3.0, (lat / max_lat) * (h - 10))
+            x = i * (bar_w + gap)
+            y = baseline_y - bar_h
+
+            # Вертикальный градиент: вверху чуть ярче, внизу чуть глуше
+            grad = QLinearGradient(0, y, 0, baseline_y)
+            top = QColor(base_color)
+            bot = QColor(base_color)
+            bot.setAlphaF(0.78)
+            grad.setColorAt(0, top)
+            grad.setColorAt(1, bot)
+            p.setBrush(QBrush(grad))
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(QRectF(x, y, bar_w, bar_h), 1.4, 1.4)
+
+
+# ─── Кастомное окно (только для FreemodelStatsDialog) ─────────────
+
+class _FmHeroCard(QFrame):
+    """Карточка-герой с лёгким радиальным глоу из верхнего-левого угла.
+    Глоу «дышит» — амплитуда альфа-канала колеблется по синусоиде. Скорость
+    дыхания зависит от состояния: спокойно при ok, быстрее при warn/bad/down."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._glow_color = None
+        self._glow_state = "unknown"
+        self._anim_phase = 0.0
+        # Сама карточка рисует свой фон в paintEvent; запрещаем дефолтную
+        # заливку — иначе бывает «двойной» фон и заметные швы по бордюру.
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._anim_timer = QTimer(self)
+        self._anim_timer.timeout.connect(self._tick)
+        self._anim_timer.start(33)  # ~30 FPS — достаточно для мягкого breathing
+
+    def set_glow(self, color_hex, state="ok"):
+        self._glow_color = QColor(color_hex) if color_hex else None
+        self._glow_state = state or "unknown"
+        self.update()
+
+    def _tick(self):
+        # Шаг фазы — чем «тревожнее» состояние, тем быстрее дышит глоу
+        step = {
+            "ok":         0.018,
+            "unknown":    0.012,
+            "warn":       0.040,
+            "confirming": 0.040,
+            "bad":        0.075,
+            "down":       0.090,
+        }.get(self._glow_state, 0.020)
+        self._anim_phase += step
+        if self._anim_phase > 1e6:
+            self._anim_phase = 0.0
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+
+        # Базовый фон карточки
+        p.setBrush(QColor(_FM_COLORS["bg_card"]))
+        p.setPen(QPen(QColor(_FM_COLORS["line"]), 1))
+        p.drawRoundedRect(r, 14, 14)
+
+        if self._glow_color is None:
+            return
+
+        # Дыхание: коэффициент колеблется в [0.35 … 1.0]
+        breath = 0.35 + 0.65 * (0.5 + 0.5 * math.sin(self._anim_phase))
+        peak_alpha = {
+            "ok":         0.18,
+            "unknown":    0.08,
+            "warn":       0.26,
+            "confirming": 0.26,
+            "bad":        0.30,
+            "down":       0.34,
+        }.get(self._glow_state, 0.18)
+        # Радиус глоу тоже немного «дышит» — на 6%
+        radius_mul = 0.62 + 0.06 * (0.5 + 0.5 * math.sin(self._anim_phase + 0.7))
+        radius = max(r.width(), r.height()) * radius_mul
+
+        gr = QRadialGradient(QPointF(r.left() + r.width() * 0.20,
+                                     r.top() - r.height() * 0.18), radius)
+        c0 = QColor(self._glow_color)
+        c0.setAlphaF(peak_alpha * breath)
+        c1 = QColor(self._glow_color)
+        c1.setAlphaF(0.0)
+        gr.setColorAt(0.0, c0)
+        gr.setColorAt(1.0, c1)
+        p.setBrush(QBrush(gr))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(r, 14, 14)
+
+
+class _FmFlatCard(QFrame):
+    """Простая карточка со скруглённым фоном и рамкой, нарисованными в
+    paintEvent (а не через QSS). Это важно: при stylesheet-фоне на обычном
+    QFrame дочерние QLabel на Windows получают «родной» серый квадрат-подложку.
+    Самоотрисовка + WA_TranslucentBackground убирает этот артефакт — так же,
+    как сделано в _FmHeroCard (у которой квадратов нет)."""
+
+    def __init__(self, bg_hex, border_hex, radius=12, parent=None):
+        super().__init__(parent)
+        self._bg = QColor(bg_hex)
+        self._border = QColor(border_hex)
+        self._radius = radius
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setBrush(self._bg)
+        p.setPen(QPen(self._border, 1))
+        p.drawRoundedRect(r, self._radius, self._radius)
+
+
+class _FmTitleBarButton(QPushButton):
+    """Кнопка в шапке окна — минимизация/закрытие. Рисует крестик/минус QPainter'ом
+    с мягким hover-фоном."""
+
+    def __init__(self, kind="close", parent=None):
+        super().__init__(parent)
+        self._kind = kind  # 'close' | 'min'
+        self.setFixedSize(38, 28)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover = False
+        # Кнопка — кастомная отрисовка только глифа и hover-фона. Дефолтную
+        # native-подложку отключаем, иначе по углам видны «коробки».
+        self.setFlat(True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = self.rect().adjusted(2, 2, -2, -2)
+
+        if self._hover:
+            if self._kind == "close":
+                bg = QColor("#e74c3c")
+                bg.setAlphaF(0.18)
+            else:
+                bg = QColor("#ffffff")
+                bg.setAlphaF(0.06)
+            p.setBrush(bg)
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(r, 6, 6)
+
+        cx, cy = self.width() / 2, self.height() / 2
+        pen_color = QColor(_FM_COLORS["ink"]) if self._hover else QColor(_FM_COLORS["ink_muted"])
+        pen = QPen(pen_color, 1.4)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+
+        if self._kind == "close":
+            s = 4.5
+            p.drawLine(QPointF(cx - s, cy - s), QPointF(cx + s, cy + s))
+            p.drawLine(QPointF(cx + s, cy - s), QPointF(cx - s, cy + s))
+        else:  # min
+            s = 5.0
+            p.drawLine(QPointF(cx - s, cy + 0.5), QPointF(cx + s, cy + 0.5))
+
+
+class _FmTitleBar(QWidget):
+    """Кастомная шапка окна freemodel.dev: индикатор + бренд слева, кнопки справа.
+    Перетаскивание окна — за свободную область шапки."""
+
+    close_clicked = Signal()
+    minimize_clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(46)
+        # Сама шапка рисует только нижнюю линию — фон даёт родительский
+        # контейнер. WA_TranslucentBackground убирает дефолтную системную
+        # заливку, которая иначе видна по углам.
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(18, 8, 8, 8)
+        lay.setSpacing(10)
+
+        # Точка-статус слева
+        self.dot = StatusIndicator()
+        self.dot.setFixedSize(14, 14)
+        self.dot.set_state("neutral")
+        lay.addWidget(self.dot, 0, Qt.AlignVCenter)
+
+        # Бренд
+        self.title = QLabel(
+            '<span style="color:#34d399; font-weight:700;">freemodel</span>'
+            '<span style="color:#d1d5db; font-weight:500;">.dev</span>'
+            '<span style="color:#5b5f66; font-weight:400;">   •   live status</span>'
+        )
+        self.title.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
+        self.title.setTextFormat(Qt.RichText)
+        lay.addWidget(self.title, 0, Qt.AlignVCenter)
+
+        lay.addStretch()
+
+        self.btn_min = _FmTitleBarButton("min")
+        self.btn_min.clicked.connect(self.minimize_clicked.emit)
+        lay.addWidget(self.btn_min)
+
+        self.btn_close = _FmTitleBarButton("close")
+        self.btn_close.clicked.connect(self.close_clicked.emit)
+        lay.addWidget(self.btn_close)
+
+        self._drag_offset = None
+
+    def paintEvent(self, event):
+        # Тонкая разделительная линия снизу
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, False)
+        p.setPen(QPen(QColor(_FM_COLORS["line_soft"]), 1))
+        p.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_offset = e.globalPosition().toPoint() - self.window().pos()
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._drag_offset is not None and (e.buttons() & Qt.LeftButton):
+            self.window().move(e.globalPosition().toPoint() - self._drag_offset)
+            e.accept()
+        else:
+            super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._drag_offset = None
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        # Двойной клик по шапке — ничего не делает (нет максимизации),
+        # перехватываем чтобы не сработал ничего нежелательного.
+        e.accept()
+
+
+class _FmLegendDot(QLabel):
+    """Маленькая цветная точка для легенды. Раньше рисовалась через QPainter
+    в QWidget — но на Windows под кастомным paintEvent протекала дефолтная
+    системная заливка, из-за чего вокруг точки был виден серый квадрат.
+    Теперь это QLabel с круглым фоном через CSS (border-radius) — никакой
+    собственной отрисовки, неоткуда взяться квадрату."""
+
+    def __init__(self, color_hex, parent=None):
+        super().__init__(parent)
+        self._size = 10
+        self.setFixedSize(self._size, self._size)
+        self.set_color(color_hex)
+
+    def set_color(self, color_hex):
+        r = self._size / 2
+        self.setStyleSheet(
+            f"QLabel {{ background-color: {color_hex};"
+            f" border: none; border-radius: {r:.1f}px; }}"
+        )
+
+
+def _fm_make_legend(parent=None):
+    """Горизонтальная легенда «● ok ● slow ● very slow ● failed» —
+    точки нарисованы QPainter'ом, тексты — обычные QLabel."""
+    w = QWidget(parent)
+    w.setAttribute(Qt.WA_StyledBackground, False)
+    w.setAttribute(Qt.WA_TranslucentBackground, True)
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(16)
+    items = [
+        (_FM_COLORS["ok"],        "ok"),
+        (_FM_COLORS["slow"],      "slow"),
+        (_FM_COLORS["very_slow"], "very slow"),
+        (_FM_COLORS["bad"],       "failed"),
+    ]
+    for color, label_text in items:
+        cell = QHBoxLayout()
+        cell.setContentsMargins(0, 0, 0, 0)
+        cell.setSpacing(6)
+        cell.addWidget(_FmLegendDot(color), 0, Qt.AlignVCenter)
+        lbl = QLabel(label_text)
+        lbl.setFont(QFont("Segoe UI", 9))
+        lbl.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
+        cell.addWidget(lbl, 0, Qt.AlignVCenter)
+        lay.addLayout(cell)
+    return w
+
+
+class FreemodelStatsDialog(QDialog):
+    """Кастомное frameless-окно со статистикой freemodel.dev в реальном времени.
+    Единственное окно в приложении с собственной шапкой, перемещаемое за неё."""
+
+    data_updated = Signal(dict)
+    fetch_failed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("freemodel.dev — статус и латентность")
+        # Frameless + полупрозрачный фон под drop-shadow контейнера
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setModal(False)
+        self.setMinimumSize(820, 600)
+        self.resize(900, 660)
+
+        try:
+            for p in (
+                os.path.join(os.path.dirname(__file__), "icon.ico"),
+                os.path.join(os.path.dirname(sys.executable), "icon.ico"),
+            ):
+                if os.path.exists(p):
+                    self.setWindowIcon(QIcon(p))
+                    break
+        except Exception:
+            pass
+
+        self._last_data = None
+        self._next_check_at_ms = None
+        self._stop = False
+        self._current_overall = "unknown"
+
+        self._build_ui()
+
+        self.data_updated.connect(self._apply_data)
+        self.fetch_failed.connect(self._apply_failure)
+
+        self._tick_timer = QTimer(self)
+        self._tick_timer.timeout.connect(self._update_countdown)
+        self._tick_timer.start(1000)
+
+        self._fetch_thread = threading.Thread(target=self._fetch_loop, daemon=True)
+        self._fetch_thread.start()
+
+    # ─── UI ─────────────────────────────────────────────────────────
+    def _build_ui(self):
+        # Внешний layout — поля под drop-shadow
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(0)
+
+        # Контейнер-«окно» с реальной рамкой и фоном
+        self.container = QFrame()
+        self.container.setObjectName("fm_window")
+        self.container.setStyleSheet(f"""
+            QFrame#fm_window {{
+                background-color: {_FM_COLORS['bg']};
+                border: 1px solid {_FM_COLORS['line']};
+                border-radius: 16px;
+            }}
+        """)
+        shadow = QGraphicsDropShadowEffect(self.container)
+        shadow.setBlurRadius(48)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        shadow.setOffset(0, 10)
+        self.container.setGraphicsEffect(shadow)
+        outer.addWidget(self.container)
+
+        # Внутренний layout контейнера
+        inner = QVBoxLayout(self.container)
+        inner.setContentsMargins(0, 0, 0, 0)
+        inner.setSpacing(0)
+
+        # Кастомная шапка
+        self.title_bar = _FmTitleBar()
+        self.title_bar.close_clicked.connect(self.close)
+        self.title_bar.minimize_clicked.connect(self.showMinimized)
+        inner.addWidget(self.title_bar)
+
+        # Контент
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(24, 20, 24, 22)
+        cl.setSpacing(16)
+
+        # ── Hero: ALL SYSTEMS + GATEWAY LATENCY ─────────────────────
+        self.hero_frame = _FmHeroCard()
+        hero_lay = QHBoxLayout(self.hero_frame)
+        hero_lay.setContentsMargins(28, 22, 28, 22)
+        hero_lay.setSpacing(24)
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(8)
+        self.lbl_all_systems = self._eyebrow("ALL SYSTEMS")
+        self.lbl_status_word = QLabel("—")
+        self.lbl_status_word.setFont(self._numeric_font(34, QFont.DemiBold))
+        self.lbl_status_word.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
+        self.lbl_status_sub = QLabel("Awaiting data…")
+        self.lbl_status_sub.setFont(QFont("Segoe UI", 10))
+        self.lbl_status_sub.setStyleSheet(f"color: {_FM_COLORS['ink_soft']}; background: transparent;")
+        self.lbl_status_sub.setWordWrap(True)
+        left_col.addWidget(self.lbl_all_systems)
+        left_col.addWidget(self.lbl_status_word)
+        left_col.addSpacing(2)
+        left_col.addWidget(self.lbl_status_sub)
+        left_col.addStretch()
+        hero_lay.addLayout(left_col, 13)
+
+        # Тонкий вертикальный разделитель
+        sep = QFrame()
+        sep.setFixedWidth(1)
+        sep.setStyleSheet(f"background-color: {_FM_COLORS['line_soft']};")
+        hero_lay.addWidget(sep)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(8)
+        self.lbl_lat_eyebrow = self._eyebrow("GATEWAY LATENCY  •  LAST HOUR")
+        right_col.addWidget(self.lbl_lat_eyebrow)
+
+        lat_row = QHBoxLayout()
+        lat_row.setSpacing(6)
+        self.lbl_lat_big = QLabel("—")
+        self.lbl_lat_big.setFont(self._numeric_font(36, QFont.DemiBold))
+        self.lbl_lat_big.setStyleSheet(f"color: {_FM_COLORS['ink']}; background: transparent;")
+        self.lbl_lat_unit = QLabel("ms")
+        self.lbl_lat_unit.setFont(QFont("Segoe UI", 14, QFont.Normal))
+        self.lbl_lat_unit.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
+        lat_row.addWidget(self.lbl_lat_big, 0, Qt.AlignBottom)
+        lat_row.addWidget(self.lbl_lat_unit, 0, Qt.AlignBottom)
+        lat_row.addStretch()
+        right_col.addLayout(lat_row)
+
+        self.lbl_lat_meta = QLabel("p10 — · p90 — · p99 —")
+        self.lbl_lat_meta.setFont(self._numeric_font(10, QFont.Normal))
+        self.lbl_lat_meta.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
+        self.lbl_lat_meta.setTextFormat(Qt.RichText)
+        right_col.addWidget(self.lbl_lat_meta)
+        right_col.addStretch()
+        hero_lay.addLayout(right_col, 10)
+
+        cl.addWidget(self.hero_frame)
+
+        # ── Полоска next check + mode ───────────────────────────────
+        # Карточка рисует фон сама (_FmFlatCard) — иначе дочерние QLabel на
+        # Windows получают серый квадрат-подложку.
+        self.next_bar = _FmFlatCard(_FM_COLORS['bg_warm'], _FM_COLORS['line_soft'], radius=11)
+        nb = QHBoxLayout(self.next_bar)
+        nb.setContentsMargins(16, 11, 16, 11)
+        nb.setSpacing(10)
+        self.lbl_next_check = QLabel("next check in —")
+        self.lbl_next_check.setFont(self._numeric_font(10, QFont.Normal))
+        self.lbl_next_check.setTextFormat(Qt.RichText)
+        self.lbl_next_check.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
+
+        # «mode pill» справа — нарисованная точка + текст (без unicode-bullet'а)
+        self.mode_dot = _FmLegendDot(_FM_COLORS["ok"])
+        self.lbl_mode = QLabel("—")
+        self.lbl_mode.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
+        self.lbl_mode.setStyleSheet(f"color: {_FM_COLORS['ok']}; background: transparent;")
+
+        nb.addWidget(self.lbl_next_check)
+        nb.addStretch()
+        nb.addWidget(self.mode_dot, 0, Qt.AlignVCenter)
+        nb.addSpacing(6)
+        nb.addWidget(self.lbl_mode, 0, Qt.AlignVCenter)
+        cl.addWidget(self.next_bar)
+
+        # ── Карточка с гистограммой проб ─────────────────────────────
+        self.probes_frame = _FmFlatCard(_FM_COLORS['bg_card'], _FM_COLORS['line'], radius=14)
+        pf = QVBoxLayout(self.probes_frame)
+        pf.setContentsMargins(22, 18, 22, 18)
+        pf.setSpacing(10)
+
+        head_row = QHBoxLayout()
+        title = QLabel("freemodel.dev model probes")
+        title.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
+        title.setStyleSheet(f"color: {_FM_COLORS['ink']}; background: transparent;")
+        head_row.addWidget(title)
+        head_row.addStretch()
+        head_row.addWidget(_fm_make_legend(), 0, Qt.AlignVCenter)
+        pf.addLayout(head_row)
+
+        self.lbl_probes_sub = QLabel("—")
+        self.lbl_probes_sub.setFont(self._numeric_font(9, QFont.Normal))
+        self.lbl_probes_sub.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
+        pf.addWidget(self.lbl_probes_sub)
+
+        self.histogram = LatencyHistogram()
+        pf.addWidget(self.histogram, 1)
+
+        cl.addWidget(self.probes_frame, 1)
+
+        # Подпись внизу
+        src = QLabel("источник: fm.bluealitas.com/api/status  •  обновление каждые 6 секунд")
+        src.setFont(QFont("Segoe UI", 8))
+        src.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
+        src.setAlignment(Qt.AlignCenter)
+        cl.addWidget(src)
+
+        inner.addWidget(content, 1)
+
+    def _eyebrow(self, text):
+        lbl = QLabel(text)
+        f = QFont("Segoe UI", 8, QFont.DemiBold)
+        f.setLetterSpacing(QFont.PercentageSpacing, 118)
+        lbl.setFont(f)
+        lbl.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
+        return lbl
+
+    def _numeric_font(self, pt, weight=QFont.Normal):
+        """Шрифт с включёнными tabular-цифрами — большие числа не «прыгают» при апдейте."""
+        f = QFont("Segoe UI", pt, weight)
+        try:
+            f.setStyleStrategy(QFont.PreferAntialias)
+            # Tabular figures — Qt6 поддерживает font features через setFeature на QFont 6.7+,
+            # как fallback используем стандартный шрифт. Главное — фикс-ширина у цифр у Segoe UI.
+        except Exception:
+            pass
+        return f
+
+    # ─── Фоновый поллер ────────────────────────────────────────────
+    def _fetch_loop(self):
+        url = "https://fm.bluealitas.com/api/status"
+        ctx = ssl.create_default_context()
+        while not self._stop:
+            try:
+                req = Request(url, headers={"User-Agent": f"ClaudeCodeManager/{APP_VERSION}"})
+                with urlopen(req, timeout=8, context=ctx) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                self.data_updated.emit(data)
+            except Exception:
+                self.fetch_failed.emit()
+            # пауза с проверкой stop — чтобы окно быстро закрывалось
+            for _ in range(60):  # 60 × 0.1с = 6 секунд
+                if self._stop:
+                    return
+                time.sleep(0.1)
+
+    # ─── Применение данных ─────────────────────────────────────────
+    def _apply_data(self, data):
+        self._last_data = data
+
+        overall = str(data.get("overall") or "unknown").lower()
+        mode = str(data.get("mode") or "").lower()
+        labels = data.get("statusLabels") or {}
+
+        # Эффективное состояние — если сайт сейчас в режиме confirming,
+        # отображаем «Confirming…» жёлтым (сайт делает то же самое).
+        if mode == "confirming":
+            effective = "confirming"
+            word = "Confirming…"
+        else:
+            effective = overall
+            word = labels.get(overall) or {
+                "ok": "Operational", "warn": "Degraded", "bad": "Disrupted",
+                "down": "Down", "unknown": "Awaiting probes…"
+            }.get(overall, "—")
+
+        color_map = {
+            "ok":         _FM_COLORS["ok"],
+            "warn":       _FM_COLORS["warn"],
+            "confirming": _FM_COLORS["warn"],
+            "bad":        _FM_COLORS["bad"],
+            "down":       _FM_COLORS["down"],
+            "unknown":    _FM_COLORS["ink_muted"],
+        }
+        word_color = color_map.get(effective, _FM_COLORS["ink_muted"])
+        self.lbl_status_word.setText(word)
+        self.lbl_status_word.setStyleSheet(
+            f"color: {word_color}; background: transparent;"
+        )
+        # Глоу hero-карточки повторяет цвет состояния и дышит со своей скоростью
+        self.hero_frame.set_glow(word_color, effective)
+
+        # Точка в шапке — синхронизируем
+        if effective == "ok":
+            self.title_bar.dot.set_state("fm_ok")
+        elif effective in ("warn", "confirming"):
+            self.title_bar.dot.set_state("warn")
+        elif effective in ("bad", "down"):
+            self.title_bar.dot.set_state("off")
+        else:
+            self.title_bar.dot.set_state("neutral")
+
+        now_ms = int(time.time() * 1000)
+        last_ok = data.get("lastOkOverall")
+        age = (now_ms - last_ok) if last_ok else None
+        if overall == "ok":
+            sub = f"All tested models are responding. Last successful check {_fm_fmt_age(age)}."
+        elif overall == "warn":
+            sub = f"Some models are degraded. Last successful check {_fm_fmt_age(age)}."
+        elif overall in ("bad", "down"):
+            sub = f"Service is disrupted. Last successful check {_fm_fmt_age(age)}."
+        else:
+            sub = "Awaiting probes…"
+        self.lbl_status_sub.setText(sub)
+
+        self._next_check_at_ms = data.get("nextCheckAt")
+        self._update_countdown()
+
+        mode = str(data.get("mode") or "").lower()
+        cadence_ms = data.get("cadenceMs") or 0
+        cadence_min = max(1, int(round(cadence_ms / 60000))) if cadence_ms else 0
+        mode_color = {
+            "healthy": _FM_COLORS["ok"],
+            "rapid": _FM_COLORS["warn"],
+            "confirming": _FM_COLORS["warn"],
+        }.get(mode, _FM_COLORS["ink_soft"])
+        mode_text = f"{mode or '—'}  •  probing every {cadence_min}m" if cadence_min else (mode or "—")
+        self.lbl_mode.setText(mode_text)
+        self.lbl_mode.setStyleSheet(f"color: {mode_color}; background: transparent;")
+        self.mode_dot.set_color(mode_color)
+
+        # Собираем пробы со всех моделей всех таргетов
+        targets = data.get("targets") or []
+        all_samples = []
+        last_hour_lats = []
+        for tgt in targets:
+            for m in (tgt.get("models") or []):
+                for h in (m.get("history48") or []):
+                    ts = h.get("ts") or 0
+                    cat = _fm_classify_probe(h)
+                    lat = h.get("latency") or 0
+                    all_samples.append((ts, cat, lat))
+                    if ts >= now_ms - 3600 * 1000 and h.get("ok"):
+                        last_hour_lats.append(lat)
+
+        all_samples.sort(key=lambda x: x[0])
+        self.histogram.set_samples(all_samples)
+
+        if last_hour_lats:
+            last_hour_lats.sort()
+            n = len(last_hour_lats)
+            def pct(p):
+                if n == 1:
+                    return last_hour_lats[0]
+                idx = max(0, min(n - 1, int(round((p / 100) * (n - 1)))))
+                return last_hour_lats[idx]
+            self.lbl_lat_big.setText(_fm_fmt_ms(pct(50)))
+            self.lbl_lat_meta.setText(
+                f"p10 <b style='color:{_FM_COLORS['ink_soft']};'>{_fm_fmt_ms(pct(10))}</b>"
+                f"   p90 <b style='color:{_FM_COLORS['ink_soft']};'>{_fm_fmt_ms(pct(90))}</b>"
+                f"   p99 <b style='color:{_FM_COLORS['ink_soft']};'>{_fm_fmt_ms(pct(99))}</b>"
+            )
+        else:
+            self.lbl_lat_big.setText("—")
+            self.lbl_lat_meta.setText("p10 — · p90 — · p99 —")
+
+        recent = all_samples[-100:]
+        if recent:
+            n_total = len(recent)
+            # Категории взаимоисключающие — сумма n_ok + n_slow + n_failed = n_total,
+            # ровно как на сайте: "60/100 recent probes ok · 37 slow · 3 failed".
+            n_ok     = sum(1 for _, c, _ in recent if c == "ok")
+            n_slow   = sum(1 for _, c, _ in recent if c in ("slow", "very_slow"))
+            n_failed = sum(1 for _, c, _ in recent if c == "failed")
+            latest_ts = recent[-1][0]
+            latest_age = now_ms - latest_ts if latest_ts else None
+            self.lbl_probes_sub.setText(
+                f"{n_ok}/{n_total} recent probes ok   •   {n_slow} slow "
+                f"  •   {n_failed} failed   •   "
+                f"latest {_fm_fmt_age(latest_age)}"
+            )
+        else:
+            self.lbl_probes_sub.setText("нет данных о пробах")
+
+    def _apply_failure(self):
+        if self._last_data is None:
+            self.lbl_status_word.setText("Нет связи")
+            self.lbl_status_word.setStyleSheet(
+                f"color: {_FM_COLORS['ink_muted']}; background: transparent;"
+            )
+            self.lbl_status_sub.setText(
+                "Не удалось получить /api/status. Повторим через несколько секунд."
+            )
+
+    def _update_countdown(self):
+        if not self._next_check_at_ms:
+            self.lbl_next_check.setText("next check in —")
+            return
+        now_ms = int(time.time() * 1000)
+        remaining = self._next_check_at_ms - now_ms
+        self.lbl_next_check.setText(
+            f'<span style="color:{_FM_COLORS["ink_muted"]};">next check in </span>'
+            f'<span style="color:{_FM_COLORS["ink"]};">{_fm_fmt_eta(remaining)}</span>'
+        )
+
+    def closeEvent(self, event):
+        self._stop = True
+        try:
+            self._tick_timer.stop()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
 # ============================================================
 # ИНДИКАТОР ОБНОВЛЕНИЯ (ГОЛУБАЯ ПУЛЬСИРУЮЩАЯ ТОЧКА)
@@ -736,6 +1694,107 @@ class RedButton(QPushButton):
                 border: 2px solid rgb(40, 40, 45);
             }}
         """)
+
+# Lucide-style eye icons — мягкие, симметричные, не растянутые.
+# {C} подменяется на текущий цвет (hex) перед рендером.
+_LUCIDE_EYE_OPEN = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+    'stroke="{C}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/>'
+    '<circle cx="12" cy="12" r="3"/>'
+    '</svg>'
+)
+_LUCIDE_EYE_OFF = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+    'stroke="{C}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/>'
+    '<path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/>'
+    '<path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/>'
+    '<line x1="2" y1="2" x2="22" y2="22"/>'
+    '</svg>'
+)
+
+class EyeToggleButton(QPushButton):
+    """Кнопка-глаз для скрытия/показа значения поля ввода.
+
+    Иконка — Lucide eye / eye-off, ренденится через QSvgRenderer:
+    выглядит гораздо мягче и аккуратнее, чем рисованный QPainter-овал.
+    Рамка 2px, hover плавно подсвечивается голубым, как у StyledButton.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setText("")
+        self.setFixedSize(40, 36)
+        self._revealed = False
+        self._hover_progress = 0.0
+        self._is_hovered = False
+        self.setMouseTracking(True)
+        self._hover_timer = QTimer(self)
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+
+    def setRevealed(self, revealed: bool):
+        if self._revealed != bool(revealed):
+            self._revealed = bool(revealed)
+            self.update()
+
+    def isRevealed(self) -> bool:
+        return self._revealed
+
+    def enterEvent(self, e):
+        self._is_hovered = True
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._is_hovered = False
+        super().leaveEvent(e)
+
+    def _animate_hover(self):
+        target = 1.0 if (self._is_hovered and self.isEnabled()) else 0.0
+        if self._hover_progress != target:
+            step = 0.1 if target > self._hover_progress else -0.1
+            self._hover_progress = max(0.0, min(1.0, self._hover_progress + step))
+            self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        t = self._hover_progress
+
+        # Рамка 2px, при hover плавно уходит в голубой
+        base = (60, 60, 65)
+        hover = (100, 180, 255)
+        r = int(base[0] + (hover[0] - base[0]) * t)
+        g = int(base[1] + (hover[1] - base[1]) * t)
+        b = int(base[2] + (hover[2] - base[2]) * t)
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(40, 40, 45, 200))
+        p.drawRoundedRect(1, 1, w - 2, h - 2, 6, 6)
+
+        pen = QPen(QColor(r, g, b))
+        pen.setWidth(2)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(1, 1, w - 2, h - 2, 6, 6)
+
+        # SVG-глаз: светло-серый, ярче при hover
+        eye_bright = int(170 + 60 * t)
+        color_hex = f"#{eye_bright:02x}{eye_bright:02x}{eye_bright:02x}"
+
+        svg_template = _LUCIDE_EYE_OPEN if self._revealed else _LUCIDE_EYE_OFF
+        svg_bytes = svg_template.format(C=color_hex).encode("utf-8")
+        renderer = QSvgRenderer(svg_bytes)
+
+        # Иконка 16×16 в центре кнопки — компактно, не растянуто
+        icon_size = 16
+        icon_x = (w - icon_size) / 2.0
+        icon_y = (h - icon_size) / 2.0
+        renderer.render(p, QRectF(icon_x, icon_y, icon_size, icon_size))
+
+        p.end()
 
 class StyledComboBox(QComboBox):
     def __init__(self, parent=None):
@@ -3396,7 +4455,7 @@ class StatusLinePreview(QFrame):
         lay.addWidget(line)
 
         # Подпись — что отображается слева направо
-        legend = QLabel("модель  ·  контекст  ·  session ID  ·  git-репозиторий")
+        legend = QLabel("модель  •  контекст  •  session ID  •  git-репозиторий")
         legend.setFont(QFont("Segoe UI", 8))
         legend.setStyleSheet("color: rgba(150, 150, 155, 0.55); background: transparent; border: none;")
         lay.addWidget(legend)
@@ -4613,6 +5672,7 @@ class ClaudeManager(QMainWindow):
     update_available = Signal(dict)  # Новый сигнал для обновлений
     claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
     claude_install_finished = Signal(object)  # context dict
+    freemodel_status_signal = Signal(str)  # overall статус freemodel.dev сервиса
 
     def __init__(self):
         super().__init__()
@@ -4763,6 +5823,25 @@ class ClaudeManager(QMainWindow):
         self.update_indicator.clicked.connect(self._on_update_indicator_clicked)
         self.update_indicator.move(self.width() - 45, 10)  # 10px от верха, 45px от правого края
         self.update_indicator.raise_()
+
+        # Бейдж freemodel.dev — абсолютная позиция в левом верхнем углу.
+        # Точка справа от текста меняет цвет в зависимости от состояния сервиса.
+        self.freemodel_brand = FreemodelBrand(self)
+        self.freemodel_brand.move(12, 22)
+        self.freemodel_brand.raise_()
+        self.freemodel_status_signal.connect(self.freemodel_brand.set_status)
+        self.freemodel_brand.clicked.connect(self._open_freemodel_stats)
+        # Серая подсказка-стрелка «клик» → указывает на бейдж. Размещаем так,
+        # чтобы остриё стрелки приходилось чуть ниже текста freemodel.dev,
+        # а «клик» был справа-снизу. Прозрачен для мыши — не мешает клику.
+        self.freemodel_click_hint = _FmClickHint(self)
+        self.freemodel_click_hint.move(0, 36)
+        self.freemodel_click_hint.raise_()
+        # Фоновый поллер API статуса freemodel.dev — 60с между запросами,
+        # ошибки сети откатывают индикатор в нейтральное состояние.
+        threading.Thread(target=self._poll_freemodel_status, daemon=True).start()
+        # Бейдж виден только когда выбран freemodel-эндпоинт.
+        QTimer.singleShot(0, self._refresh_freemodel_brand_visibility)
 
         # Секция Omniroute
         omniroute_frame = QFrame()
@@ -4951,8 +6030,7 @@ class ClaudeManager(QMainWindow):
             """)
         self.token_layout.addWidget(self.token_input, 1)
 
-        self.btn_toggle_token = StyledButton("Показать")
-        self.btn_toggle_token.setMaximumWidth(100)
+        self.btn_toggle_token = EyeToggleButton()
         self.btn_toggle_token.clicked.connect(self.toggle_token_visibility)
         self.token_layout.addWidget(self.btn_toggle_token)
 
@@ -5067,10 +6145,7 @@ class ClaudeManager(QMainWindow):
             """)
         key_row.addWidget(self.fm_key_input, 1)
 
-        self.fm_btn_toggle_key = StyledButton("Показать")
-        self.fm_btn_toggle_key.setMinimumHeight(0)
-        self.fm_btn_toggle_key.setFixedHeight(36)
-        self.fm_btn_toggle_key.setFixedWidth(90)
+        self.fm_btn_toggle_key = EyeToggleButton()
         self.fm_btn_toggle_key.clicked.connect(self._fm_toggle_key)
         key_row.addWidget(self.fm_btn_toggle_key)
 
@@ -5248,64 +6323,105 @@ class ClaudeManager(QMainWindow):
 
         main_layout.addWidget(claude_frame)
 
-        # Консоль
+        # ═══ Консоль ═══════════════════════════════════════════════
         console_frame = QFrame()
         console_frame.setObjectName("console_frame")
         console_frame.setStyleSheet("""
             QFrame#console_frame {
-                background-color: rgba(25, 25, 30, 220);
-                border: 2px solid rgb(60, 60, 65);
-                border-radius: 8px;
+                background-color: #1c1c21;
+                border: 2px solid #3c3c41;
+                border-radius: 10px;
             }
         """)
         console_layout = QVBoxLayout(console_frame)
-        console_layout.setContentsMargins(12, 8, 12, 12)
-        console_layout.setSpacing(6)
+        console_layout.setContentsMargins(0, 0, 0, 0)
+        console_layout.setSpacing(0)
 
-        console_label = QLabel("Консоль")
-        console_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        console_label.setStyleSheet(
-            "color: rgb(220, 220, 220); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 10px;"
-        )
-        console_layout.addWidget(console_label)
+        # ── Верхний бар ──
+        console_bar = QFrame()
+        console_bar.setFixedHeight(30)
+        console_bar.setStyleSheet("""
+            QFrame {
+                background-color: #22222a;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                border-bottom: 1px solid #3c3c41;
+            }
+        """)
+        bar_layout = QHBoxLayout(console_bar)
+        bar_layout.setContentsMargins(14, 0, 14, 0)
 
+        bar_title = QLabel("Console")
+        bar_title.setFont(QFont("Cascadia Mono", 10))
+        bar_title.setStyleSheet("color: #6b6e75; background: transparent; border: none;")
+        bar_layout.addWidget(bar_title)
+        bar_layout.addStretch()
+
+        self._console_msg_count = 0
+        console_layout.addWidget(console_bar)
+
+        # ── Тело консоли ──
         self.console = QTextEdit()
         self.console.setReadOnly(True)
-        self.console.setFont(QFont("Consolas", 10))
+        f = QFont("Cascadia Mono", 8)
+        f.setPointSizeF(9.5)
+        self.console.setFont(f)
         self.console.setMaximumHeight(160)
         self.console.setMinimumHeight(160)
         self.console.setStyleSheet("""
             QTextEdit {
-                background-color: rgba(15, 15, 20, 250);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(50, 50, 55);
-                border-radius: 6px;
-                padding: 10px;
-                line-height: 1.4;
+                background-color: #1a1a20;
+                color: #e8e8ec;
+                border: none;
+                padding: 10px 14px;
+                selection-background-color: #3c4f6e;
             }
             QScrollBar:vertical {
-                background: transparent;
-                width: 0px;
+                background: #1c1c21;
+                width: 6px;
+                margin: 0;
             }
             QScrollBar::handle:vertical {
-                background: transparent;
+                background: #3c3c41;
+                border-radius: 3px;
+                min-height: 30px;
             }
             QScrollBar::handle:vertical:hover {
-                background: transparent;
+                background: #505058;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {
+                background: none;
             }
         """)
         console_layout.addWidget(self.console)
 
-        console_frame.setMaximumHeight(210)
+        # ── Нижний бар (как верхний, но тоньше) ──
+        console_bottom = QFrame()
+        console_bottom.setFixedHeight(22)
+        console_bottom.setStyleSheet("""
+            QFrame {
+                background-color: #22222a;
+                border-bottom-left-radius: 10px;
+                border-bottom-right-radius: 10px;
+                border-top: 1px solid #3c3c41;
+            }
+        """)
+        console_layout.addWidget(console_bottom)
+
+        console_frame.setMaximumHeight(212)
         main_layout.addWidget(console_frame)
 
-        main_layout.addStretch(1)
+        main_layout.addSpacing(10)
 
         # Футер
         footer = QLabel(
-            f"© 2026 Claude Code Manager v{APP_VERSION}   ·   "
-            f"by {AUTHOR_NAME}   ·   Discord: {AUTHOR_DISCORD}"
+            f"© 2026 Claude Code Manager v{APP_VERSION}   •   "
+            f"by {AUTHOR_NAME}   •   Discord: {AUTHOR_DISCORD}"
         )
         footer.setFont(QFont("Segoe UI", 8))
         footer.setAlignment(Qt.AlignCenter)
@@ -5365,7 +6481,7 @@ class ClaudeManager(QMainWindow):
         # Первая проверка
         self.log("Приложение запущено", "info")
         self.log(f"Порт Omniroute: {OMNIROUTE_PORT}", "info")
-        self.log(f"Автор: {AUTHOR_NAME}  ·  Discord: {AUTHOR_DISCORD}", "info")
+        self.log(f"Автор: {AUTHOR_NAME}  •  Discord: {AUTHOR_DISCORD}", "info")
         self.log(f"GitHub: {AUTHOR_GITHUB}", "info")
         self.log("─" * 50, "info")
         self.log("Для работы с Base URL (freemodel и др.):", "warning")
@@ -5398,26 +6514,24 @@ class ClaudeManager(QMainWindow):
             pass
 
     def log(self, message, level="info"):
-        """Добавляет сообщение в консоль с цветовым форматированием"""
+        """Терминальный вывод: цветная точка + сообщение"""
         timestamp = time.strftime("%H:%M:%S")
 
-        # Определяем цвет в зависимости от уровня
         if level == "success":
-            color = "#00ff64"  # Зеленый
-            prefix = "●"  # Цветная точка
+            color = "#00ff64"
         elif level == "error":
-            color = "#ff3232"  # Красный
-            prefix = "●"  # Цветная точка
+            color = "#ff3232"
         elif level == "warning":
-            color = "#ffaa00"  # Оранжевый
-            prefix = "●"  # Цветная точка
-        else:  # info
-            color = "#b4b4b4"  # Серый
-            prefix = "●"  # Цветная точка
+            color = "#ffaa00"
+        else:
+            color = "#b4b4b4"
 
-        formatted_message = f'<span style="color: #888;">[{timestamp}]</span> <span style="color: {color};">{prefix} {message}</span>'
-        self.console.append(formatted_message)
-        # Прокручиваем вниз
+        self._console_msg_count += 1
+        formatted = (
+            f'<span style="color:#888888;">{timestamp}</span>'
+            f'  <span style="color:{color};">●  {message}</span>'
+        )
+        self.console.append(formatted)
         self.console.moveCursor(QTextCursor.End)
 
     def _animate_shimmer(self):
@@ -5601,6 +6715,11 @@ class ClaudeManager(QMainWindow):
         self.btn_save_token.hide()
         self.btn_edit_token.show()
 
+        # После сохранения автоматически прячем значение, как просил пользователь
+        self.token_input.setEchoMode(QLineEdit.Password)
+        if hasattr(self, "btn_toggle_token") and hasattr(self.btn_toggle_token, "setRevealed"):
+            self.btn_toggle_token.setRevealed(False)
+
     def edit_token(self):
         """Разрешает редактирование API ключа"""
         self.token_input.setReadOnly(False)
@@ -5622,10 +6741,10 @@ class ClaudeManager(QMainWindow):
         """Переключает видимость API ключа"""
         if self.token_input.echoMode() == QLineEdit.Password:
             self.token_input.setEchoMode(QLineEdit.Normal)
-            self.btn_toggle_token.setText("Скрыть")
+            self.btn_toggle_token.setRevealed(True)
         else:
             self.token_input.setEchoMode(QLineEdit.Password)
-            self.btn_toggle_token.setText("Показать")
+            self.btn_toggle_token.setRevealed(False)
 
     def _on_mode_changed(self, is_omniroute):
         """Обработчик переключателя режимов в шапке (Omniroute ↔ FreeModel)"""
@@ -5639,6 +6758,30 @@ class ClaudeManager(QMainWindow):
             save_settings(self.settings)
             if prev != new_url:
                 self.log(f"Base URL {new_url} сохранён", "success")
+            self._refresh_freemodel_brand_visibility()
+
+    def _is_freemodel_endpoint(self, url):
+        """True, если выбранный Base URL принадлежит сервису freemodel.dev."""
+        if not url:
+            return False
+        return "freemodel.dev" in str(url).lower()
+
+    def _refresh_freemodel_brand_visibility(self):
+        """Показывает бейдж freemodel.dev только когда выбран соответствующий эндпоинт.
+
+        В режиме Omniroute (Anthropic / прокси не от freemodel) или при выборе
+        кастомного URL бейдж скрывается, чтобы не вводить в заблуждение —
+        статус сервиса freemodel.dev не имеет отношения к чужому эндпоинту."""
+        try:
+            use_custom = self.settings.get("use_custom_token", False)
+            url = self.settings.get("custom_base_url", "")
+            visible = bool(use_custom) and self._is_freemodel_endpoint(url)
+            if hasattr(self, "freemodel_brand"):
+                self.freemodel_brand.setVisible(visible)
+            if hasattr(self, "freemodel_click_hint"):
+                self.freemodel_click_hint.setVisible(visible)
+        except Exception:
+            pass
 
     def _fm_model_changed(self, new_model):
         """Сохраняет выбранную модель FreeModel"""
@@ -5676,10 +6819,10 @@ class ClaudeManager(QMainWindow):
         """Показать/скрыть API ключ"""
         if self.fm_key_input.echoMode() == QLineEdit.Password:
             self.fm_key_input.setEchoMode(QLineEdit.Normal)
-            self.fm_btn_toggle_key.setText("Скрыть")
+            self.fm_btn_toggle_key.setRevealed(True)
         else:
             self.fm_key_input.setEchoMode(QLineEdit.Password)
-            self.fm_btn_toggle_key.setText("Показать")
+            self.fm_btn_toggle_key.setRevealed(False)
 
     def _fm_save_key(self):
         """Сохраняет API ключ FreeModel и показывает инструкцию"""
@@ -5705,6 +6848,11 @@ class ClaudeManager(QMainWindow):
         """)
         self.fm_btn_save_key.hide()
         self.fm_btn_edit_key.show()
+
+        # После сохранения автоматически прячем значение
+        self.fm_key_input.setEchoMode(QLineEdit.Password)
+        if hasattr(self, "fm_btn_toggle_key") and hasattr(self.fm_btn_toggle_key, "setRevealed"):
+            self.fm_btn_toggle_key.setRevealed(False)
 
     def _fm_edit_key(self):
         """Разрешает редактирование API ключа FreeModel"""
@@ -5739,6 +6887,10 @@ class ClaudeManager(QMainWindow):
             if new_current in new_urls:
                 self.fm_url_combo.setCurrentText(new_current)
             self.fm_url_combo.blockSignals(False)
+            # Сигналы комбо были заблокированы, поэтому _fm_url_changed не вызвался —
+            # вручную обновляем видимость бейджа freemodel.dev (если удалили текущий
+            # URL и фолбэкнулись на freemodel, бейдж должен вернуться).
+            self._refresh_freemodel_brand_visibility()
 
     def _animate_opacity(self, effect, target, duration=280):
         """Плавно анимирует opacity у QGraphicsOpacityEffect"""
@@ -5802,6 +6954,10 @@ class ClaudeManager(QMainWindow):
         if hasattr(self, "freemodel_section_widget"):
             self.freemodel_section_widget.setVisible(is_custom)
 
+        # Видимость бейджа freemodel.dev пересчитывается по реально выбранному
+        # URL и режиму (use_custom_token).
+        self._refresh_freemodel_brand_visibility()
+
         self.btn_configure_custom.setEnabled(is_custom)
 
         # Кнопка запуска Claude доступна:
@@ -5816,7 +6972,7 @@ class ClaudeManager(QMainWindow):
                 self.btn_claude.setEnabled(bool(last))
 
         # Подгоняем высоту окна
-        target_h = 825 if is_custom else 905
+        target_h = 750 if is_custom else 880
         if hasattr(self, "_height_initialized") and self._height_initialized and self.isVisible():
             self._animate_window_height(target_h)
         else:
@@ -6021,9 +7177,14 @@ class ClaudeManager(QMainWindow):
             # Форсируем модель через --model + effort, чтобы старые чаты не переключались
             cli_cmd = f"claude --model {model}{effort_flag}"
 
+        # Снимаем блок PowerShell ExecutionPolicy для этой сессии — если у пользователя
+        # стоит Restricted, claude.ps1 без этого не запустится. Scope Process действует
+        # только внутри этого powershell-процесса, ничего глобально не меняем.
+        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+
         try:
             subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {cli_cmd}"],
+                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
                 env=env
             )
             if use_custom:
@@ -7138,7 +8299,7 @@ class ClaudeManager(QMainWindow):
             elif version_match:
                 self.claude_install_status_label.setText(f"Установлен v{local}")
                 self.claude_install_status_label.setStyleSheet(
-                    "color: rgb(120, 220, 140); background: transparent; border: none;"
+                    "color: rgb(0, 255, 100); background: transparent; border: none;"
                 )
             elif version_higher:
                 self.claude_install_status_label.setText(
@@ -7437,6 +8598,50 @@ class ClaudeManager(QMainWindow):
                     self.update_available.emit(update_info)
         except Exception as e:
             pass
+
+    def _open_freemodel_stats(self):
+        """Открывает диалог статистики freemodel.dev. Если он уже открыт — поднимает наверх."""
+        existing = getattr(self, "_freemodel_stats_dialog", None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+        dlg = FreemodelStatsDialog(self)
+        # держим ссылку, чтобы не собрался GC и чтобы можно было фокусировать повторно
+        self._freemodel_stats_dialog = dlg
+        dlg.show()
+
+    def _poll_freemodel_status(self):
+        """Фоновый поллер https://fm.bluealitas.com/api/status.
+
+        Считаем «эффективное» состояние с учётом и overall, и mode:
+        если сайт сейчас в режиме `confirming` (после ошибок проверяет, что
+        сервис стабилен) — отдаём 'confirming' вне зависимости от overall.
+        Так индикатор у бейджа жёлтый, как на сайте.
+        Запросы каждые 30 секунд; при ошибке — быстрый ретрай через 8 с,
+        чтобы не зависнуть на 'unknown' минуту."""
+        url = "https://fm.bluealitas.com/api/status"
+        ctx = ssl.create_default_context()
+        time.sleep(1)
+        while True:
+            sleep_after = 30
+            try:
+                req = Request(url, headers={"User-Agent": f"ClaudeCodeManager/{APP_VERSION}"})
+                with urlopen(req, timeout=8, context=ctx) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                overall = str(data.get("overall") or "unknown").lower()
+                mode = str(data.get("mode") or "").lower()
+                if mode == "confirming":
+                    effective = "confirming"
+                elif overall in ("ok", "warn", "bad", "down", "unknown"):
+                    effective = overall
+                else:
+                    effective = "unknown"
+                self.freemodel_status_signal.emit(effective)
+            except Exception:
+                self.freemodel_status_signal.emit("unknown")
+                sleep_after = 8
+            time.sleep(sleep_after)
 
     def _show_update_notification(self, update_info):
         """Авто-запуск скачивания обновления без подтверждения от пользователя."""
