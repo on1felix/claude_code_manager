@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.5.5"  # Для обновлений
+APP_VERSION = "5.5.6"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -5744,6 +5744,14 @@ class ClaudeManager(QMainWindow):
         self.title.setFixedHeight(30)
         title_layout.addWidget(self.title)
 
+        # Балансир под иконку: пустой виджет той же ширины (48px) справа от текста.
+        # Без него иконка слева оптически сдвигает текст вправо относительно центра
+        # окна — с балансиром тайтл стоит строго по центру.
+        title_balance = QWidget()
+        title_balance.setFixedWidth(48)
+        title_balance.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        title_layout.addWidget(title_balance)
+
         # Растяжка справа
         title_layout.addStretch()
 
@@ -6364,7 +6372,7 @@ class ClaudeManager(QMainWindow):
         self.console = QTextEdit()
         self.console.setReadOnly(True)
         f = QFont("Cascadia Mono", 8)
-        f.setPointSizeF(9.5)
+        f.setPointSizeF(9.4)
         self.console.setFont(f)
         self.console.setMaximumHeight(160)
         self.console.setMinimumHeight(160)
