@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.5.7"  # Для обновлений
+APP_VERSION = "5.5.8"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -203,6 +203,9 @@ def load_settings():
                             loaded["custom_base_urls"].insert(0, u)
                 if not loaded.get("custom_base_url"):
                     loaded["custom_base_url"] = loaded["custom_base_urls"][0]
+                # Язык интерфейса: по умолчанию ru, перезаписывается LangManager
+                if "app_language" not in loaded:
+                    loaded["app_language"] = "ru"
                 return loaded
     except:
         pass
@@ -221,7 +224,8 @@ def load_settings():
             "https://cc.freemodel.dev"
         ],
         "custom_model": "",
-        "custom_endpoint": ""
+        "custom_endpoint": "",
+        "app_language": "ru"
     }
 
 DEFAULT_BASE_URLS = ["https://cc.freemodel.dev"]
@@ -246,6 +250,496 @@ def save_settings(settings):
             json.dump(settings, f, ensure_ascii=False, indent=2)
     except:
         pass
+
+
+# ============================================================
+# i18n — РУС/АНГ переводы
+# ============================================================
+# Принцип: tr("Русская строка") — если выбран EN, ищет в TRANSLATIONS и
+# возвращает английский вариант; если язык RU или ключа нет — отдаёт исходник.
+# Это позволяет постепенно покрывать строки переводами без рефакторинга всего
+# кода.
+
+TRANSLATIONS = {
+    # ── главное окно: кнопки шапки
+    "Установить Claude Code": "Install Claude Code",
+    "Удалить Claude Code": "Uninstall Claude Code",
+    "Status line": "Status line",
+    "Fix Claude": "Fix Claude",
+    "Запустить Omniroute": "Start Omniroute",
+    "Остановить Omniroute": "Stop Omniroute",
+    "Запустить Claude Code": "Start Claude Code",
+    "Остановить Claude Code": "Stop Claude Code",
+    "Добавить модель": "Add model",
+    "Удалить модель": "Remove model",
+    "Выбор модели Omniroute": "Select Omniroute model",
+    "Выбор Base URL": "Select Base URL",
+    "Выбор модели": "Select model",
+    # ── главное окно: подписи статусов
+    "Не запущен": "Not running",
+    "Подключен": "Connected",
+    "Не установлен": "Not installed",
+    "Проверка версии…": "Checking version…",
+    "Проверяю версию…": "Checking version…",
+    "Установлен": "Installed",
+    "нужна": "need",
+    "запуск заблокирован": "launch blocked",
+    # ── метки секций
+    "Модель:": "Model:",
+    "API ключ:": "API key:",
+    "Директория:": "Directory:",
+    "Не выбрана (будет запрошена)": "Not selected (will be prompted)",
+    # ── общие кнопки
+    "Добавить": "Add",
+    "Отмена": "Cancel",
+    "Сохранить": "Save",
+    "Изменить": "Edit",
+    "Удалить": "Delete",
+    "Показать": "Show",
+    "Скрыть": "Hide",
+    "Обновить": "Update",
+    "Открыть папку": "Open folder",
+    "Управление": "Manage",
+    "Настроить": "Configure",
+    "Обзор": "Browse",
+    "Очистить": "Clear",
+    "Готово": "Done",
+    "Понятно": "Got it",
+    "Установить": "Install",
+    "Переустановить": "Reinstall",
+    "Исправить": "Fix",
+    # ── диалоги: заголовки
+    "Добавить модель": "Add model",
+    "Введите название модели:": "Enter model name:",
+    "Например: kr/claude-sonnet-4.5": "Example: kr/claude-sonnet-4.5",
+    "Управление Base URL": "Manage Base URL",
+    "Добавьте или удалите URL из списка": "Add or remove URL from the list",
+    "Добавить новый URL:": "Add new URL:",
+    "Базовый URL нельзя удалить": "Default URL can't be removed",
+    "Удалить выбранный URL": "Remove selected URL",
+    "Настройки кастомного токена": "Custom token settings",
+    "Доступно обновление!": "Update available!",
+    "Внимание": "Attention",
+    "Установка status line": "Installing status line",
+    "Подготовка…": "Preparing…",
+    "Status line установлен ✓": "Status line installed ✓",
+    "Не удалось установить": "Installation failed",
+    "Скачивание обновления": "Downloading update",
+    "Обновление скачано!": "Update downloaded!",
+    "Завершаем обновление…": "Finalizing update…",
+    "Ошибка скачивания": "Download error",
+    "Удаление status line": "Removing status line",
+    "Status line удалён ✓": "Status line removed ✓",
+    "Claude исправлен ✓": "Claude fixed ✓",
+    "Claude Code обновлён ✓": "Claude Code updated ✓",
+    "Claude Code установлен ✓": "Claude Code installed ✓",
+    # ── баннеры
+    "Fable 5 временно недоступна": "Fable 5 temporarily unavailable",
+    "Модель заблокирована\nправительством США": "Model blocked\nby the US government",
+    "Источник: официальное заявление правительства США": "Source: official US government statement",
+    "Запуск без прав администратора": "Running without administrator rights",
+    "Рекомендуется запустить\nот имени администратора": "Recommended to run\nas administrator",
+    # ── freemodel dialog
+    "freemodel.dev — статус и латентность": "freemodel.dev — status & latency",
+    "источник: fm.bluealitas.com/api/status": "source: fm.bluealitas.com/api/status",
+    "Нет данных по этому endpoint.": "No data for this endpoint.",
+    "Нет связи": "No connection",
+    # ── разное
+    "Пример отображения в Claude Code": "Preview in Claude Code",
+    "модель  •  контекст  •  session ID  •  git-репозиторий":
+        "model  •  context  •  session ID  •  git repo",
+    # ── мульти-строчные тексты диалогов
+    "Обновление завершено успешно.\n"
+    "Перезапустите Claude Code для применения изменений.":
+        "Update completed successfully.\n"
+        "Restart Claude Code to apply the changes.",
+    "Установка завершена успешно.\n"
+    "Если команда claude не найдена — открой новое окно консоли\n"
+    "(npm обычно сам прописывает её в PATH).":
+        "Installation completed successfully.\n"
+        "If the `claude` command is not found — open a new console window\n"
+        "(npm usually adds it to PATH automatically).",
+    "Обновление отменено": "Update cancelled",
+    "Установка отменена": "Installation cancelled",
+    "Окно PowerShell было закрыто до завершения.\n"
+    "Можете попробовать снова в любой момент.":
+        "PowerShell window was closed before completion.\n"
+        "You can try again any time.",
+    "Обновление не завершено": "Update not completed",
+    "Установка не завершена": "Installation not completed",
+    "Окно PowerShell было закрыто до завершения операции.\n"
+    "Попробуйте ещё раз.":
+        "PowerShell window was closed before the operation completed.\n"
+        "Please try again.",
+    "Неизвестная ошибка": "Unknown error",
+    "Версия": "Version",
+    "Установить v": "Install v",
+    "клик": "click",
+    # ── console banner
+    "Приложение запущено": "Application started",
+    "Порт Omniroute:": "Omniroute port:",
+    "Автор:": "Author:",
+    "Для работы с Base URL (freemodel и др.):": "To work with Base URL (freemodel etc.):",
+    "Если впервые — запустите Claude Code и введите /logout.":
+        "On first run — launch Claude Code and type /logout.",
+    "Это нужно сделать только один раз. Даже если вы":
+        "You only need to do this once. Even if you",
+    "поменяете API ключ — повторно вводить /logout не нужно.":
+        "change the API key — no need to type /logout again.",
+    "Приложение автоматически подставит ключ и Base URL.":
+        "The app will automatically inject the key and Base URL.",
+    # ── console log messages
+    "Omniroute подключен": "Omniroute connected",
+    "Omniroute не запущен": "Omniroute is not running",
+    "Omniroute успешно подключен": "Omniroute connected successfully",
+    "Omniroute остановлен": "Omniroute stopped",
+    "Запуск Omniroute...": "Starting Omniroute...",
+    "Остановка Omniroute...": "Stopping Omniroute...",
+    "Ожидание подключения...": "Waiting for connection...",
+    "Таймаут ожидания подключения. Проверьте, что Omniroute установлен и путь к нему правильный.":
+        "Connection timeout. Make sure Omniroute is installed and the path is correct.",
+    "Директория очищена": "Directory cleared",
+    "API ключ не может быть пустым": "API key cannot be empty",
+    "API ключ сохранен": "API key saved",
+    "API ключ обновлён": "API key updated",
+    "Режим редактирования API ключа": "API key edit mode",
+    "Кастомные настройки сохранены": "Custom settings saved",
+    "Запуск отменен - директория не выбрана": "Launch cancelled — no directory selected",
+    "Кастомный API ключ не установлен": "Custom API key is not set",
+    "installMethod в ~/.claude.json: native → global":
+        "installMethod in ~/.claude.json: native → global",
+    "Status line установлен в ~/.claude/settings.json":
+        "Status line installed in ~/.claude/settings.json",
+    "Status line удалён из ~/.claude/settings.json":
+        "Status line removed from ~/.claude/settings.json",
+    "Переустановка status line отменена": "Status line reinstall cancelled",
+    "Удаление status line отменено": "Status line removal cancelled",
+    "Действие со status line отменено": "Status line action cancelled",
+    "Fix Claude отменён": "Fix Claude cancelled",
+    "Fix Claude: файл ~/.claude.json не найден — ничего не делаем":
+        "Fix Claude: ~/.claude.json not found — nothing to do",
+    "Операция отменена": "Operation cancelled",
+    "Удаление отменено": "Removal cancelled",
+    "Claude Code не установлен": "Claude Code is not installed",
+    "Запускаю удаление Claude Code через npm...":
+        "Starting Claude Code removal via npm...",
+    "Запускаю установку Node.js LTS через winget...":
+        "Starting Node.js LTS installation via winget...",
+    "Node.js (npm) не найден — открываю окно с инструкцией":
+        "Node.js (npm) not found — opening the instruction dialog",
+    "Текущая команда:": "Current command:",
+    "Скрипт скопирован в ~/.claude/statusline-command.sh,\n"
+    "блок statusLine прописан в ~/.claude/settings.json.\n"
+    "Запусти Claude Code — строка появится внизу окна.":
+        "The script was copied to ~/.claude/statusline-command.sh,\n"
+        "the statusLine block was added to ~/.claude/settings.json.\n"
+        "Launch Claude Code — the line will appear at the bottom of the window.",
+    "Блок statusLine удалён из ~/.claude/settings.json,\n"
+    "файл ~/.claude/statusline-command.sh стёрт.":
+        "The statusLine block has been removed from ~/.claude/settings.json,\n"
+        "the file ~/.claude/statusline-command.sh has been erased.",
+    "Не удалось получить /api/status. Повторим через несколько секунд.":
+        "Failed to fetch /api/status. We'll retry in a few seconds.",
+    # ── Fable 5
+    "По официальному заявлению правительства США, доступ\n"
+    "к модели Fable 5 временно приостановлен на территории\n"
+    "всех юрисдикций.\n\n"
+    "Согласно решению, Fable 5 признана настолько мощной,\n"
+    "что — по словам представителей правительства — способна\n"
+    "взломать защищённые системы Пентагона. На этом основании\n"
+    "модель отнесена к технологиям двойного назначения\n"
+    "и временно изъята из публичного оборота.\n\n"
+    "Доступ будет восстановлен после завершения проверки\n"
+    "и установки регулирующих ограничений Anthropic.":
+        "By official statement of the US government, access to\n"
+        "the Fable 5 model is temporarily suspended in every\n"
+        "jurisdiction.\n\n"
+        "According to the ruling, Fable 5 is considered so powerful\n"
+        "that — in the words of government officials — it is capable\n"
+        "of breaking into the Pentagon's secured systems. On that\n"
+        "basis the model is classified as a dual-use technology and\n"
+        "withdrawn from public circulation.\n\n"
+        "Access will be restored once Anthropic completes the review\n"
+        "and installs the regulating restrictions.",
+    # ── Admin warning
+    "Сейчас приложение работает в обычном режиме и часть\n"
+    "операций может завершаться ошибкой PermissionDenied.\n\n"
+    "Без админ-прав могут не сработать:\n"
+    "  •  установка Node.js (инсталлятор пишет в %ProgramFiles%)\n"
+    "  •  установка Claude Code (npm i -g в системные папки)\n"
+    "  •  полное удаление Claude Code и чистка залоченных файлов\n"
+    "  •  запись в системные папки (%ProgramFiles%, %ProgramData%)\n"
+    "  •  правки в чужих профилях и общих директориях\n\n"
+    "Базовые сценарии — Fix Claude, смена модели и API-ключа —\n"
+    "работают и без админа.":
+        "The application is currently running in standard user mode,\n"
+        "so some operations may fail with PermissionDenied.\n\n"
+        "Without administrator rights these may not work:\n"
+        "  •  installing Node.js (the installer writes to %ProgramFiles%)\n"
+        "  •  installing Claude Code (npm i -g into system folders)\n"
+        "  •  fully uninstalling Claude Code and cleaning locked files\n"
+        "  •  writing into system folders (%ProgramFiles%, %ProgramData%)\n"
+        "  •  editing other users' profiles and shared directories\n\n"
+        "Basic scenarios — Fix Claude, model switching, and changing\n"
+        "the API key — work without administrator rights too.",
+    "Совет:  закройте приложение и запустите от имени администратора":
+        "Tip: close the app and run it as administrator",
+    # ── Status line install dialog
+    '<span style="color:#F5C850;"><b>● Сейчас status line установлен.</b></span><br>'
+    "Можно <b>переустановить</b> его (наш скрипт перезапишет твой) "
+    "или <b>удалить</b> — тогда блок <code>statusLine</code> уйдёт "
+    "из <code>~/.claude/settings.json</code>, а файл "
+    "<code>~/.claude/statusline-command.sh</code> будет стёрт.<br><br>":
+        '<span style="color:#F5C850;"><b>● A status line is currently installed.</b></span><br>'
+        "You can <b>reinstall</b> it (our script will overwrite yours) "
+        "or <b>remove</b> it — the <code>statusLine</code> block will then be "
+        "removed from <code>~/.claude/settings.json</code> and the file "
+        "<code>~/.claude/statusline-command.sh</code> will be erased.<br><br>",
+    '<span style="color:rgba(200,200,205,0.7);">● Сейчас status line не настроен.</span><br>'
+    "Менеджер скопирует <code>statusline-command.sh</code> в "
+    "<code>~/.claude/</code> и пропишет блок <code>statusLine</code> "
+    "в <code>~/.claude/settings.json</code>.<br>"
+    "Кнопка <b>«Удалить»</b> сейчас неактивна — удалять пока нечего.<br><br>":
+        '<span style="color:rgba(200,200,205,0.7);">● No status line is currently set up.</span><br>'
+        "The manager will copy <code>statusline-command.sh</code> to "
+        "<code>~/.claude/</code> and add the <code>statusLine</code> block "
+        "to <code>~/.claude/settings.json</code>.<br>"
+        "The <b>«Remove»</b> button is currently disabled — there is nothing to remove yet.<br><br>",
+    "Status line — это строка внизу окна Claude Code, в которой видно "
+    "текущую модель, заполненность контекста, ID сессии и git-репозиторий "
+    "рабочей папки. Ниже — как именно он будет выглядеть.":
+        "The status line is a single line at the bottom of the Claude Code window "
+        "that shows the current model, context usage, session ID and git repository "
+        "of the working folder. Below is exactly how it will look.",
+    # ── Fix Claude dialog
+    '<span style="color:#EB5A5A;"><b>● Найден файл ~/.claude.json.</b></span><br>'
+    "У многих пользователей старые/несовместимые настройки из этого файла "
+    "ломают первый запуск Claude Code: <b>ошибки API</b>, "
+    "<b>Claude вообще не отвечает</b>, странные сбои авторизации. "
+    "Особенно если ты раньше пользовался Claude Code через другие способы.<br><br>":
+        '<span style="color:#EB5A5A;"><b>● ~/.claude.json file found.</b></span><br>'
+        "For many users old/incompatible settings in this file break "
+        "the first launch of Claude Code: <b>API errors</b>, "
+        "<b>Claude not responding at all</b>, strange authentication failures. "
+        "Especially if you previously used Claude Code through other methods.<br><br>",
+    '<span style="color:rgba(200,200,205,0.7);">● Файл ~/.claude.json не найден.</span><br>'
+    "Исправлять нечего — этот фикс нужен только когда Claude Code "
+    "не отвечает или возвращает ошибки API при первом запуске "
+    "именно из-за старого <code>~/.claude.json</code>.<br><br>":
+        '<span style="color:rgba(200,200,205,0.7);">● ~/.claude.json file not found.</span><br>'
+        "Nothing to fix — this fix is only needed when Claude Code "
+        "is not responding or returns API errors on first launch "
+        "because of an old <code>~/.claude.json</code>.<br><br>",
+    "<b>Что сделает кнопка «Исправить»:</b><br>":
+        "<b>What the «Fix» button does:</b><br>",
+    "переименует": "renames",
+    "• оригинал <code>~/.claude.json</code> <b>не удаляется</b> — "
+    "остаётся как <code>.bak</code>, можно вернуть.<br>"
+    "• создаст свежий <code>~/.claude.json</code> с "
+    "<code>installMethod=global</code> и <code>autoUpdates=false</code>.<br>"
+    "• <b>пересоздаст</b> <code>~/.claude/settings.json</code> с нуля, "
+    "оставив только <code>env.DISABLE_UPDATES=1</code>. "
+    "Это убирает «зависшие» ключи вроде <code>apiKeyHelper</code>, "
+    "которые ломают авторизацию (Claude ругается «auth may not work» "
+    "и виснет на Retrying). Модель, эффорт и токен приложение "
+    "пропишет туда обратно само — настройки лежат в нём отдельно "
+    "и не теряются.<br>"
+    "• <code>DISABLE_UPDATES=1</code> — официальный способ выключить "
+    "автообновление Claude Code; без него CLI рано или поздно "
+    "обновится с зафиксированной v":
+        "• the original <code>~/.claude.json</code> is <b>not deleted</b> — "
+        "it stays as <code>.bak</code> and can be restored.<br>"
+        "• a fresh <code>~/.claude.json</code> will be created with "
+        "<code>installMethod=global</code> and <code>autoUpdates=false</code>.<br>"
+        "• <b>recreates</b> <code>~/.claude/settings.json</code> from scratch, "
+        "leaving only <code>env.DISABLE_UPDATES=1</code>. "
+        "This removes «stuck» keys like <code>apiKeyHelper</code> "
+        "that break authentication (Claude complains «auth may not work» "
+        "and hangs at Retrying). Model, effort and token are written back "
+        "by the app itself — those settings live separately and are not lost.<br>"
+        "• <code>DISABLE_UPDATES=1</code> is the official way to disable "
+        "automatic updates of Claude Code; without it the CLI will "
+        "sooner or later update from the pinned v",
+    " до более новой версии, где FreeModel / Omniroute / прокси "
+    "уже не работают.":
+        " to a newer version where FreeModel / Omniroute / proxy no longer work.",
+    "Нажимай, только если у тебя реально проблемы: "
+    "Claude Code не отвечает, выдаёт ошибки API, или ведёт себя странно "
+    "после смены способа авторизации.":
+        "Press this only if you really have problems: "
+        "Claude Code is not responding, gives API errors, or behaves strangely "
+        "after switching authorization method.",
+    # ── Install dialog texts
+    "Откат Claude Code до": "Rollback Claude Code to",
+    "Установка Claude Code": "Install Claude Code",
+    "У тебя установлена": "You currently have installed",
+    "последняя стабильная версия, "
+    "на которой приложение проверено целиком. Более новые версии могут работать "
+    "нестабильно или вовсе не запускаться, а начиная с v2.1.181 Anthropic "
+    "заблокировала сторонние Base URL и API ключи — все запросы уходят только "
+    "в официальный сервис Anthropic, и FreeModel / Omniroute / прокси не работают.\n\n"
+    "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude "
+    "не пострадают.":
+        "the last stable version on which the app was fully tested. "
+        "Newer versions may work unstably or not start at all, and starting from v2.1.181 "
+        "Anthropic blocked third-party Base URLs and API keys — all requests now go only "
+        "to the official Anthropic service, and FreeModel / Omniroute / proxy don't work.\n\n"
+        "npm will reinstall the package to the required version. Settings in %USERPROFILE%\\.claude "
+        "will not be affected.",
+    "Будет установлена фиксированная": "A pinned version will be installed",
+    "последняя стабильная версия, с которой это приложение работает гарантированно. "
+    "Более новые версии могут работать нестабильно или совсем не запускаться.":
+        "the last stable version with which this app is guaranteed to work. "
+        "Newer versions may work unstably or not start at all.",
+    "Будет установлена фиксированная версия": "A pinned version will be installed",
+    "через npm — "
+    "последняя стабильная, на которой проверено это приложение. "
+    "Более новые версии могут работать нестабильно или вовсе не запускаться, "
+    "а версии с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.\n\n"
+    "Откроется окно PowerShell, где пойдёт установка.":
+        "via npm — "
+        "the last stable version this app was tested on. "
+        "Newer versions may work unstably or not start at all, "
+        "and versions starting from 2.1.181 Anthropic blocks third-party Base URLs and API keys.\n\n"
+        "A PowerShell window will open where the installation will happen.",
+    "Откатить": "Rollback",
+    "Продолжить": "Continue",
+    "Откатить до": "Rollback to",
+    "установлен": "installed",
+    "Обновить до": "Update to",
+    "Устаревшая версия Claude Code": "Outdated Claude Code version",
+    "У тебя установлена Claude Code": "You have Claude Code installed",
+    "это устаревшая версия.": "this is an outdated version.",
+    "Проверенная и стабильная версия, на которой это приложение работает гарантированно, — ":
+        "The tested and stable version that this app is guaranteed to work with is ",
+    "На более старых версиях возможны "
+    "несовместимости (изменения в формате settings.json, путях, флагах CLI), "
+    "из-за которых запуск через Omniroute / FreeModel может вести себя нестабильно.\n\n":
+        "Older versions may have incompatibilities "
+        "(changes in the settings.json format, paths, CLI flags) "
+        "that can make startup via Omniroute / FreeModel behave unreliably.\n\n",
+    "Рекомендуем обновить до": "We recommend updating to",
+    "npm переустановит пакет, "
+    "настройки в %USERPROFILE%\\.claude не пострадают.":
+        "npm will reinstall the package, "
+        "settings in %USERPROFILE%\\.claude will not be affected.",
+    # ── version block dialog
+    "Запуск заблокирован": "Launch blocked",
+    "а приложение работает только с": "but the app only works with",
+    "Нажми «Откатить» — npm переустановит CLI на":
+        "Press «Rollback» — npm will reinstall the CLI to",
+    "и запуск снова заработает.": "and launch will work again.",
+    # ── npm dialog
+    "В системе не найден npm — он входит в состав Node.js. "
+    "Без npm Claude Code установить нельзя.\n\n"
+    "Нажми «Установить Node.js» — откроется окно PowerShell, "
+    "в котором winget автоматически скачает и поставит Node.js LTS "
+    "с официального источника (OpenJS.NodeJS.LTS).\n\n"
+    "После окончания установки закрой и заново открой это приложение, "
+    "чтобы оно увидело npm в обновлённом PATH.":
+        "npm was not found on the system — it ships with Node.js. "
+        "Without npm Claude Code cannot be installed.\n\n"
+        "Press «Install Node.js» — a PowerShell window will open "
+        "in which winget will automatically download and install Node.js LTS "
+        "from the official source (OpenJS.NodeJS.LTS).\n\n"
+        "After installation completes, close and reopen this app "
+        "so it picks up npm in the updated PATH.",
+    "В системе не найден npm — он входит в состав Node.js. "
+    "Без npm Claude Code установить нельзя.\n\n"
+    "На твоей системе нет winget, поэтому установить автоматически не получится. "
+    "Нажми «Скачать Node.js» — откроется официальная страница "
+    "nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, "
+    "поставь его и перезапусти это приложение.":
+        "npm was not found on the system — it ships with Node.js. "
+        "Without npm Claude Code cannot be installed.\n\n"
+        "Your system has no winget, so automatic install is not possible. "
+        "Press «Download Node.js» — the official "
+        "nodejs.org/en/download page will open. Download the Windows Installer (.msi) LTS, "
+        "install it, and restart this app.",
+    "Установить Node.js": "Install Node.js",
+    "Скачать Node.js": "Download Node.js",
+    "Нужен Node.js (npm)": "Node.js required (npm)",
+    # ── status line confirmations
+    "Переустановить status line?": "Reinstall status line?",
+    "Удалить status line?": "Remove status line?",
+    "Вы действительно хотите переустановить status line? "
+    "Ваш текущий блок statusLine в ~/.claude/settings.json "
+    "и файл ~/.claude/statusline-command.sh будут полностью "
+    "перезаписаны нашей версией. Откатить это нельзя.":
+        "Are you sure you want to reinstall the status line? "
+        "Your current statusLine block in ~/.claude/settings.json "
+        "and the file ~/.claude/statusline-command.sh will be fully "
+        "overwritten with our version. This cannot be undone.",
+    "Вы действительно хотите удалить status line? "
+    "Блок statusLine уйдёт из ~/.claude/settings.json, "
+    "а файл ~/.claude/statusline-command.sh — будет стёрт. "
+    "Остальные настройки Claude Code останутся как есть.":
+        "Are you sure you want to remove the status line? "
+        "The statusLine block will be removed from ~/.claude/settings.json, "
+        "and the file ~/.claude/statusline-command.sh will be erased. "
+        "Other Claude Code settings will remain untouched.",
+    "Да, переустановить": "Yes, reinstall",
+    "Да, удалить": "Yes, remove",
+    # ── uninstall claude
+    "Будет удалён глобальный npm-пакет Claude Code": "The global npm package Claude Code will be removed",
+    "Настройки в %USERPROFILE%\\.claude не пострадают — удалится только бинарь.":
+        "Settings in %USERPROFILE%\\.claude won't be affected — only the binary is removed.",
+}
+
+
+def _load_lang_setting():
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                d = json.load(f)
+                lang = d.get("app_language", "ru")
+                if lang in ("ru", "en"):
+                    return lang
+    except:
+        pass
+    return "ru"
+
+
+class LanguageManager(QObject):
+    """Глобальный singleton для текущего языка интерфейса.
+    Сигнал language_changed эмитится при смене языка — виджеты подписываются
+    и пересоздают свои тексты через retranslate_ui()."""
+    language_changed = Signal(str)  # 'ru' или 'en'
+
+    def __init__(self):
+        super().__init__()
+        self._lang = _load_lang_setting()
+
+    @property
+    def lang(self):
+        return self._lang
+
+    def set_lang(self, code):
+        if code not in ("ru", "en"):
+            return
+        if code == self._lang:
+            return
+        self._lang = code
+        try:
+            s = load_settings()
+            s["app_language"] = code
+            save_settings(s)
+        except:
+            pass
+        self.language_changed.emit(code)
+
+
+# Создаётся после QApplication в main()
+LANG = None
+
+
+def tr(ru_text):
+    """Возвращает английский перевод, если выбран EN и перевод существует;
+    иначе — исходную русскую строку."""
+    if LANG is None or LANG.lang == "ru":
+        return ru_text
+    return TRANSLATIONS.get(ru_text, ru_text)
+
 
 def check_omniroute_status():
     """Проверяет, запущен ли Omniroute"""
@@ -467,7 +961,7 @@ class _FmClickHint(QWidget):
         font.setItalic(True)
         p.setFont(font)
         p.setPen(text_color)
-        p.drawText(QRectF(96, 38, 60, 22), Qt.AlignLeft | Qt.AlignVCenter, "клик")
+        p.drawText(QRectF(96, 38, 60, 22), Qt.AlignLeft | Qt.AlignVCenter, tr("клик"))
 
         # Изогнутая стрелка: начинается слева от слова «клик», уходит вниз-влево,
         # выгибается через левую сторону и упирается наконечником вверх в бейдж.
@@ -1327,7 +1821,7 @@ class FreemodelStatsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("freemodel.dev — статус и латентность")
+        self.setWindowTitle(tr("freemodel.dev — статус и латентность"))
         # Frameless + полупрозрачный фон под drop-shadow контейнера
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -1532,7 +2026,7 @@ class FreemodelStatsDialog(QDialog):
         cl.addWidget(self.probes_frame, 1)
 
         # Подпись внизу
-        src = QLabel("источник: fm.bluealitas.com/api/status")
+        src = QLabel(tr("источник: fm.bluealitas.com/api/status"))
         src.setFont(QFont("Segoe UI", 8))
         src.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
         src.setAlignment(Qt.AlignCenter)
@@ -1741,7 +2235,7 @@ class FreemodelStatsDialog(QDialog):
             )
             self.hero_frame.set_glow(None, "unknown")
             self._update_title_dot("unknown")
-            self.lbl_status_sub.setText("Нет данных по этому endpoint.")
+            self.lbl_status_sub.setText(tr("Нет данных по этому endpoint."))
             return
 
         target_status = str(tgt.get("status") or "unknown").lower()
@@ -1861,13 +2355,13 @@ class FreemodelStatsDialog(QDialog):
 
     def _apply_failure(self):
         if self._last_data is None:
-            self.lbl_status_word.setText("Нет связи")
+            self.lbl_status_word.setText(tr("Нет связи"))
             self.lbl_status_word.setStyleSheet(
                 f"color: {_FM_COLORS['ink_muted']}; background: transparent;"
             )
-            self.lbl_status_sub.setText(
+            self.lbl_status_sub.setText(tr(
                 "Не удалось получить /api/status. Повторим через несколько секунд."
-            )
+            ))
 
     def _update_countdown(self):
         if not self._next_check_at_ms:
@@ -2907,19 +3401,19 @@ class AddModelDialog(QDialog):
         layout.setSpacing(15)
 
         # Заголовок
-        title = QLabel("Добавить модель")
+        title = QLabel(tr("Добавить модель"))
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
         layout.addWidget(title)
 
-        label = QLabel("Введите название модели:")
+        label = QLabel(tr("Введите название модели:"))
         label.setFont(QFont("Segoe UI", 11))
         label.setStyleSheet("color: rgb(180, 180, 180); background: transparent; border: none;")
         layout.addWidget(label)
 
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Например: kr/claude-sonnet-4.5")
+        self.input.setPlaceholderText(tr("Например: kr/claude-sonnet-4.5"))
         self.input.setFont(QFont("Segoe UI", 10))
         self.input.setStyleSheet("""
             QLineEdit {
@@ -2938,12 +3432,12 @@ class AddModelDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        btn_cancel = RedButton("Отмена")
+        btn_cancel = RedButton(tr("Отмена"))
         btn_cancel.setMinimumHeight(40)
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
-        btn_ok = GreenButton("Добавить")
+        btn_ok = GreenButton(tr("Добавить"))
         btn_ok.setMinimumHeight(40)
         btn_ok.clicked.connect(self.accept)
         btn_layout.addWidget(btn_ok)
@@ -3143,7 +3637,7 @@ class Fable5WarningDialog(QDialog):
         layout.setSpacing(12)
 
         # Верхняя плашка-заголовок
-        top_banner = QLabel("Fable 5 временно недоступна")
+        top_banner = QLabel(tr("Fable 5 временно недоступна"))
         top_banner.setFont(QFont("Segoe UI", 10, QFont.Bold))
         top_banner.setStyleSheet("""
             QLabel {
@@ -3168,7 +3662,7 @@ class Fable5WarningDialog(QDialog):
         layout.addWidget(icon_label)
 
         # Главный заголовок
-        title_label = QLabel("Модель заблокирована\nправительством США")
+        title_label = QLabel(tr("Модель заблокирована\nправительством США"))
         title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title_label.setStyleSheet("""
             QLabel {
@@ -3187,7 +3681,7 @@ class Fable5WarningDialog(QDialog):
         layout.addWidget(sep)
 
         # Основное описание
-        desc_label = QLabel(
+        desc_label = QLabel(tr(
             "По официальному заявлению правительства США, доступ\n"
             "к модели Fable 5 временно приостановлен на территории\n"
             "всех юрисдикций.\n\n"
@@ -3198,7 +3692,7 @@ class Fable5WarningDialog(QDialog):
             "и временно изъята из публичного оборота.\n\n"
             "Доступ будет восстановлен после завершения проверки\n"
             "и установки регулирующих ограничений Anthropic."
-        )
+        ))
         desc_label.setFont(QFont("Segoe UI", 10))
         desc_label.setStyleSheet("""
             QLabel {
@@ -3212,7 +3706,7 @@ class Fable5WarningDialog(QDialog):
         layout.addWidget(desc_label)
 
         # Плашка-источник
-        source_label = QLabel("Источник: официальное заявление правительства США")
+        source_label = QLabel(tr("Источник: официальное заявление правительства США"))
         source_label.setFont(QFont("Segoe UI", 9))
         source_label.setStyleSheet("""
             QLabel {
@@ -3231,7 +3725,7 @@ class Fable5WarningDialog(QDialog):
         # Кнопка OK — не на всю ширину, по центру
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_ok = GlowDialogButton("Понятно",
+        btn_ok = GlowDialogButton(tr("Понятно"),
                                   base_rgb=(235, 70, 70),
                                   hover_rgb=(245, 100, 100))
         btn_ok.clicked.connect(self.accept)
@@ -3314,7 +3808,7 @@ class AdminWarningDialog(QDialog):
         layout.setSpacing(12)
 
         # Верхняя плашка-заголовок
-        top_banner = QLabel("Запуск без прав администратора")
+        top_banner = QLabel(tr("Запуск без прав администратора"))
         top_banner.setFont(QFont("Segoe UI", 10, QFont.Bold))
         top_banner.setStyleSheet("""
             QLabel {
@@ -3339,7 +3833,7 @@ class AdminWarningDialog(QDialog):
         layout.addWidget(icon_label)
 
         # Главный заголовок
-        title_label = QLabel("Рекомендуется запустить\nот имени администратора")
+        title_label = QLabel(tr("Рекомендуется запустить\nот имени администратора"))
         title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title_label.setStyleSheet("""
             QLabel {
@@ -3362,7 +3856,7 @@ class AdminWarningDialog(QDialog):
         layout.addWidget(sep)
 
         # Основное описание
-        desc_label = QLabel(
+        desc_label = QLabel(tr(
             "Сейчас приложение работает в обычном режиме и часть\n"
             "операций может завершаться ошибкой PermissionDenied.\n\n"
             "Без админ-прав могут не сработать:\n"
@@ -3373,7 +3867,7 @@ class AdminWarningDialog(QDialog):
             "  •  правки в чужих профилях и общих директориях\n\n"
             "Базовые сценарии — Fix Claude, смена модели и API-ключа —\n"
             "работают и без админа."
-        )
+        ))
         desc_label.setFont(QFont("Segoe UI", 10))
         desc_label.setStyleSheet("""
             QLabel {
@@ -3387,9 +3881,9 @@ class AdminWarningDialog(QDialog):
         layout.addWidget(desc_label)
 
         # Плашка-совет внизу
-        hint_label = QLabel(
+        hint_label = QLabel(tr(
             "Совет:  закройте приложение и запустите от имени администратора"
-        )
+        ))
         hint_label.setFont(QFont("Segoe UI", 9))
         hint_label.setStyleSheet("""
             QLabel {
@@ -3408,7 +3902,7 @@ class AdminWarningDialog(QDialog):
         # Кнопка «Понятно» — янтарная, по центру
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_ok = GlowDialogButton("Понятно",
+        btn_ok = GlowDialogButton(tr("Понятно"),
                                   base_rgb=(210, 160, 60),
                                   hover_rgb=(245, 196, 74))
         btn_ok.clicked.connect(self.accept)
@@ -3460,8 +3954,10 @@ class AdminWarningDialog(QDialog):
 
 class ConfirmActionDialog(QDialog):
     """Универсальное окно подтверждения с кастомным заголовком и текстом."""
-    def __init__(self, title, message, detail=None, confirm_text="Продолжить",
+    def __init__(self, title, message, detail=None, confirm_text=None,
                  icon="⚙", icon_color=(100, 150, 255), parent=None):
+        if confirm_text is None:
+            confirm_text = tr("Продолжить")
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -3540,7 +4036,7 @@ class ConfirmActionDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        self.cancel_btn = RedButton("Отмена")
+        self.cancel_btn = RedButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
@@ -3863,6 +4359,203 @@ class ModeToggle(QWidget):
 
         p.end()
 
+
+class LanguageToggle(QWidget):
+    """Компактный переключатель языка интерфейса EN / RU.
+
+    Стилистика: слегка скруглённый прямоугольник (radius ~6, не «таблетка»).
+    EN активен → подсветка зелёная (#34d399, цвет «freemodel» с сайта).
+    RU активен → подсветка холодная голубоватая (#6aa9ff).
+    Плавная анимация цвета пилюли и яркости лейблов между состояниями.
+    """
+    toggled = Signal(str)  # 'ru' | 'en'
+
+    # Цвета берутся из брендинга freemodel.dev (#34d399) и подбираются
+    # к нему по контрасту для RU.
+    _EN_COL = (52, 211, 153)   # #34d399
+    _RU_COL = (106, 169, 255)  # #6aa9ff
+
+    def __init__(self, lang="ru", parent=None):
+        super().__init__(parent)
+        self.setFixedSize(96, 26)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        self._lang = lang
+        # 0.0 = RU, 1.0 = EN
+        self._progress = 1.0 if lang == "en" else 0.0
+        self._target = self._progress
+
+        # Hover-подсветка неактивной стороны: при наведении на «другую»
+        # половину её буквы плавно «загораются» цветом соответствующего
+        # языка (RU = голубой, EN = зелёный) — как превью того, что будет
+        # после клика.
+        self._hover_ru = 0.0  # 0..1
+        self._hover_en = 0.0
+        self._hover_ru_target = 0.0
+        self._hover_en_target = 0.0
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def set_lang(self, code, animate=True):
+        if code not in ("ru", "en"):
+            return
+        if code == self._lang:
+            return
+        self._lang = code
+        self._target = 1.0 if code == "en" else 0.0
+        if not animate:
+            self._progress = self._target
+        self.update()
+
+    def _tick(self):
+        changed = False
+        diff = self._target - self._progress
+        if abs(diff) > 0.004:
+            self._progress += diff * 0.18
+            changed = True
+        elif self._progress != self._target:
+            self._progress = self._target
+            changed = True
+        # Hover-fade каждой половины (мягко 0↔1).
+        # Низкий коэффициент = более медленный, плавный «прогрев» цвета.
+        # 0.07 даёт ~250-300 мс на полный переход — мягко, как у спокойного
+        # easing-in/out, без рывка в конце.
+        for name in ("_hover_ru", "_hover_en"):
+            cur = getattr(self, name)
+            tgt = getattr(self, name + "_target")
+            d = tgt - cur
+            if abs(d) > 0.003:
+                setattr(self, name, cur + d * 0.07)
+                changed = True
+            elif cur != tgt:
+                setattr(self, name, tgt)
+                changed = True
+        if changed:
+            self.update()
+
+    def mousePressEvent(self, event):
+        # Любая половина переключает в свой режим (без deselect активного).
+        is_right = event.pos().x() >= self.width() / 2
+        new_lang = "en" if is_right else "ru"
+        if new_lang != self._lang:
+            self._lang = new_lang
+            self._target = 1.0 if new_lang == "en" else 0.0
+            self.toggled.emit(new_lang)
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        # Подсвечиваем ТОЛЬКО неактивную половину при наведении.
+        is_right = event.pos().x() >= self.width() / 2
+        if is_right:
+            # курсор справа — превью «EN»
+            self._hover_en_target = 0.0 if self._lang == "en" else 1.0
+            self._hover_ru_target = 0.0
+        else:
+            self._hover_ru_target = 0.0 if self._lang == "ru" else 1.0
+            self._hover_en_target = 0.0
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_ru_target = 0.0
+        self._hover_en_target = 0.0
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        t = self._progress
+        w, h = self.width(), self.height()
+
+        # Слегка квадратный радиус — 6 px (не «таблетка»).
+        track_r = 6.0
+        pill_r = 5.0
+
+        # Трек
+        p.setBrush(QColor(28, 28, 33))
+        p.setPen(QPen(QColor(60, 60, 65), 1.4))
+        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
+
+        # Цвет пилюли — интерполяция RU → EN
+        r0, g0, b0 = self._RU_COL
+        r1, g1, b1 = self._EN_COL
+        r = int(r0 + (r1 - r0) * t)
+        g = int(g0 + (g1 - g0) * t)
+        b = int(b0 + (b1 - b0) * t)
+
+        # Пилюля скользит между левой и правой половиной
+        pad = 2.5
+        pill_w = w / 2 - pad
+        pill_x = pad / 2 + (w / 2) * t
+
+        # Мягкое свечение по периметру пилюли (внутри клипа трека).
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
+        p.save()
+        p.setClipPath(clip)
+        for i in range(1, 4):
+            alpha = int(48 * (1 - (i - 1) / 3.2))
+            p.setPen(QPen(QColor(r, g, b, alpha), 1))
+            p.setBrush(Qt.NoBrush)
+            ex = i * 1.4
+            p.drawRoundedRect(
+                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
+                pill_r + ex, pill_r + ex
+            )
+        p.restore()
+
+        # Сама пилюля — лёгкий вертикальный градиент для объёма
+        grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
+        grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
+        grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
+        p.setBrush(QBrush(grad))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
+
+        # Текст
+        p.setFont(QFont("Segoe UI", 9, QFont.Bold))
+
+        # Левая половина — RU. Яркая когда t=0.
+        ru_active = 1.0 - t
+        if ru_active > 0.5:
+            # На активной пилюле — тёмный текст, для контраста
+            ru_pen = QColor(20, 22, 28)
+        else:
+            # Неактивный — мягко-серый, при ховере плавно подсвечивается
+            # в цвет RU (#6aa9ff). Альфа hover_ru интерполирует от серого
+            # к полному цвету RU.
+            shade = int(130 + 25 * (1 - t))
+            base = QColor(shade, shade, shade + 5)
+            hr, hg, hb = self._RU_COL
+            hover = self._hover_ru
+            ru_pen = QColor(
+                int(base.red()   + (hr - base.red())   * hover),
+                int(base.green() + (hg - base.green()) * hover),
+                int(base.blue()  + (hb - base.blue())  * hover),
+            )
+        p.setPen(ru_pen)
+        p.drawText(QRectF(0, 0, w / 2, h), Qt.AlignCenter, "RU")
+
+        # Правая половина — EN. Яркая когда t=1.
+        if t > 0.5:
+            en_pen = QColor(15, 28, 22)
+        else:
+            shade = int(130 + 25 * t)
+            base = QColor(shade, shade + 5, shade)
+            hr, hg, hb = self._EN_COL
+            hover = self._hover_en
+            en_pen = QColor(
+                int(base.red()   + (hr - base.red())   * hover),
+                int(base.green() + (hg - base.green()) * hover),
+                int(base.blue()  + (hb - base.blue())  * hover),
+            )
+        p.setPen(en_pen)
+        p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignCenter, "EN")
+
+        p.end()
+
+
 # ============================================================
 # ДИАЛОГ УПРАВЛЕНИЯ BASE URL
 # ============================================================
@@ -4018,7 +4711,7 @@ class BaseUrlManagerDialog(QDialog):
         left_spacer.setStyleSheet("background: transparent; border: none;")
         title_row.addWidget(left_spacer)
 
-        title = QLabel("Управление Base URL")
+        title = QLabel(tr("Управление Base URL"))
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
@@ -4029,7 +4722,7 @@ class BaseUrlManagerDialog(QDialog):
         title_row.addWidget(self.btn_close)
         layout.addLayout(title_row)
 
-        info = QLabel("Добавьте или удалите URL из списка")
+        info = QLabel(tr("Добавьте или удалите URL из списка"))
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
         info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
@@ -4046,13 +4739,13 @@ class BaseUrlManagerDialog(QDialog):
         layout.addWidget(self.url_combo)
 
         # Кнопка удалить выбранный URL
-        self.btn_remove_url = RedButton("Удалить выбранный URL")
+        self.btn_remove_url = RedButton(tr("Удалить выбранный URL"))
         self.btn_remove_url.setMinimumHeight(32)
         self.btn_remove_url.clicked.connect(self.remove_url)
         layout.addWidget(self.btn_remove_url)
 
         # Разделитель — добавление нового
-        add_label = QLabel("Добавить новый URL:")
+        add_label = QLabel(tr("Добавить новый URL:"))
         add_label.setFont(QFont("Segoe UI", 10))
         add_label.setStyleSheet("color: rgb(180, 180, 180); background: transparent; border: none;")
         layout.addWidget(add_label)
@@ -4072,7 +4765,7 @@ class BaseUrlManagerDialog(QDialog):
         """)
         add_row.addWidget(self.url_input, 1)
 
-        self.btn_add_url = GreenButton("Добавить")
+        self.btn_add_url = GreenButton(tr("Добавить"))
         self.btn_add_url.setMinimumHeight(32)
         self.btn_add_url.setMaximumWidth(110)
         self.btn_add_url.clicked.connect(self.add_url)
@@ -4127,9 +4820,9 @@ class BaseUrlManagerDialog(QDialog):
         is_default = sel in self.DEFAULT_URLS
         self.btn_remove_url.setEnabled(not is_default)
         if is_default:
-            self.btn_remove_url.setText("Базовый URL нельзя удалить")
+            self.btn_remove_url.setText(tr("Базовый URL нельзя удалить"))
         else:
-            self.btn_remove_url.setText("Удалить выбранный URL")
+            self.btn_remove_url.setText(tr("Удалить выбранный URL"))
 
     def add_url(self):
         url = self.url_input.text().strip()
@@ -4199,7 +4892,7 @@ class CustomTokenDialog(QDialog):
         layout.setSpacing(15)
 
         # Заголовок
-        title = QLabel("Настройки кастомного токена")
+        title = QLabel(tr("Настройки кастомного токена"))
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
@@ -4238,7 +4931,7 @@ class CustomTokenDialog(QDialog):
             self.url_combo.setCurrentText(saved_url)
         url_layout.addWidget(self.url_combo, 1)
 
-        self.btn_manage_urls = StyledButton("Управление")
+        self.btn_manage_urls = StyledButton(tr("Управление"))
         self.btn_manage_urls.setMaximumWidth(120)
         self.btn_manage_urls.setMinimumHeight(0)
         self.btn_manage_urls.setFixedHeight(36)
@@ -4249,7 +4942,7 @@ class CustomTokenDialog(QDialog):
         layout.addLayout(url_layout)
 
         # API ключ
-        key_label = QLabel("API ключ:")
+        key_label = QLabel(tr("API ключ:"))
         key_label.setFont(QFont("Segoe UI", 10))
         key_label.setStyleSheet("color: rgb(180, 180, 180);")
         layout.addWidget(key_label)
@@ -4271,7 +4964,7 @@ class CustomTokenDialog(QDialog):
         """)
         key_layout.addWidget(self.key_input)
 
-        self.btn_toggle_key = StyledButton("Показать")
+        self.btn_toggle_key = StyledButton(tr("Показать"))
         self.btn_toggle_key.setMaximumWidth(100)
         self.btn_toggle_key.clicked.connect(self.toggle_key_visibility)
         key_layout.addWidget(self.btn_toggle_key)
@@ -4279,7 +4972,7 @@ class CustomTokenDialog(QDialog):
         layout.addLayout(key_layout)
 
         # Модель
-        model_label = QLabel("Модель:")
+        model_label = QLabel(tr("Модель:"))
         model_label.setFont(QFont("Segoe UI", 10))
         model_label.setStyleSheet(
             "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
@@ -4354,11 +5047,11 @@ class CustomTokenDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
 
-        btn_cancel = RedButton("Отмена")
+        btn_cancel = RedButton(tr("Отмена"))
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
-        btn_save = GreenButton("Сохранить")
+        btn_save = GreenButton(tr("Сохранить"))
         btn_save.clicked.connect(self.save_settings)
         btn_layout.addWidget(btn_save)
 
@@ -4405,10 +5098,10 @@ class CustomTokenDialog(QDialog):
         """Переключает видимость ключа"""
         if self.key_input.echoMode() == QLineEdit.Password:
             self.key_input.setEchoMode(QLineEdit.Normal)
-            self.btn_toggle_key.setText("Скрыть")
+            self.btn_toggle_key.setText(tr("Скрыть"))
         else:
             self.key_input.setEchoMode(QLineEdit.Password)
-            self.btn_toggle_key.setText("Показать")
+            self.btn_toggle_key.setText(tr("Показать"))
 
     def open_url_manager(self):
         """Открывает отдельное окно управления Base URL"""
@@ -4512,7 +5205,7 @@ class UpdateAppDialog(QDialog):
         ic.addStretch()
 
         # Заголовок
-        title = QLabel("Доступно обновление!")
+        title = QLabel(tr("Доступно обновление!"))
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("""
             QLabel {
@@ -4555,10 +5248,10 @@ class UpdateAppDialog(QDialog):
         bl = QHBoxLayout()
         bl.setSpacing(12)
 
-        self.cancel_btn = RedButton("Отмена")
+        self.cancel_btn = RedButton(tr("Отмена"))
         self.cancel_btn.clicked.connect(self.reject_animated)
 
-        self.update_btn = GreenButton("Обновить")
+        self.update_btn = GreenButton(tr("Обновить"))
         self.update_btn.clicked.connect(self.accept_animated)
 
         bl.addWidget(self.cancel_btn)
@@ -4909,27 +5602,27 @@ class ClaudeInstallProgressDialog(QDialog):
         # Обновить тексты
         if self._is_update:
             ver = actual_version or self._new_version
-            self.title_lbl.setText("Claude Code обновлён ✓")
+            self.title_lbl.setText(tr("Claude Code обновлён ✓"))
             if ver:
-                self.sub_lbl.setText(f"Версия v{ver}")
+                self.sub_lbl.setText(tr("Версия") + f" v{ver}")
             else:
                 self.sub_lbl.setText("")
-            self.status_lbl.setText(
+            self.status_lbl.setText(tr(
                 "Обновление завершено успешно.\n"
                 "Перезапустите Claude Code для применения изменений."
-            )
+            ))
         else:
             ver = actual_version or self._new_version
-            self.title_lbl.setText("Claude Code установлен ✓")
+            self.title_lbl.setText(tr("Claude Code установлен ✓"))
             if ver:
-                self.sub_lbl.setText(f"Версия v{ver}")
+                self.sub_lbl.setText(tr("Версия") + f" v{ver}")
             else:
                 self.sub_lbl.setText("")
-            self.status_lbl.setText(
+            self.status_lbl.setText(tr(
                 "Установка завершена успешно.\n"
                 "Если команда claude не найдена — открой новое окно консоли\n"
                 "(npm обычно сам прописывает её в PATH)."
-            )
+            ))
         self.btn_ok.show()
 
     def mark_cancelled(self):
@@ -4939,16 +5632,16 @@ class ClaudeInstallProgressDialog(QDialog):
         self.spinner.stop()
         self.spinner.hide()
         self.title_lbl.setText(
-            "Обновление отменено" if self._is_update else "Установка отменена"
+            tr("Обновление отменено") if self._is_update else tr("Установка отменена")
         )
         self.title_lbl.setStyleSheet(
             "color: rgba(200, 180, 80, 0.9); background: transparent; border: none;"
         )
         self.sub_lbl.setText("")
-        self.status_lbl.setText(
+        self.status_lbl.setText(tr(
             "Окно PowerShell было закрыто до завершения.\n"
             "Можете попробовать снова в любой момент."
-        )
+        ))
         self.btn_ok.show()
 
     def mark_failed(self, message=""):
@@ -4958,15 +5651,15 @@ class ClaudeInstallProgressDialog(QDialog):
         self.spinner.stop()
         self.spinner.hide()
         self.title_lbl.setText(
-            "Обновление не завершено" if self._is_update else "Установка не завершена"
+            tr("Обновление не завершено") if self._is_update else tr("Установка не завершена")
         )
         self.title_lbl.setStyleSheet(
             "color: rgb(235, 110, 110); background: transparent; border: none;"
         )
         self.sub_lbl.setText("")
         self.status_lbl.setText(
-            message or "Окно PowerShell было закрыто до завершения операции.\n"
-                      "Попробуйте ещё раз."
+            message or tr("Окно PowerShell было закрыто до завершения операции.\n"
+                          "Попробуйте ещё раз.")
         )
         self.btn_ok.show()
 
@@ -4992,7 +5685,7 @@ class StatusLinePreview(QFrame):
         lay.setContentsMargins(14, 10, 14, 10)
         lay.setSpacing(6)
 
-        caption = QLabel("Пример отображения в Claude Code")
+        caption = QLabel(tr("Пример отображения в Claude Code"))
         caption.setFont(QFont("Segoe UI", 8))
         caption.setStyleSheet("color: rgba(180, 180, 185, 0.65); background: transparent; border: none;")
         caption.setAlignment(Qt.AlignLeft)
@@ -5016,7 +5709,7 @@ class StatusLinePreview(QFrame):
         lay.addWidget(line)
 
         # Подпись — что отображается слева направо
-        legend = QLabel("модель  •  контекст  •  session ID  •  git-репозиторий")
+        legend = QLabel(tr("модель  •  контекст  •  session ID  •  git-репозиторий"))
         legend.setFont(QFont("Segoe UI", 8))
         legend.setStyleSheet("color: rgba(150, 150, 155, 0.55); background: transparent; border: none;")
         lay.addWidget(legend)
@@ -5080,7 +5773,7 @@ class StatusLineInstallDialog(QDialog):
         layout.addLayout(ic)
 
         # Заголовок «Внимание» жёлтым
-        title_label = QLabel("Внимание")
+        title_label = QLabel(tr("Внимание"))
         title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title_label.setStyleSheet(
             f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
@@ -5090,7 +5783,7 @@ class StatusLineInstallDialog(QDialog):
 
         # Единый текст с пометкой текущего состояния
         if has_existing:
-            state_line = (
+            state_line = tr(
                 '<span style="color:#F5C850;"><b>● Сейчас status line установлен.</b></span><br>'
                 "Можно <b>переустановить</b> его (наш скрипт перезапишет твой) "
                 "или <b>удалить</b> — тогда блок <code>statusLine</code> уйдёт "
@@ -5098,7 +5791,7 @@ class StatusLineInstallDialog(QDialog):
                 "<code>~/.claude/statusline-command.sh</code> будет стёрт.<br><br>"
             )
         else:
-            state_line = (
+            state_line = tr(
                 '<span style="color:rgba(200,200,205,0.7);">● Сейчас status line не настроен.</span><br>'
                 "Менеджер скопирует <code>statusline-command.sh</code> в "
                 "<code>~/.claude/</code> и пропишет блок <code>statusLine</code> "
@@ -5108,9 +5801,9 @@ class StatusLineInstallDialog(QDialog):
 
         message = (
             state_line +
-            "Status line — это строка внизу окна Claude Code, в которой видно "
-            "текущую модель, заполненность контекста, ID сессии и git-репозиторий "
-            "рабочей папки. Ниже — как именно он будет выглядеть."
+            tr("Status line — это строка внизу окна Claude Code, в которой видно "
+               "текущую модель, заполненность контекста, ID сессии и git-репозиторий "
+               "рабочей папки. Ниже — как именно он будет выглядеть.")
         )
 
         message_label = QLabel(message)
@@ -5123,7 +5816,7 @@ class StatusLineInstallDialog(QDialog):
 
         # Если установлен — показываем текущую команду
         if has_existing and existing_command:
-            existing_label = QLabel(f"Текущая команда:\n{existing_command}")
+            existing_label = QLabel(tr("Текущая команда:") + f"\n{existing_command}")
             existing_label.setFont(QFont("Consolas", 8))
             existing_label.setStyleSheet("""
                 QLabel {
@@ -5145,19 +5838,19 @@ class StatusLineInstallDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        self.cancel_btn = StyledButton("Отмена")
+        self.cancel_btn = StyledButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
-        self.remove_btn = StyledButton("Удалить")
+        self.remove_btn = StyledButton(tr("Удалить"))
         self.remove_btn.setMinimumHeight(40)
         self.remove_btn.set_hover_color(235, 90, 90)
         self.remove_btn.setEnabled(has_existing)
         self.remove_btn.clicked.connect(lambda: self.done(self.ACTION_REMOVE))
         btn_layout.addWidget(self.remove_btn)
 
-        self.confirm_btn = GreenButton("Переустановить" if has_existing else "Установить")
+        self.confirm_btn = GreenButton(tr("Переустановить") if has_existing else tr("Установить"))
         self.confirm_btn.setMinimumHeight(40)
         self.confirm_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.confirm_btn)
@@ -5258,7 +5951,7 @@ class StatusLineProgressDialog(QDialog):
         ic.addStretch(); ic.addWidget(self.icon_label); ic.addStretch()
         layout.addLayout(ic)
 
-        self.title_lbl = QLabel("Установка status line")
+        self.title_lbl = QLabel(tr("Установка status line"))
         self.title_lbl.setFont(QFont("Segoe UI", 13, QFont.Bold))
         self.title_lbl.setStyleSheet(
             f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
@@ -5269,7 +5962,7 @@ class StatusLineProgressDialog(QDialog):
         self.progress_bar = AnimatedProgressBar("#78C882")
         layout.addWidget(self.progress_bar)
 
-        self.status_lbl = QLabel("Подготовка…")
+        self.status_lbl = QLabel(tr("Подготовка…"))
         self.status_lbl.setFont(QFont("Segoe UI", 10))
         self.status_lbl.setStyleSheet(
             "color: rgba(210, 210, 215, 0.9); background: transparent; border: none;"
@@ -5278,7 +5971,7 @@ class StatusLineProgressDialog(QDialog):
         self.status_lbl.setWordWrap(True)
         layout.addWidget(self.status_lbl)
 
-        self.btn_ok = GreenButton("Готово")
+        self.btn_ok = GreenButton(tr("Готово"))
         self.btn_ok.setMinimumHeight(38)
         self.btn_ok.clicked.connect(self.accept)
         self.btn_ok.hide()
@@ -5360,12 +6053,12 @@ class StatusLineProgressDialog(QDialog):
     def _show_success_state(self):
         self._tick.stop()
         self.icon_label.setText("✓")
-        self.title_lbl.setText("Status line установлен ✓")
-        self.status_lbl.setText(
+        self.title_lbl.setText(tr("Status line установлен ✓"))
+        self.status_lbl.setText(tr(
             "Скрипт скопирован в ~/.claude/statusline-command.sh,\n"
             "блок statusLine прописан в ~/.claude/settings.json.\n"
             "Запусти Claude Code — строка появится внизу окна."
-        )
+        ))
         self.btn_ok.show()
 
     def mark_failed(self, message):
@@ -5386,11 +6079,11 @@ class StatusLineProgressDialog(QDialog):
                 min-height: 50px; max-height: 50px;
             }}
         """)
-        self.title_lbl.setText("Не удалось установить")
+        self.title_lbl.setText(tr("Не удалось установить"))
         self.title_lbl.setStyleSheet(
             f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
         )
-        self.status_lbl.setText(message or "Неизвестная ошибка")
+        self.status_lbl.setText(message or tr("Неизвестная ошибка"))
         self.btn_ok.show()
 
     def _on_finished(self, ok, err):
@@ -5455,7 +6148,7 @@ class ClaudeJsonFixDialog(QDialog):
         layout.addLayout(ic)
 
         # Заголовок «Внимание» красным
-        title_label = QLabel("Внимание")
+        title_label = QLabel(tr("Внимание"))
         title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title_label.setStyleSheet(
             f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
@@ -5465,15 +6158,15 @@ class ClaudeJsonFixDialog(QDialog):
 
         # Текст с описанием проблемы и тем, что произойдёт
         if json_exists:
-            state_line = (
-                f'<span style="color:#EB5A5A;"><b>● Найден файл ~/.claude.json.</b></span><br>'
+            state_line = tr(
+                '<span style="color:#EB5A5A;"><b>● Найден файл ~/.claude.json.</b></span><br>'
                 "У многих пользователей старые/несовместимые настройки из этого файла "
                 "ломают первый запуск Claude Code: <b>ошибки API</b>, "
                 "<b>Claude вообще не отвечает</b>, странные сбои авторизации. "
                 "Особенно если ты раньше пользовался Claude Code через другие способы.<br><br>"
             )
         else:
-            state_line = (
+            state_line = tr(
                 '<span style="color:rgba(200,200,205,0.7);">● Файл ~/.claude.json не найден.</span><br>'
                 "Исправлять нечего — этот фикс нужен только когда Claude Code "
                 "не отвечает или возвращает ошибки API при первом запуске "
@@ -5482,25 +6175,25 @@ class ClaudeJsonFixDialog(QDialog):
 
         message = (
             state_line +
-            "<b>Что сделает кнопка «Исправить»:</b><br>"
-            f"• переименует <code>{self._short(json_path)}</code> "
+            tr("<b>Что сделает кнопка «Исправить»:</b><br>") +
+            f"• " + tr("переименует") + f" <code>{self._short(json_path)}</code> "
             f"→ <code>{self._short(backup_target)}</code><br>"
-            "• оригинал <code>~/.claude.json</code> <b>не удаляется</b> — "
-            "остаётся как <code>.bak</code>, можно вернуть.<br>"
-            "• создаст свежий <code>~/.claude.json</code> с "
-            "<code>installMethod=global</code> и <code>autoUpdates=false</code>.<br>"
-            "• <b>пересоздаст</b> <code>~/.claude/settings.json</code> с нуля, "
-            "оставив только <code>env.DISABLE_UPDATES=1</code>. "
-            "Это убирает «зависшие» ключи вроде <code>apiKeyHelper</code>, "
-            "которые ломают авторизацию (Claude ругается «auth may not work» "
-            "и виснет на Retrying). Модель, эффорт и токен приложение "
-            "пропишет туда обратно само — настройки лежат в нём отдельно "
-            "и не теряются.<br>"
-            "• <code>DISABLE_UPDATES=1</code> — официальный способ выключить "
-            "автообновление Claude Code; без него CLI рано или поздно "
-            "обновится с зафиксированной v" + REQUIRED_CLAUDE_VERSION +
-            " до более новой версии, где FreeModel / Omniroute / прокси "
-            "уже не работают."
+            + tr("• оригинал <code>~/.claude.json</code> <b>не удаляется</b> — "
+                 "остаётся как <code>.bak</code>, можно вернуть.<br>"
+                 "• создаст свежий <code>~/.claude.json</code> с "
+                 "<code>installMethod=global</code> и <code>autoUpdates=false</code>.<br>"
+                 "• <b>пересоздаст</b> <code>~/.claude/settings.json</code> с нуля, "
+                 "оставив только <code>env.DISABLE_UPDATES=1</code>. "
+                 "Это убирает «зависшие» ключи вроде <code>apiKeyHelper</code>, "
+                 "которые ломают авторизацию (Claude ругается «auth may not work» "
+                 "и виснет на Retrying). Модель, эффорт и токен приложение "
+                 "пропишет туда обратно само — настройки лежат в нём отдельно "
+                 "и не теряются.<br>"
+                 "• <code>DISABLE_UPDATES=1</code> — официальный способ выключить "
+                 "автообновление Claude Code; без него CLI рано или поздно "
+                 "обновится с зафиксированной v") + REQUIRED_CLAUDE_VERSION +
+            tr(" до более новой версии, где FreeModel / Omniroute / прокси "
+               "уже не работают.")
         )
 
         message_label = QLabel(message)
@@ -5512,11 +6205,11 @@ class ClaudeJsonFixDialog(QDialog):
         layout.addWidget(message_label)
 
         # Подсказка «когда нажимать»
-        hint_label = QLabel(
+        hint_label = QLabel(tr(
             "Нажимай, только если у тебя реально проблемы: "
             "Claude Code не отвечает, выдаёт ошибки API, или ведёт себя странно "
             "после смены способа авторизации."
-        )
+        ))
         hint_label.setFont(QFont("Segoe UI", 9))
         hint_label.setStyleSheet(f"""
             QLabel {{
@@ -5534,13 +6227,13 @@ class ClaudeJsonFixDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        self.cancel_btn = StyledButton("Отмена")
+        self.cancel_btn = StyledButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.set_hover_color(235, 90, 90)  # красный hover — согласуется с акцентом окна
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
-        self.confirm_btn = GreenButton("Исправить")
+        self.confirm_btn = GreenButton(tr("Исправить"))
         self.confirm_btn.setMinimumHeight(40)
         self.confirm_btn.setEnabled(json_exists)
         self.confirm_btn.clicked.connect(self.accept)
@@ -6358,18 +7051,18 @@ class ClaudeManager(QMainWindow):
         install_row = QHBoxLayout()
         install_row.addStretch()
 
-        self.btn_install_claude = StyledButton(f"Установить Claude Code v{REQUIRED_CLAUDE_VERSION}")
+        self.btn_install_claude = StyledButton(tr("Установить Claude Code") + f" v{REQUIRED_CLAUDE_VERSION}")
         self.btn_install_claude.setFixedHeight(34)
         self.btn_install_claude.clicked.connect(self._install_claude_code)
         install_row.addWidget(self.btn_install_claude)
 
-        self.btn_uninstall_claude = StyledButton("Удалить Claude Code")
+        self.btn_uninstall_claude = StyledButton(tr("Удалить Claude Code"))
         self.btn_uninstall_claude.setFixedHeight(34)
         self.btn_uninstall_claude.set_hover_color(235, 90, 90)  # красный hover
         self.btn_uninstall_claude.clicked.connect(self._uninstall_claude_code)
         install_row.addWidget(self.btn_uninstall_claude)
 
-        self.btn_install_statusline = StyledButton("Status line")
+        self.btn_install_statusline = StyledButton(tr("Status line"))
         self.btn_install_statusline.setFixedHeight(34)
         self.btn_install_statusline.set_hover_color(120, 180, 230)  # нейтральный голубоватый hover
         self.btn_install_statusline.clicked.connect(self._on_statusline_button_clicked)
@@ -6378,7 +7071,7 @@ class ClaudeManager(QMainWindow):
         # Fix Claude — переименовывает проблемный ~/.claude.json в .bak.
         # Нужен пользователям, у которых Claude Code не отвечает / выдаёт ошибки API
         # после миграции с других способов запуска.
-        self.btn_fix_claude = StyledButton("Fix Claude")
+        self.btn_fix_claude = StyledButton(tr("Fix Claude"))
         self.btn_fix_claude.setFixedHeight(34)
         self.btn_fix_claude.set_hover_color(235, 90, 90)  # красный hover — это «лечебное» действие
         self.btn_fix_claude.clicked.connect(self._on_fix_claude_button_clicked)
@@ -6392,6 +7085,16 @@ class ClaudeManager(QMainWindow):
         self.update_indicator.clicked.connect(self._on_update_indicator_clicked)
         self.update_indicator.move(self.width() - 45, 10)  # 10px от верха, 45px от правого края
         self.update_indicator.raise_()
+
+        # Переключатель языка интерфейса EN / RU — абсолютная позиция в правом
+        # верхнем углу, чуть левее индикатора обновлений. Цвет пилюли меняется
+        # плавно: EN — зелёный (#34d399, цвет «freemodel»), RU — голубоватый.
+        self.language_toggle = LanguageToggle(LANG.lang if LANG else "ru", self)
+        self.language_toggle.move(self.width() - 45 - 96 - 10, 16)
+        self.language_toggle.raise_()
+        self.language_toggle.toggled.connect(self._on_language_toggled)
+        if LANG is not None:
+            LANG.language_changed.connect(self._on_language_changed)
 
         # Бейдж freemodel.dev — абсолютная позиция в левом верхнем углу.
         # Точка справа от текста меняет цвет в зависимости от состояния сервиса.
@@ -6438,7 +7141,7 @@ class ClaudeManager(QMainWindow):
         self.status_indicator = StatusIndicator()
         header_layout.addWidget(self.status_indicator)
 
-        self.status_label = QLabel("Не запущен")
+        self.status_label = QLabel(tr("Не запущен"))
         self.status_label.setFont(QFont("Segoe UI", 10))
         self.status_label.setStyleSheet("color: rgb(150, 150, 150);")
         header_layout.addWidget(self.status_label)
@@ -6449,14 +7152,14 @@ class ClaudeManager(QMainWindow):
         # Кнопки управления Omniroute
         omniroute_btn_layout = QHBoxLayout()
 
-        self.btn_start_omniroute = GreenButton("Запустить Omniroute")
+        self.btn_start_omniroute = GreenButton(tr("Запустить Omniroute"))
         self.btn_start_omniroute.clicked.connect(self.start_omniroute)
         self._btn_start_omniroute_dim = QGraphicsOpacityEffect()
         self._btn_start_omniroute_dim.setOpacity(1.0)
         self.btn_start_omniroute.setGraphicsEffect(self._btn_start_omniroute_dim)
         omniroute_btn_layout.addWidget(self.btn_start_omniroute)
 
-        self.btn_stop_omniroute = RedButton("Остановить Omniroute")
+        self.btn_stop_omniroute = RedButton(tr("Остановить Omniroute"))
         self.btn_stop_omniroute.clicked.connect(self.stop_omniroute)
         self.btn_stop_omniroute.setEnabled(False)
         omniroute_btn_layout.addWidget(self.btn_stop_omniroute)
@@ -6500,7 +7203,7 @@ class ClaudeManager(QMainWindow):
         self.claude_install_indicator = StatusIndicator()
         claude_header_inner.addWidget(self.claude_install_indicator)
 
-        self.claude_install_status_label = QLabel("Не установлен")
+        self.claude_install_status_label = QLabel(tr("Не установлен"))
         self.claude_install_status_label.setFont(QFont("Segoe UI", 10))
         self.claude_install_status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
         claude_header_inner.addWidget(self.claude_install_status_label)
@@ -6515,20 +7218,21 @@ class ClaudeManager(QMainWindow):
         model_section_layout.setSpacing(8)
 
         model_layout = QHBoxLayout()
-        model_label = QLabel("Модель:")
+        model_label = QLabel(tr("Модель:"))
         model_label.setFont(QFont("Segoe UI", 10))
         model_label.setStyleSheet(
             "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
             "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
         )
         model_layout.addWidget(model_label)
+        self._track_tr(model_label, "Модель:")
 
         self.model_combo = PickerComboBox()
         self.model_list_model = ModelListModel(self.settings["models"])
         self.model_combo.setModel(self.model_list_model)
         self.model_combo.setCurrentText(self.settings["selected_model"])
         self.model_combo.setMaxVisibleItems(4)
-        self.model_combo.set_picker(title="Выбор модели Omniroute")
+        self.model_combo.set_picker(title=tr("Выбор модели Omniroute"))
         model_layout.addWidget(self.model_combo, 1)
 
         model_section_layout.addLayout(model_layout)
@@ -6536,11 +7240,11 @@ class ClaudeManager(QMainWindow):
         # Кнопки управления моделями
         model_btn_layout = QHBoxLayout()
 
-        self.btn_add_model = GreenButton("Добавить модель")
+        self.btn_add_model = GreenButton(tr("Добавить модель"))
         self.btn_add_model.clicked.connect(self.add_model)
         model_btn_layout.addWidget(self.btn_add_model)
 
-        self.btn_remove_model = RedButton("Удалить модель")
+        self.btn_remove_model = RedButton(tr("Удалить модель"))
         self.btn_remove_model.clicked.connect(self.remove_model)
         model_btn_layout.addWidget(self.btn_remove_model)
 
@@ -6562,7 +7266,7 @@ class ClaudeManager(QMainWindow):
         token_section_outer.setSpacing(0)
         self.token_layout = QHBoxLayout()
 
-        self.token_label = QLabel("API ключ:")
+        self.token_label = QLabel(tr("API ключ:"))
         self.token_label.setFont(QFont("Segoe UI", 10))
         self.token_label.setStyleSheet(
             "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
@@ -6603,7 +7307,7 @@ class ClaudeManager(QMainWindow):
         self.btn_toggle_token.clicked.connect(self.toggle_token_visibility)
         self.token_layout.addWidget(self.btn_toggle_token)
 
-        self.btn_save_token = StyledButton("Сохранить")
+        self.btn_save_token = StyledButton(tr("Сохранить"))
         self.btn_save_token.setMaximumWidth(100)
         self.btn_save_token.clicked.connect(self.save_token)
         # Если токен уже сохранен, скрываем кнопку сохранить
@@ -6611,7 +7315,7 @@ class ClaudeManager(QMainWindow):
             self.btn_save_token.hide()
         self.token_layout.addWidget(self.btn_save_token)
 
-        self.btn_edit_token = StyledButton("Изменить")
+        self.btn_edit_token = StyledButton(tr("Изменить"))
         self.btn_edit_token.setMaximumWidth(100)
         self.btn_edit_token.clicked.connect(self.edit_token)
         # Если токен не сохранен, скрываем кнопку изменить
@@ -6662,11 +7366,11 @@ class ClaudeManager(QMainWindow):
         self.fm_url_combo.addItems(self.settings.get("custom_base_urls", []))
         if self.settings.get("custom_base_url"):
             self.fm_url_combo.setCurrentText(self.settings["custom_base_url"])
-        self.fm_url_combo.set_picker(title="Выбор Base URL")
+        self.fm_url_combo.set_picker(title=tr("Выбор Base URL"))
         self.fm_url_combo.currentTextChanged.connect(self._fm_url_changed)
         url_row.addWidget(self.fm_url_combo, 1)
 
-        self.fm_btn_manage = StyledButton("Управление")
+        self.fm_btn_manage = StyledButton(tr("Управление"))
         self.fm_btn_manage.setMinimumHeight(0)
         self.fm_btn_manage.setFixedHeight(36)
         self.fm_btn_manage.setFixedWidth(130)
@@ -6676,13 +7380,14 @@ class ClaudeManager(QMainWindow):
 
         # API key: label + input + show/save
         key_row = QHBoxLayout()
-        key_lbl = QLabel("API ключ:")
+        key_lbl = QLabel(tr("API ключ:"))
         key_lbl.setFont(QFont("Segoe UI", 10))
         key_lbl.setStyleSheet(
             "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
             "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
         )
         key_lbl.setFixedWidth(90)
+        self._track_tr(key_lbl, "API ключ:")
         key_row.addWidget(key_lbl)
 
         self.fm_key_input = QLineEdit()
@@ -6718,7 +7423,7 @@ class ClaudeManager(QMainWindow):
         self.fm_btn_toggle_key.clicked.connect(self._fm_toggle_key)
         key_row.addWidget(self.fm_btn_toggle_key)
 
-        self.fm_btn_save_key = StyledButton("Сохранить")
+        self.fm_btn_save_key = StyledButton(tr("Сохранить"))
         self.fm_btn_save_key.setMinimumHeight(0)
         self.fm_btn_save_key.setFixedHeight(36)
         self.fm_btn_save_key.setFixedWidth(110)
@@ -6727,7 +7432,7 @@ class ClaudeManager(QMainWindow):
             self.fm_btn_save_key.hide()
         key_row.addWidget(self.fm_btn_save_key)
 
-        self.fm_btn_edit_key = StyledButton("Изменить")
+        self.fm_btn_edit_key = StyledButton(tr("Изменить"))
         self.fm_btn_edit_key.setMinimumHeight(0)
         self.fm_btn_edit_key.setFixedHeight(36)
         self.fm_btn_edit_key.setFixedWidth(110)
@@ -6739,12 +7444,13 @@ class ClaudeManager(QMainWindow):
 
         # Model: label + combo
         model_row = QHBoxLayout()
-        model_lbl = QLabel("Модель:")
+        model_lbl = QLabel(tr("Модель:"))
         model_lbl.setFont(QFont("Segoe UI", 10))
         model_lbl.setStyleSheet(
             "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
             "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
         )
+        self._track_tr(model_lbl, "Модель:")
         model_lbl.setFixedWidth(90)
         model_row.addWidget(model_lbl)
 
@@ -6773,7 +7479,7 @@ class ClaudeManager(QMainWindow):
         self.fm_model_combo.set_picker(
             colors=model_colors,
             tooltips=model_tooltips,
-            title="Выбор модели",
+            title=tr("Выбор модели"),
             disabled=["Fable 5"],
         )
         self.fm_model_combo.blockedPicked.connect(self._fm_show_fable5_blocked)
@@ -6835,7 +7541,7 @@ class ClaudeManager(QMainWindow):
         freemodel_layout.addLayout(model_row)
 
         # Скрытая кнопка для совместимости со старым кодом
-        self.btn_configure_custom = StyledButton("Настроить")
+        self.btn_configure_custom = StyledButton(tr("Настроить"))
         self.btn_configure_custom.hide()
         self._btn_configure_custom_dim = QGraphicsOpacityEffect()
         self._btn_configure_custom_dim.setOpacity(1.0)
@@ -6848,7 +7554,8 @@ class ClaudeManager(QMainWindow):
         # Выбор рабочей директории
         dir_layout = QHBoxLayout()
 
-        dir_label = QLabel("Директория:")
+        dir_label = QLabel(tr("Директория:"))
+        self._track_tr(dir_label, "Директория:")
         dir_label.setFont(QFont("Segoe UI", 10))
         dir_label.setStyleSheet(
             "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
@@ -6858,7 +7565,7 @@ class ClaudeManager(QMainWindow):
 
         self.dir_input = QLineEdit()
         self.dir_input.setReadOnly(True)
-        self.dir_input.setPlaceholderText("Не выбрана (будет запрошена)")
+        self.dir_input.setPlaceholderText(tr("Не выбрана (будет запрошена)"))
         self.dir_input.setText(self.settings.get("working_directory", ""))
         self.dir_input.setFont(QFont("Segoe UI", 9))
         self.dir_input.setStyleSheet("""
@@ -6872,20 +7579,22 @@ class ClaudeManager(QMainWindow):
         """)
         dir_layout.addWidget(self.dir_input, 1)
 
-        btn_browse = StyledButton("Обзор")
+        btn_browse = StyledButton(tr("Обзор"))
         btn_browse.setMaximumWidth(80)
         btn_browse.clicked.connect(self.browse_directory)
         dir_layout.addWidget(btn_browse)
+        self._track_tr(btn_browse, "Обзор")
 
-        btn_clear = StyledButton("Очистить")
+        btn_clear = StyledButton(tr("Очистить"))
         btn_clear.setMaximumWidth(80)
         btn_clear.clicked.connect(self.clear_directory)
         dir_layout.addWidget(btn_clear)
+        self._track_tr(btn_clear, "Очистить")
 
         claude_layout.addLayout(dir_layout)
 
         # Кнопка запуска Claude Code
-        self.btn_claude = GreenButton("Запустить Claude Code")
+        self.btn_claude = GreenButton(tr("Запустить Claude Code"))
         self.btn_claude.clicked.connect(self.launch_claude)
         self.btn_claude.setEnabled(False)
         claude_layout.addWidget(self.btn_claude)
@@ -7048,17 +7757,7 @@ class ClaudeManager(QMainWindow):
         self._claude_version_timer.start(60 * 60 * 1000)  # 1 час
 
         # Первая проверка
-        self.log("Приложение запущено", "info")
-        self.log(f"Порт Omniroute: {OMNIROUTE_PORT}", "info")
-        self.log(f"Автор: {AUTHOR_NAME}  •  Discord: {AUTHOR_DISCORD}", "info")
-        self.log(f"GitHub: {AUTHOR_GITHUB}", "info")
-        self.log("─" * 50, "info")
-        self.log("Для работы с Base URL (freemodel и др.):", "warning")
-        self.log("Если впервые — запустите Claude Code и введите /logout.", "warning")
-        self.log("Это нужно сделать только один раз. Даже если вы", "warning")
-        self.log("поменяете API ключ — повторно вводить /logout не нужно.", "warning")
-        self.log("Приложение автоматически подставит ключ и Base URL.", "warning")
-        self.log("─" * 50, "info")
+        self._print_console_banner()
         self.check_status_async()
 
         # Проверка наличия Node.js/npm — если нет, показываем окно с прямой ссылкой
@@ -7082,8 +7781,27 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
 
+    def _print_console_banner(self):
+        """Стартовый баннер в консоль. Вынесено отдельно, чтобы перепечатать
+        его на актуальном языке после смены EN/RU."""
+        self.log(tr("Приложение запущено"), "info")
+        self.log(tr("Порт Omniroute:") + f" {OMNIROUTE_PORT}", "info")
+        self.log(tr("Автор:") + f" {AUTHOR_NAME}  •  Discord: {AUTHOR_DISCORD}", "info")
+        self.log(f"GitHub: {AUTHOR_GITHUB}", "info")
+        self.log("─" * 50, "info")
+        self.log(tr("Для работы с Base URL (freemodel и др.):"), "warning")
+        self.log(tr("Если впервые — запустите Claude Code и введите /logout."), "warning")
+        self.log(tr("Это нужно сделать только один раз. Даже если вы"), "warning")
+        self.log(tr("поменяете API ключ — повторно вводить /logout не нужно."), "warning")
+        self.log(tr("Приложение автоматически подставит ключ и Base URL."), "warning")
+        self.log("─" * 50, "info")
+
     def log(self, message, level="info"):
-        """Терминальный вывод: цветная точка + сообщение"""
+        """Терминальный вывод: цветная точка + сообщение.
+        Сообщение автоматически прогоняется через tr() — если в TRANSLATIONS
+        есть точное совпадение, выводим перевод; иначе строка остаётся как
+        есть. Это позволяет существующим вызовам self.log("Русский текст")
+        локализоваться автоматически без правок каждой точки вызова."""
         timestamp = time.strftime("%H:%M:%S")
 
         if level == "success":
@@ -7095,10 +7813,15 @@ class ClaudeManager(QMainWindow):
         else:
             color = "#b4b4b4"
 
+        try:
+            translated = tr(str(message))
+        except Exception:
+            translated = message
+
         self._console_msg_count += 1
         formatted = (
             f'<span style="color:#888888;">{timestamp}</span>'
-            f'  <span style="color:{color};">●  {message}</span>'
+            f'  <span style="color:{color};">●  {translated}</span>'
         )
         self.console.append(formatted)
         self.console.moveCursor(QTextCursor.End)
@@ -7162,13 +7885,13 @@ class ClaudeManager(QMainWindow):
         use_custom = self.settings.get("use_custom_token", False)
 
         if is_running:
-            self.status_label.setText("Подключен")
+            self.status_label.setText(tr("Подключен"))
             self.status_label.setStyleSheet("color: rgb(0, 255, 100);")
             self.btn_start_omniroute.setEnabled(False)
             self.btn_stop_omniroute.setEnabled(True)
             self.btn_claude.setEnabled(True)
         else:
-            self.status_label.setText("Не запущен")
+            self.status_label.setText(tr("Не запущен"))
             self.status_label.setStyleSheet("color: rgb(255, 50, 50);")
             # При кастомном токене кнопка запуска Omniroute заблокирована
             self.btn_start_omniroute.setEnabled(not use_custom)
@@ -7318,6 +8041,147 @@ class ClaudeManager(QMainWindow):
     def _on_mode_changed(self, is_omniroute):
         """Обработчик переключателя режимов в шапке (Omniroute ↔ FreeModel)"""
         self.toggle_custom_token_fields(is_custom=not is_omniroute)
+
+    def _on_language_toggled(self, code):
+        """Клик по LanguageToggle — обновляем глобальный LANG."""
+        if LANG is not None:
+            LANG.set_lang(code)
+
+    def _on_language_changed(self, code):
+        """Сигнал от LANG: обновляем тексты главного окна на лету, без
+        пересоздания окна. Спрятанные / самонарисованные виджеты
+        (подсказка-стрелка «клик», бейдж, бар статуса, шиммер заголовка,
+        консоль) форсируем через .update()."""
+        try:
+            self.settings["app_language"] = code
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "language_toggle"):
+                self.language_toggle.set_lang(code, animate=True)
+        except Exception:
+            pass
+        try:
+            self._retranslate_ui()
+        except Exception:
+            pass
+        # Очищаем консоль и перепечатываем стартовый баннер уже на новом языке —
+        # старые записи в консоли остаются на исходном языке, что выглядит криво.
+        try:
+            if hasattr(self, "console"):
+                self.console.clear()
+                self._console_msg_count = 0
+            if hasattr(self, "_print_console_banner"):
+                self._print_console_banner()
+        except Exception:
+            pass
+        # Форсируем перерисовку самонарисованных виджетов
+        for attr in ("freemodel_click_hint", "freemodel_brand",
+                     "status_indicator", "claude_install_indicator",
+                     "title", "mode_toggle", "language_toggle"):
+            try:
+                w = getattr(self, attr, None)
+                if w is not None and hasattr(w, "update"):
+                    w.update()
+            except Exception:
+                pass
+
+    def _retranslate_ui(self):
+        """Перерисовывает все локализуемые тексты главного окна по текущему
+        значению LANG.lang. Лучше всего использовать существующие
+        state-sync методы (update_status, _update_install_button_state),
+        которые сами читают tr() — это гарантирует, что выбранный язык
+        применится и к статическим лейблам, и к динамическому состоянию."""
+        try:
+            # Static labels created один раз в _build_ui — нужно вручную
+            if hasattr(self, "btn_uninstall_claude"):
+                self.btn_uninstall_claude.setText(tr("Удалить Claude Code"))
+            if hasattr(self, "btn_install_statusline"):
+                self.btn_install_statusline.setText(tr("Status line"))
+            if hasattr(self, "btn_fix_claude"):
+                self.btn_fix_claude.setText(tr("Fix Claude"))
+            if hasattr(self, "btn_stop_omniroute"):
+                self.btn_stop_omniroute.setText(tr("Остановить Omniroute"))
+            if hasattr(self, "btn_start_omniroute"):
+                self.btn_start_omniroute.setText(tr("Запустить Omniroute"))
+            if hasattr(self, "btn_claude"):
+                self.btn_claude.setText(tr("Запустить Claude Code"))
+            if hasattr(self, "btn_add_model"):
+                self.btn_add_model.setText(tr("Добавить модель"))
+            if hasattr(self, "btn_remove_model"):
+                self.btn_remove_model.setText(tr("Удалить модель"))
+            if hasattr(self, "btn_save_token"):
+                self.btn_save_token.setText(tr("Сохранить"))
+            if hasattr(self, "btn_edit_token"):
+                self.btn_edit_token.setText(tr("Изменить"))
+            if hasattr(self, "fm_btn_manage"):
+                self.fm_btn_manage.setText(tr("Управление"))
+            if hasattr(self, "fm_btn_save_key"):
+                self.fm_btn_save_key.setText(tr("Сохранить"))
+            if hasattr(self, "fm_btn_edit_key"):
+                self.fm_btn_edit_key.setText(tr("Изменить"))
+            if hasattr(self, "btn_configure_custom"):
+                self.btn_configure_custom.setText(tr("Настроить"))
+            if hasattr(self, "token_label"):
+                self.token_label.setText(tr("API ключ:"))
+            if hasattr(self, "dir_input"):
+                self.dir_input.setPlaceholderText(tr("Не выбрана (будет запрошена)"))
+            # Дочерние QLabel-ы по тексту через _tr_widgets (если был трекинг)
+            self._retranslate_generic()
+            # Прогоняем sync-методы, которые сами уже используют tr() —
+            # они закроют динамические лейблы (status_label, claude_install_status_label,
+            # btn_install_claude) с учётом ТЕКУЩЕГО реального состояния, а не дефолта.
+            if hasattr(self, "_update_install_button_state"):
+                try:
+                    self._update_install_button_state()
+                except Exception:
+                    pass
+            if hasattr(self, "_last_status"):
+                try:
+                    # update_status сам перетянет тексты «Подключен / Не запущен»
+                    self.update_status(bool(self._last_status))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _retranslate_generic(self):
+        """Generic-проход: проходимся по сохранённому списку (widget, ru_key)
+        и переустанавливаем текст через tr(). Список заполняется при сборке
+        UI методом self._track_tr(widget, ru_key)."""
+        for widget, ru_key, kind in getattr(self, "_tr_widgets", []):
+            try:
+                if widget is None:
+                    continue
+                txt = tr(ru_key)
+                if kind == "text":
+                    widget.setText(txt)
+                elif kind == "title":
+                    widget.setWindowTitle(txt)
+                elif kind == "placeholder":
+                    widget.setPlaceholderText(txt)
+                elif kind == "tooltip":
+                    widget.setToolTip(txt)
+            except Exception:
+                pass
+
+    def _track_tr(self, widget, ru_key, kind="text"):
+        """Регистрируем виджет для авто-перевода при смене языка."""
+        if not hasattr(self, "_tr_widgets"):
+            self._tr_widgets = []
+        self._tr_widgets.append((widget, ru_key, kind))
+        try:
+            txt = tr(ru_key)
+            if kind == "text":
+                widget.setText(txt)
+            elif kind == "title":
+                widget.setWindowTitle(txt)
+            elif kind == "placeholder":
+                widget.setPlaceholderText(txt)
+            elif kind == "tooltip":
+                widget.setToolTip(txt)
+        except Exception:
+            pass
 
     def _fm_url_changed(self, new_url):
         """Сохраняет выбранный Base URL"""
@@ -7896,15 +8760,15 @@ class ClaudeManager(QMainWindow):
             # Свежая установка — без второго окна, текст уже был наверху.
             if has_existing:
                 if not self._confirm_statusline_action(
-                    title="Переустановить status line?",
-                    message=(
+                    title=tr("Переустановить status line?"),
+                    message=tr(
                         "Вы действительно хотите переустановить status line? "
                         "Ваш текущий блок statusLine в ~/.claude/settings.json "
                         "и файл ~/.claude/statusline-command.sh будут полностью "
                         "перезаписаны нашей версией. Откатить это нельзя."
                     ),
                     detail=existing_cmd or None,
-                    confirm_text="Да, переустановить",
+                    confirm_text=tr("Да, переустановить"),
                     icon="↻",
                     icon_color=(245, 180, 60),
                 ):
@@ -7914,15 +8778,15 @@ class ClaudeManager(QMainWindow):
 
         elif result == StatusLineInstallDialog.ACTION_REMOVE:
             if not self._confirm_statusline_action(
-                title="Удалить status line?",
-                message=(
+                title=tr("Удалить status line?"),
+                message=tr(
                     "Вы действительно хотите удалить status line? "
                     "Блок statusLine уйдёт из ~/.claude/settings.json, "
                     "а файл ~/.claude/statusline-command.sh — будет стёрт. "
                     "Остальные настройки Claude Code останутся как есть."
                 ),
                 detail=existing_cmd or None,
-                confirm_text="Да, удалить",
+                confirm_text=tr("Да, удалить"),
                 icon="×",
                 icon_color=(235, 90, 90),
             ):
@@ -7954,8 +8818,8 @@ class ClaudeManager(QMainWindow):
         """Удаляет блок statusLine из ~/.claude/settings.json и сам sh-скрипт.
         Без подтверждения — оно уже было в общем окне."""
         progress = StatusLineProgressDialog(parent=self)
-        progress.title_lbl.setText("Удаление status line")
-        progress.status_lbl.setText("Подготовка…")
+        progress.title_lbl.setText(tr("Удаление status line"))
+        progress.status_lbl.setText(tr("Подготовка…"))
 
         def worker():
             try:
@@ -8005,11 +8869,11 @@ class ClaudeManager(QMainWindow):
         orig_show_success = progress._show_success_state
         def _show_success_uninstall():
             orig_show_success()
-            progress.title_lbl.setText("Status line удалён ✓")
-            progress.status_lbl.setText(
+            progress.title_lbl.setText(tr("Status line удалён ✓"))
+            progress.status_lbl.setText(tr(
                 "Блок statusLine удалён из ~/.claude/settings.json,\n"
                 "файл ~/.claude/statusline-command.sh стёрт."
-            )
+            ))
         progress._show_success_state = _show_success_uninstall
 
         threading.Thread(target=worker, daemon=True).start()
@@ -8422,39 +9286,42 @@ class ClaudeManager(QMainWindow):
             return
 
         if is_downgrade:
-            title = f"Откат Claude Code до v{required}"
+            title = tr("Откат Claude Code до") + f" v{required}"
             message = (
-                f"У тебя установлена v{local}. v{required} — последняя стабильная версия, "
-                f"на которой приложение проверено целиком. Более новые версии могут работать "
-                f"нестабильно или вовсе не запускаться, а начиная с v2.1.181 Anthropic "
-                f"заблокировала сторонние Base URL и API ключи — все запросы уходят только "
-                f"в официальный сервис Anthropic, и FreeModel / Omniroute / прокси не работают.\n\n"
-                "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude "
-                "не пострадают."
+                tr("У тебя установлена") + f" v{local}. v{required} — " +
+                tr("последняя стабильная версия, "
+                   "на которой приложение проверено целиком. Более новые версии могут работать "
+                   "нестабильно или вовсе не запускаться, а начиная с v2.1.181 Anthropic "
+                   "заблокировала сторонние Base URL и API ключи — все запросы уходят только "
+                   "в официальный сервис Anthropic, и FreeModel / Omniroute / прокси не работают.\n\n"
+                   "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude "
+                   "не пострадают.")
             )
-            confirm_text = "Откатить"
+            confirm_text = tr("Откатить")
             icon = "↓"
             icon_color = (235, 150, 90)
         elif is_update:
-            title = f"Установка Claude Code v{required}"
+            title = tr("Установка Claude Code") + f" v{required}"
             message = (
-                f"У тебя установлена v{local}. Будет установлена фиксированная v{required} — "
-                "последняя стабильная версия, с которой это приложение работает гарантированно. "
-                "Более новые версии могут работать нестабильно или совсем не запускаться."
+                tr("У тебя установлена") + f" v{local}. " +
+                tr("Будет установлена фиксированная") + f" v{required} — " +
+                tr("последняя стабильная версия, с которой это приложение работает гарантированно. "
+                   "Более новые версии могут работать нестабильно или совсем не запускаться.")
             )
-            confirm_text = "Установить"
+            confirm_text = tr("Установить")
             icon = "↑"
             icon_color = (245, 180, 60)
         else:
-            title = f"Установка Claude Code v{required}"
+            title = tr("Установка Claude Code") + f" v{required}"
             message = (
-                f"Будет установлена фиксированная версия v{required} через npm — "
-                "последняя стабильная, на которой проверено это приложение. "
-                "Более новые версии могут работать нестабильно или вовсе не запускаться, "
-                "а версии с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.\n\n"
-                "Откроется окно PowerShell, где пойдёт установка."
+                tr("Будет установлена фиксированная версия") + f" v{required} " +
+                tr("через npm — "
+                   "последняя стабильная, на которой проверено это приложение. "
+                   "Более новые версии могут работать нестабильно или вовсе не запускаться, "
+                   "а версии с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.\n\n"
+                   "Откроется окно PowerShell, где пойдёт установка.")
             )
-            confirm_text = "Установить"
+            confirm_text = tr("Установить")
             icon = "↓"
             icon_color = (120, 200, 130)
 
@@ -8641,20 +9508,22 @@ class ClaudeManager(QMainWindow):
         """Показывает окно блокировки запуска: установленная версия Claude Code слишком новая."""
         required = REQUIRED_CLAUDE_VERSION
         message = (
-            f"У тебя установлена Claude Code v{current_version}, "
-            f"а приложение работает только с v{required}.\n\n"
-            f"v{required} — последняя стабильная версия, на которой это приложение проверено целиком. "
-            "Более новые версии могут работать нестабильно или вовсе не запускаться.\n\n"
-            "Кроме того, начиная с v2.1.181 Anthropic заблокировала использование сторонних "
-            "Base URL и API ключей — запросы уходят только в официальный сервис Anthropic, "
-            "поэтому через FreeModel / Omniroute / любые прокси такая версия CLI работать не будет.\n\n"
-            f"Нажми «Откатить» — npm переустановит CLI на v{required}, и запуск снова заработает."
+            tr("У тебя установлена Claude Code") + f" v{current_version}, " +
+            tr("а приложение работает только с") + f" v{required}.\n\n"
+            f"v{required} — " +
+            tr("последняя стабильная версия, на которой это приложение проверено целиком. "
+               "Более новые версии могут работать нестабильно или вовсе не запускаться.\n\n"
+               "Кроме того, начиная с v2.1.181 Anthropic заблокировала использование сторонних "
+               "Base URL и API ключей — запросы уходят только в официальный сервис Anthropic, "
+               "поэтому через FreeModel / Omniroute / любые прокси такая версия CLI работать не будет.\n\n") +
+            tr("Нажми «Откатить» — npm переустановит CLI на") + f" v{required}, " +
+            tr("и запуск снова заработает.")
         )
         dlg = ConfirmActionDialog(
-            title="Запуск заблокирован",
+            title=tr("Запуск заблокирован"),
             message=message,
             detail=f"npm install -g @anthropic-ai/claude-code@{required}",
-            confirm_text=f"Откатить до v{required}",
+            confirm_text=tr("Откатить до") + f" v{required}",
             icon="!",
             icon_color=(235, 90, 90),
             parent=self
@@ -8719,7 +9588,7 @@ class ClaudeManager(QMainWindow):
         has_winget = self._is_winget_available()
 
         if has_winget:
-            message = (
+            message = tr(
                 "В системе не найден npm — он входит в состав Node.js. "
                 "Без npm Claude Code установить нельзя.\n\n"
                 "Нажми «Установить Node.js» — откроется окно PowerShell, "
@@ -8729,9 +9598,9 @@ class ClaudeManager(QMainWindow):
                 "чтобы оно увидело npm в обновлённом PATH."
             )
             detail = "winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements"
-            confirm_text = "Установить Node.js"
+            confirm_text = tr("Установить Node.js")
         else:
-            message = (
+            message = tr(
                 "В системе не найден npm — он входит в состав Node.js. "
                 "Без npm Claude Code установить нельзя.\n\n"
                 "На твоей системе нет winget, поэтому установить автоматически не получится. "
@@ -8740,10 +9609,10 @@ class ClaudeManager(QMainWindow):
                 "поставь его и перезапусти это приложение."
             )
             detail = download_url
-            confirm_text = "Скачать Node.js"
+            confirm_text = tr("Скачать Node.js")
 
         dlg = ConfirmActionDialog(
-            title="Нужен Node.js (npm)",
+            title=tr("Нужен Node.js (npm)"),
             message=message,
             detail=detail,
             confirm_text=confirm_text,
@@ -8822,22 +9691,22 @@ class ClaudeManager(QMainWindow):
         if hasattr(self, "btn_install_claude"):
             if not installed:
                 self.btn_install_claude.setEnabled(True)
-                self.btn_install_claude.setText(f"Установить Claude Code v{required}")
+                self.btn_install_claude.setText(tr("Установить Claude Code") + f" v{required}")
                 self.btn_install_claude.set_hover_color(80, 200, 110)
             elif version_unknown:
                 # Не знаем версию — не показываем «установлен», ждём перепроверки
                 self.btn_install_claude.setEnabled(False)
-                self.btn_install_claude.setText("Проверка версии…")
+                self.btn_install_claude.setText(tr("Проверка версии…"))
             elif version_match:
                 self.btn_install_claude.setEnabled(False)
-                self.btn_install_claude.setText(f"Claude Code v{required} установлен")
+                self.btn_install_claude.setText(f"Claude Code v{required} " + tr("установлен"))
             elif version_higher:
                 self.btn_install_claude.setEnabled(True)
-                self.btn_install_claude.setText(f"Откатить до v{required}")
+                self.btn_install_claude.setText(tr("Откатить до") + f" v{required}")
                 self.btn_install_claude.set_hover_color(235, 150, 90)
             else:
                 self.btn_install_claude.setEnabled(True)
-                self.btn_install_claude.setText(f"Установить v{required}")
+                self.btn_install_claude.setText(tr("Установить") + f" v{required}")
                 self.btn_install_claude.set_hover_color(245, 180, 60)
 
         if hasattr(self, "btn_uninstall_claude"):
@@ -8856,30 +9725,30 @@ class ClaudeManager(QMainWindow):
 
         if hasattr(self, "claude_install_status_label"):
             if not installed:
-                self.claude_install_status_label.setText("Не установлен")
+                self.claude_install_status_label.setText(tr("Не установлен"))
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(255, 50, 50); background: transparent; border: none;"
                 )
             elif version_unknown:
-                self.claude_install_status_label.setText("Проверяю версию…")
+                self.claude_install_status_label.setText(tr("Проверяю версию…"))
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(180, 180, 190); background: transparent; border: none;"
                 )
             elif version_match:
-                self.claude_install_status_label.setText(f"Установлен v{local}")
+                self.claude_install_status_label.setText(tr("Установлен") + f" v{local}")
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(0, 255, 100); background: transparent; border: none;"
                 )
             elif version_higher:
                 self.claude_install_status_label.setText(
-                    f"Установлен v{local} — нужна v{required} (запуск заблокирован)"
+                    tr("Установлен") + f" v{local} — " + tr("нужна") + f" v{required} (" + tr("запуск заблокирован") + ")"
                 )
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(235, 150, 90); background: transparent; border: none;"
                 )
             else:
                 self.claude_install_status_label.setText(
-                    f"Установлен v{local} → нужна v{required}"
+                    tr("Установлен") + f" v{local} → " + tr("нужна") + f" v{required}"
                 )
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(245, 180, 60); background: transparent; border: none;"
@@ -9007,18 +9876,21 @@ class ClaudeManager(QMainWindow):
             "warning"
         )
         dlg = ConfirmActionDialog(
-            title="Устаревшая версия Claude Code",
+            title=tr("Устаревшая версия Claude Code"),
             message=(
-                f"У тебя установлена Claude Code v{local} — это устаревшая версия.\n\n"
-                f"Проверенная и стабильная версия, на которой это приложение работает "
-                f"гарантированно, — v{required}. На более старых версиях возможны "
-                "несовместимости (изменения в формате settings.json, путях, флагах CLI), "
-                "из-за которых запуск через Omniroute / FreeModel может вести себя нестабильно.\n\n"
-                f"Рекомендуем обновить до v{required} — npm переустановит пакет, "
-                "настройки в %USERPROFILE%\\.claude не пострадают."
+                tr("У тебя установлена Claude Code") + f" v{local} — " +
+                tr("это устаревшая версия.") + "\n\n" +
+                tr("Проверенная и стабильная версия, на которой это приложение работает гарантированно, — ") +
+                f"v{required}. " +
+                tr("На более старых версиях возможны "
+                   "несовместимости (изменения в формате settings.json, путях, флагах CLI), "
+                   "из-за которых запуск через Omniroute / FreeModel может вести себя нестабильно.\n\n") +
+                tr("Рекомендуем обновить до") + f" v{required} — " +
+                tr("npm переустановит пакет, "
+                   "настройки в %USERPROFILE%\\.claude не пострадают.")
             ),
             detail=f"npm install -g @anthropic-ai/claude-code@{required}",
-            confirm_text=f"Обновить до v{required}",
+            confirm_text=tr("Обновить до") + f" v{required}",
             icon="↑",
             icon_color=(245, 180, 60),
             parent=self
@@ -9036,13 +9908,13 @@ class ClaudeManager(QMainWindow):
         version_part = f" v{local}" if local else ""
 
         dlg = ConfirmActionDialog(
-            title="Удалить Claude Code",
+            title=tr("Удалить Claude Code"),
             message=(
-                f"Будет удалён глобальный npm-пакет Claude Code{version_part}. "
-                "Настройки в %USERPROFILE%\\.claude не пострадают — удалится только бинарь."
+                tr("Будет удалён глобальный npm-пакет Claude Code") + version_part + ". " +
+                tr("Настройки в %USERPROFILE%\\.claude не пострадают — удалится только бинарь.")
             ),
             detail="npm uninstall -g @anthropic-ai/claude-code",
-            confirm_text="Удалить",
+            confirm_text=tr("Удалить"),
             icon="×",
             icon_color=(235, 90, 90),
             parent=self
@@ -9254,6 +10126,10 @@ class ClaudeManager(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    # Глобальный менеджер языка — создаём ПОСЛЕ QApplication, но ДО окон,
+    # чтобы виджеты при инициализации уже могли читать LANG.lang.
+    global LANG
+    LANG = LanguageManager()
     window = ClaudeManager()
     window.show()
 
