@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.5.6"  # Для обновлений
+APP_VERSION = "5.5.7"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -581,6 +581,38 @@ def _fm_fmt_ms(value):
         return "—"
 
 
+def _fm_sanitize_error(text):
+    """Иногда промежуточный прокси/шлюз отдаёт ошибки иероглифами (часто
+    китайский — стандартные «упс» от китайских CDN/firewall'ов, например
+    «此页面无法访问» и т.п.). В UI это просто шум — пользователь не прочитает.
+
+    Логика: считаем долю CJK-символов среди значимых (не-whitespace).
+    Если >25% — заменяем строку на короткое читаемое объяснение."""
+    if not text:
+        return ""
+    s = str(text).strip()
+    if not s:
+        return ""
+    cjk = 0
+    counted = 0
+    for ch in s:
+        if ch.isspace():
+            continue
+        counted += 1
+        c = ord(ch)
+        if ((0x4E00 <= c <= 0x9FFF) or  # CJK Unified Ideographs
+            (0x3400 <= c <= 0x4DBF) or  # CJK Ext A
+            (0x3040 <= c <= 0x309F) or  # Hiragana
+            (0x30A0 <= c <= 0x30FF) or  # Katakana
+            (0xAC00 <= c <= 0xD7AF)):   # Hangul
+            cjk += 1
+    if counted and cjk / counted > 0.25:
+        return ("upstream вернул нечитаемую ошибку "
+                "(обычно ответ промежуточного прокси/шлюза)")
+    # На всякий случай отрезаем длинные «портянки» от стектрейсов.
+    return s[:160]
+
+
 class LatencyHistogram(QWidget):
     """Гистограмма последних N проб freemodel.dev — бар на каждый probe.
     Цвет по категории. Бары рисуются с лёгким вертикальным градиентом сверху-вниз
@@ -595,7 +627,11 @@ class LatencyHistogram(QWidget):
         self._samples = []
 
     def set_samples(self, samples):
-        self._samples = samples[-110:]
+        # Срез -96, как на сайте fm.bluealitas.com (renderProbeChart):
+        #   const recent = points.slice(-96)
+        # Раньше брали -110 — на Aggregate (там >96 проб) бары шли с лишним
+        # запасом, и визуальное распределение не совпадало с сайтом.
+        self._samples = samples[-96:]
         self.update()
 
     def paintEvent(self, event):
@@ -622,10 +658,11 @@ class LatencyHistogram(QWidget):
 
         for i, (ts, cat, lat) in enumerate(self._samples):
             base_color = QColor(_FM_COLORS.get(cat, _FM_COLORS["ink_muted"]))
-            if cat == "failed":
-                bar_h = 8.0
-            else:
-                bar_h = max(3.0, (lat / max_lat) * (h - 10))
+            # Высота всех баров — пропорциональна latency, ровно как на сайте:
+            #   h_ = max(5, round((lat / max) * 78))
+            # У failed-проб latency тоже есть (время до отлупа), поэтому жёстко
+            # обрезать их до 8px — неправильно: на сайте видны разные высоты.
+            bar_h = max(3.0, (lat / max_lat) * (h - 10))
             x = i * (bar_w + gap)
             y = baseline_y - bar_h
 
@@ -743,6 +780,357 @@ class _FmFlatCard(QFrame):
         p.setBrush(self._bg)
         p.setPen(QPen(self._border, 1))
         p.drawRoundedRect(r, self._radius, self._radius)
+
+
+class _FmStatTile(QFrame):
+    """Маленькая плитка статистики для блока «recent probes»: цветная акцент-
+    полоска слева, крупное значение сверху и тонкий uppercase-лейбл снизу.
+    Самоотрисовка фона/границы (как в _FmFlatCard) — без QSS-фона, иначе под
+    дочерними QLabel на Windows видна системная серая подложка."""
+
+    def __init__(self, accent_hex, parent=None):
+        super().__init__(parent)
+        self._accent = QColor(accent_hex)
+        self._bg = QColor(_FM_COLORS["bg_warm"])
+        self._border = QColor(_FM_COLORS["line_soft"])
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setMinimumHeight(62)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 9, 14, 10)
+        lay.setSpacing(3)
+
+        self.value_lbl = QLabel("—")
+        vf = QFont("Segoe UI", 16, QFont.DemiBold)
+        self.value_lbl.setFont(vf)
+        self.value_lbl.setTextFormat(Qt.RichText)
+        self.value_lbl.setStyleSheet(f"color: {_FM_COLORS['ink']}; background: transparent;")
+        lay.addWidget(self.value_lbl)
+
+        self.label_lbl = QLabel("—")
+        lf = QFont("Segoe UI", 8, QFont.DemiBold)
+        lf.setLetterSpacing(QFont.PercentageSpacing, 120)
+        self.label_lbl.setFont(lf)
+        self.label_lbl.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
+        lay.addWidget(self.label_lbl)
+
+    def set_data(self, value_html, label_text, value_color_hex=None):
+        self.value_lbl.setText(value_html)
+        if value_color_hex:
+            self.value_lbl.setStyleSheet(
+                f"color: {value_color_hex}; background: transparent;"
+            )
+        self.label_lbl.setText(label_text)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setBrush(self._bg)
+        p.setPen(QPen(self._border, 1))
+        p.drawRoundedRect(r, 11, 11)
+
+        # Тонкая вертикальная акцент-полоска слева
+        accent_w = 3.0
+        ar = QRectF(r.left() + 1.5, r.top() + 9, accent_w, r.height() - 18)
+        p.setBrush(self._accent)
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(ar, accent_w / 2, accent_w / 2)
+
+
+class _FmRateBar(QWidget):
+    """Тонкая горизонтальная стек-полоска, показывает доли ok / slow / failed
+    в последних N пробах. Просто визуальный якорь поверх плиток."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedHeight(6)
+        self._n_ok_clean = 0   # ok минус slow — чисто зелёный сегмент
+        self._n_slow = 0
+        self._n_failed = 0
+        self._n_total = 0
+
+    def set_counts(self, n_ok, n_slow, n_failed, n_total):
+        # n_ok на сайте включает slow (любая проба с ok=True). Чтобы стек был
+        # читаемый, выделяем «чистый ok» = ok минус slow.
+        self._n_ok_clean = max(0, n_ok - n_slow)
+        self._n_slow = max(0, n_slow)
+        self._n_failed = max(0, n_failed)
+        self._n_total = max(1, n_total)
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self.width(), self.height()
+        radius = h / 2.0
+
+        # Фоновая дорожка
+        p.setBrush(QColor(_FM_COLORS["line_soft"]))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(0, 0, w, h), radius, radius)
+
+        if self._n_total <= 0:
+            return
+
+        segments = [
+            (self._n_ok_clean, QColor(_FM_COLORS["ok"])),
+            (self._n_slow,     QColor(_FM_COLORS["slow"])),
+            (self._n_failed,   QColor(_FM_COLORS["failed"])),
+        ]
+        x = 0.0
+        for count, color in segments:
+            if count <= 0:
+                continue
+            seg_w = (count / self._n_total) * w
+            p.setBrush(color)
+            p.drawRoundedRect(QRectF(x, 0, seg_w + 0.5, h), radius, radius)
+            x += seg_w
+
+
+class _FmSegmentedControl(QWidget):
+    """Сегментированный переключатель для выбора scope: All / host1 / host2 / …
+    Один активный сегмент, остальные приглушены. Опции задаются динамически
+    из списка таргетов в /api/status."""
+
+    selectionChanged = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._options = []        # list of (key, label)
+        self._buttons = []        # list of (key, QPushButton)
+        self._current_key = None
+
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(6)
+        self._lay.addStretch()
+
+    def _button_style(self):
+        return (
+            "QPushButton {"
+            f" background-color: {_FM_COLORS['bg_warm']};"
+            f" color: {_FM_COLORS['ink_soft']};"
+            f" border: 1px solid {_FM_COLORS['line']};"
+            "  border-radius: 8px;"
+            "  padding: 6px 14px;"
+            "}"
+            "QPushButton:hover {"
+            f" color: {_FM_COLORS['ink']};"
+            f" border-color: {_FM_COLORS['ink_muted']};"
+            "}"
+            "QPushButton:checked {"
+            "  background-color: #052e1a;"
+            f" color: {_FM_COLORS['ok']};"
+            f" border-color: {_FM_COLORS['ok']};"
+            "}"
+        )
+
+    def set_options(self, options):
+        """options — список (key, label). Если состав ключей не изменился,
+        ничего не пересобираем (чтобы не моргала вёрстка на каждом тике)."""
+        new_keys = [o[0] for o in options]
+        old_keys = [o[0] for o in self._options]
+        if new_keys == old_keys:
+            # Обновим лейблы на всякий случай
+            for (key, btn), (_, label) in zip(self._buttons, options):
+                btn.setText(label)
+            self._options = list(options)
+            return
+
+        prev_key = self._current_key
+        # Снести старые
+        while self._lay.count():
+            item = self._lay.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
+        self._buttons = []
+        self._options = list(options)
+
+        for key, label in options:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
+            btn.setStyleSheet(self._button_style())
+            btn.setFlat(True)
+            btn.clicked.connect(lambda _checked, k=key: self._on_clicked(k))
+            self._buttons.append((key, btn))
+            self._lay.addWidget(btn)
+        self._lay.addStretch()
+
+        # Восстановить выбор
+        if prev_key and prev_key in new_keys:
+            self._set_checked(prev_key)
+        elif new_keys:
+            self._current_key = new_keys[0]
+            self._set_checked(new_keys[0])
+
+    def _on_clicked(self, key):
+        if key == self._current_key:
+            # Кликнули по уже активному — оставляем как есть (не даём «отжать»)
+            self._set_checked(self._current_key)
+            return
+        self._current_key = key
+        self._set_checked(key)
+        self.selectionChanged.emit(key)
+
+    def _set_checked(self, key):
+        for k, btn in self._buttons:
+            btn.setChecked(k == key)
+
+    def set_current(self, key, emit=True):
+        if not any(k == key for k, _ in self._options):
+            return
+        if key == self._current_key:
+            self._set_checked(key)
+            return
+        self._current_key = key
+        self._set_checked(key)
+        if emit:
+            self.selectionChanged.emit(key)
+
+    def current_key(self):
+        return self._current_key
+
+
+class _FmScopeView(QWidget):
+    """Сабблок статистики для одного scope. Два режима:
+       • compact=False — полноразмерный: заголовок, 4 плитки stat-tiles,
+         стек-полоска, гистограмма. Используется когда выбран конкретный
+         endpoint (только 1 сабблок в карточке).
+       • compact=True — компактный: заголовок c inline-сводкой справа,
+         стек-полоска, тонкая гистограмма. Используется в режиме All,
+         где таких сабблоков 3 (агрегат + 2 endpoint'а) — иначе они бы
+         не уместились в окне без скролла."""
+
+    def __init__(self, compact=False, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._compact = compact
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6 if compact else 10)
+
+        # Заголовок сабблока. Слева — название scope, справа — inline-сводка
+        # (только в compact-режиме). В non-compact справа всегда пусто, потому
+        # что там ниже идут полноценные плитки.
+        head_row = QHBoxLayout()
+        head_row.setSpacing(8)
+        self.title_lbl = QLabel("—")
+        title_pt = 10 if compact else 12
+        self.title_lbl.setFont(QFont("Segoe UI", title_pt, QFont.DemiBold))
+        self.title_lbl.setStyleSheet(
+            f"color: {_FM_COLORS['ink']}; background: transparent;"
+        )
+        head_row.addWidget(self.title_lbl)
+        head_row.addStretch()
+        self.summary_lbl = QLabel("")
+        self.summary_lbl.setFont(QFont("Segoe UI", 9))
+        self.summary_lbl.setTextFormat(Qt.RichText)
+        self.summary_lbl.setStyleSheet(
+            f"color: {_FM_COLORS['ink_muted']}; background: transparent;"
+        )
+        # В полноразмерном виде сводка лишняя — те же цифры уже в stat-плитках.
+        # Скрываем её, чтобы не было визуального дубля.
+        if not compact:
+            self.summary_lbl.setVisible(False)
+        head_row.addWidget(self.summary_lbl)
+        lay.addLayout(head_row)
+
+        # Плитки — только в non-compact
+        self.stat_ok = self.stat_slow = self.stat_failed = self.stat_latest = None
+        if not compact:
+            stat_row = QHBoxLayout()
+            stat_row.setSpacing(10)
+            self.stat_ok     = _FmStatTile(_FM_COLORS["ok"])
+            self.stat_slow   = _FmStatTile(_FM_COLORS["slow"])
+            self.stat_failed = _FmStatTile(_FM_COLORS["failed"])
+            self.stat_latest = _FmStatTile(_FM_COLORS["ink_muted"])
+            for tile in (self.stat_ok, self.stat_slow, self.stat_failed, self.stat_latest):
+                stat_row.addWidget(tile, 1)
+            lay.addLayout(stat_row)
+
+        self.rate_bar = _FmRateBar()
+        lay.addSpacing(1)
+        lay.addWidget(self.rate_bar)
+
+        self.histogram = LatencyHistogram()
+        if compact:
+            self.histogram.setMinimumHeight(78)
+            self.histogram.setMaximumHeight(78)
+        lay.addWidget(self.histogram, 1)
+
+    def set_title(self, text):
+        self.title_lbl.setText(text)
+
+    def update_from_samples(self, samples_with_ok, now_ms):
+        """samples_with_ok — отсортированный по ts список (ts, cat, lat, is_ok)."""
+        self.histogram.set_samples([(t, c, l) for (t, c, l, _) in samples_with_ok])
+
+        recent = samples_with_ok[-96:]
+        if not recent:
+            if self.stat_ok is not None:
+                for tile, label in (
+                    (self.stat_ok, "OK"), (self.stat_slow, "SLOW"),
+                    (self.stat_failed, "FAILED"), (self.stat_latest, "LATEST"),
+                ):
+                    tile.set_data("—", label, _FM_COLORS["ink_muted"])
+            self.rate_bar.set_counts(0, 0, 0, 0)
+            self.summary_lbl.setText("нет данных")
+            return
+
+        n_total = len(recent)
+        n_ok     = sum(1 for _, _, _, ok in recent if ok)
+        n_failed = n_total - n_ok
+        n_slow   = sum(1 for _, c, _, _ in recent if c in ("slow", "very_slow"))
+        latest_ts = recent[-1][0]
+        latest_age = now_ms - latest_ts if latest_ts else None
+        ok_pct = (n_ok * 100.0 / n_total) if n_total else 0.0
+
+        ink_soft = _FM_COLORS["ink_soft"]
+        ok_color = _FM_COLORS["ok"]
+        if ok_pct < 50:
+            ok_color = _FM_COLORS["bad"]
+        elif ok_pct < 85:
+            ok_color = _FM_COLORS["warn"]
+
+        if self.stat_ok is not None:
+            self.stat_ok.set_data(
+                f"{n_ok}<span style='color:{ink_soft}; font-size:12pt;'>/{n_total}</span>",
+                f"OK  •  {ok_pct:.0f}%",
+                ok_color,
+            )
+            self.stat_slow.set_data(
+                f"{n_slow}", "SLOW",
+                _FM_COLORS["slow"] if n_slow else _FM_COLORS["ink_muted"],
+            )
+            self.stat_failed.set_data(
+                f"{n_failed}", "FAILED",
+                _FM_COLORS["failed"] if n_failed else _FM_COLORS["ink_muted"],
+            )
+            self.stat_latest.set_data(
+                _fm_fmt_age(latest_age), "LATEST PROBE", _FM_COLORS["ink"],
+            )
+        self.rate_bar.set_counts(n_ok, n_slow, n_failed, n_total)
+
+        # Inline-сводка для compact: «87/96 ok · 12 slow · 9 failed · 6m ago»
+        slow_part = (f"  •  <span style='color:{_FM_COLORS['slow']};'>{n_slow}</span> slow"
+                     if n_slow else "")
+        failed_part = (f"  •  <span style='color:{_FM_COLORS['failed']};'>{n_failed}</span> failed"
+                       if n_failed else "")
+        self.summary_lbl.setText(
+            f"<span style='color:{ok_color};'>{n_ok}</span>/"
+            f"<span style='color:{ink_soft};'>{n_total}</span> ok"
+            f"{slow_part}{failed_part}"
+            f"  •  latest {_fm_fmt_age(latest_age)}"
+        )
 
 
 class _FmTitleBarButton(QPushButton):
@@ -944,8 +1332,12 @@ class FreemodelStatsDialog(QDialog):
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setModal(False)
-        self.setMinimumSize(820, 600)
-        self.resize(900, 660)
+        # В режиме All в карточке проб три сабблока (агрегат + 2 endpoint'а)
+        # плюс hero/selector/next_bar. Если высота меньше нужной — низ
+        # гистограмм срезается родительским layout'ом и короткие бары
+        # (min_height = 3px) уходят под клипинг. Поэтому дефолт с запасом.
+        self.setMinimumSize(820, 780)
+        self.resize(940, 900)
 
         try:
             for p in (
@@ -1099,6 +1491,13 @@ class FreemodelStatsDialog(QDialog):
         nb.addWidget(self.lbl_mode, 0, Qt.AlignVCenter)
         cl.addWidget(self.next_bar)
 
+        # ── Селектор scope: All / endpoint1 / endpoint2 / … ──────────
+        # Опции подставляются динамически в _apply_data, когда придут targets.
+        # До первой загрузки данных селектор пуст и не показывается.
+        self.scope_selector = _FmSegmentedControl()
+        self.scope_selector.selectionChanged.connect(self._on_scope_changed)
+        cl.addWidget(self.scope_selector)
+
         # ── Карточка с гистограммой проб ─────────────────────────────
         self.probes_frame = _FmFlatCard(_FM_COLORS['bg_card'], _FM_COLORS['line'], radius=14)
         pf = QVBoxLayout(self.probes_frame)
@@ -1106,32 +1505,53 @@ class FreemodelStatsDialog(QDialog):
         pf.setSpacing(10)
 
         head_row = QHBoxLayout()
-        title = QLabel("freemodel.dev model probes")
-        title.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
-        title.setStyleSheet(f"color: {_FM_COLORS['ink']}; background: transparent;")
-        head_row.addWidget(title)
+        self.probes_title = QLabel("freemodel.dev model probes")
+        self.probes_title.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
+        self.probes_title.setStyleSheet(
+            f"color: {_FM_COLORS['ink']}; background: transparent;"
+        )
+        head_row.addWidget(self.probes_title)
         head_row.addStretch()
         head_row.addWidget(_fm_make_legend(), 0, Qt.AlignVCenter)
         pf.addLayout(head_row)
 
-        self.lbl_probes_sub = QLabel("—")
-        self.lbl_probes_sub.setFont(self._numeric_font(9, QFont.Normal))
-        self.lbl_probes_sub.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
-        pf.addWidget(self.lbl_probes_sub)
+        # Контейнер под scope-views. Заполняется/перестраивается в _apply_data
+        # в зависимости от выбранного режима (All — 1+N компактных блоков,
+        # конкретный таргет — один полноразмерный).
+        self.scope_container = QVBoxLayout()
+        self.scope_container.setSpacing(11)
+        self.scope_container.setContentsMargins(0, 4, 0, 0)
+        pf.addLayout(self.scope_container, 1)
 
-        self.histogram = LatencyHistogram()
-        pf.addWidget(self.histogram, 1)
+        # Кэш scope-view виджетов по ключу ('all' | host). Не пересоздаём при
+        # каждом тике — переиспользуем, чтобы не моргала вёрстка.
+        self._scope_views = {}
+        self._scope_mode = "all"  # текущий выбранный scope-key
+        self._known_target_hosts = ()  # tuple — для отслеживания изменений
 
         cl.addWidget(self.probes_frame, 1)
 
         # Подпись внизу
-        src = QLabel("источник: fm.bluealitas.com/api/status  •  обновление каждые 6 секунд")
+        src = QLabel("источник: fm.bluealitas.com/api/status")
         src.setFont(QFont("Segoe UI", 8))
         src.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
         src.setAlignment(Qt.AlignCenter)
         cl.addWidget(src)
 
         inner.addWidget(content, 1)
+
+    def _host_of(self, url):
+        """Нормализованный хост из URL: 'https://cc.freemodel.dev/v1/' → 'cc.freemodel.dev'.
+        Чтобы можно было сравнивать с url'ами таргетов независимо от схемы и пути."""
+        if not url:
+            return ""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url if "://" in url else f"https://{url}")
+            host = (parsed.hostname or "").lower().strip()
+            return host
+        except Exception:
+            return ""
 
     def _eyebrow(self, text):
         lbl = QLabel(text)
@@ -1173,13 +1593,112 @@ class FreemodelStatsDialog(QDialog):
     # ─── Применение данных ─────────────────────────────────────────
     def _apply_data(self, data):
         self._last_data = data
+        now_ms = int(time.time() * 1000)
 
+        # Мод-бар (cadence/mode) — всегда серверный общий, не зависит от scope
+        self._update_mode_bar(data)
+        self._next_check_at_ms = data.get("nextCheckAt")
+        self._update_countdown()
+
+        # Собираем пробы по таргетам (только enabled+не removed модели)
+        targets = data.get("targets") or []
+        targets_with_host = []
+        by_host = {}
+        aggregate_samples = []
+        for tgt in targets:
+            host = self._host_of(tgt.get("url") or "")
+            if not host:
+                continue
+            samples = []
+            for m in (tgt.get("models") or []):
+                if not m.get("enabled") or m.get("removedAt"):
+                    continue
+                for h in (m.get("history48") or []):
+                    ts = h.get("ts") or 0
+                    cat = _fm_classify_probe(h)
+                    lat = h.get("latency") or 0
+                    is_ok = bool(h.get("ok"))
+                    samples.append((ts, cat, lat, is_ok))
+            samples.sort(key=lambda x: x[0])
+            by_host[host] = samples
+            aggregate_samples.extend(samples)
+            targets_with_host.append((host, tgt))
+        aggregate_samples.sort(key=lambda x: x[0])
+
+        # Опции селектора: All + по одному на каждый таргет.
+        # Пересобираем только если состав ключей изменился.
+        host_tuple = tuple(h for h, _ in targets_with_host)
+        if host_tuple != self._known_target_hosts:
+            self._known_target_hosts = host_tuple
+            options = [("all", "All")] + [(h, h) for h in host_tuple]
+            self.scope_selector.set_options(options)
+            # Если активный ключ исчез из опций — selector сам перейдёт на «all»;
+            # синхронизируем _scope_mode.
+            sel = self.scope_selector.current_key() or "all"
+            if sel != self._scope_mode:
+                self._scope_mode = sel
+
+        sel = self.scope_selector.current_key() or "all"
+        self._scope_mode = sel
+
+        # ── Hero (верхняя панель) — обновляем под выбранный scope ────
+        if sel == "all":
+            self._apply_hero_aggregate(data, now_ms)
+            lat_pool = aggregate_samples
+        else:
+            tgt = next((t for h, t in targets_with_host if h == sel), None)
+            self._apply_hero_for_target(tgt, data, now_ms)
+            lat_pool = by_host.get(sel, [])
+
+        last_hour_lats = [l for (t, _c, l, ok) in lat_pool
+                          if ok and t >= now_ms - 3600 * 1000]
+        self._apply_hero_latency(last_hour_lats)
+
+        # ── Probes-карточка — пересобираем сабблоки под текущий scope ─
+        if sel == "all":
+            desired = [("__all__", "Aggregate (all endpoints)", aggregate_samples, True)]
+            for host in host_tuple:
+                desired.append((host, host, by_host.get(host, []), True))
+            self.probes_title.setText("freemodel.dev model probes  •  all scopes")
+        else:
+            desired = [(sel, sel, by_host.get(sel, []), False)]
+            self.probes_title.setText(f"freemodel.dev model probes  •  {sel}")
+
+        self._rebuild_scope_layout([(k, c) for (k, _t, _s, c) in desired])
+        for key, title, samples, _compact in desired:
+            view = self._scope_views.get(key)
+            if view is not None:
+                view.set_title(title)
+                view.update_from_samples(samples, now_ms)
+
+    # ─── Hero / mode-bar помощники ─────────────────────────────────
+    def _status_color(self, effective):
+        return {
+            "ok":         _FM_COLORS["ok"],
+            "warn":       _FM_COLORS["warn"],
+            "confirming": _FM_COLORS["warn"],
+            "bad":        _FM_COLORS["bad"],
+            "down":       _FM_COLORS["down"],
+            "unknown":    _FM_COLORS["ink_muted"],
+        }.get(effective, _FM_COLORS["ink_muted"])
+
+    def _update_title_dot(self, effective):
+        if effective == "ok":
+            self.title_bar.dot.set_state("fm_ok")
+        elif effective in ("warn", "confirming"):
+            self.title_bar.dot.set_state("warn")
+        elif effective in ("bad", "down"):
+            self.title_bar.dot.set_state("off")
+        else:
+            self.title_bar.dot.set_state("neutral")
+
+    def _apply_hero_aggregate(self, data, now_ms):
+        """Hero в режиме All — берёт серверные overall/mode/lastOkOverall,
+        ровно как было до селектора."""
         overall = str(data.get("overall") or "unknown").lower()
         mode = str(data.get("mode") or "").lower()
         labels = data.get("statusLabels") or {}
 
-        # Эффективное состояние — если сайт сейчас в режиме confirming,
-        # отображаем «Confirming…» жёлтым (сайт делает то же самое).
         if mode == "confirming":
             effective = "confirming"
             word = "Confirming…"
@@ -1190,33 +1709,15 @@ class FreemodelStatsDialog(QDialog):
                 "down": "Down", "unknown": "Awaiting probes…"
             }.get(overall, "—")
 
-        color_map = {
-            "ok":         _FM_COLORS["ok"],
-            "warn":       _FM_COLORS["warn"],
-            "confirming": _FM_COLORS["warn"],
-            "bad":        _FM_COLORS["bad"],
-            "down":       _FM_COLORS["down"],
-            "unknown":    _FM_COLORS["ink_muted"],
-        }
-        word_color = color_map.get(effective, _FM_COLORS["ink_muted"])
+        word_color = self._status_color(effective)
         self.lbl_status_word.setText(word)
         self.lbl_status_word.setStyleSheet(
             f"color: {word_color}; background: transparent;"
         )
-        # Глоу hero-карточки повторяет цвет состояния и дышит со своей скоростью
         self.hero_frame.set_glow(word_color, effective)
+        self._update_title_dot(effective)
+        self.lbl_all_systems.setText("ALL SYSTEMS")
 
-        # Точка в шапке — синхронизируем
-        if effective == "ok":
-            self.title_bar.dot.set_state("fm_ok")
-        elif effective in ("warn", "confirming"):
-            self.title_bar.dot.set_state("warn")
-        elif effective in ("bad", "down"):
-            self.title_bar.dot.set_state("off")
-        else:
-            self.title_bar.dot.set_state("neutral")
-
-        now_ms = int(time.time() * 1000)
         last_ok = data.get("lastOkOverall")
         age = (now_ms - last_ok) if last_ok else None
         if overall == "ok":
@@ -1229,39 +1730,63 @@ class FreemodelStatsDialog(QDialog):
             sub = "Awaiting probes…"
         self.lbl_status_sub.setText(sub)
 
-        self._next_check_at_ms = data.get("nextCheckAt")
-        self._update_countdown()
+    def _apply_hero_for_target(self, tgt, data, now_ms):
+        """Hero в режиме конкретного endpoint — статус и lastOk берём из
+        самого таргета (data.targets[i].status / lastOk)."""
+        if tgt is None:
+            self.lbl_all_systems.setText("ENDPOINT")
+            self.lbl_status_word.setText("—")
+            self.lbl_status_word.setStyleSheet(
+                f"color: {_FM_COLORS['ink_muted']}; background: transparent;"
+            )
+            self.hero_frame.set_glow(None, "unknown")
+            self._update_title_dot("unknown")
+            self.lbl_status_sub.setText("Нет данных по этому endpoint.")
+            return
 
-        mode = str(data.get("mode") or "").lower()
-        cadence_ms = data.get("cadenceMs") or 0
-        cadence_min = max(1, int(round(cadence_ms / 60000))) if cadence_ms else 0
-        mode_color = {
-            "healthy": _FM_COLORS["ok"],
-            "rapid": _FM_COLORS["warn"],
-            "confirming": _FM_COLORS["warn"],
-        }.get(mode, _FM_COLORS["ink_soft"])
-        mode_text = f"{mode or '—'}  •  probing every {cadence_min}m" if cadence_min else (mode or "—")
-        self.lbl_mode.setText(mode_text)
-        self.lbl_mode.setStyleSheet(f"color: {mode_color}; background: transparent;")
-        self.mode_dot.set_color(mode_color)
+        target_status = str(tgt.get("status") or "unknown").lower()
+        # Серверный режим confirming тоже отражаем — индикатор бейджа
+        # тогда жёлтый, как и на сайте.
+        if str(data.get("mode") or "").lower() == "confirming" and target_status == "ok":
+            effective = "confirming"
+            word = "Confirming…"
+        elif target_status in ("ok", "warn", "bad", "down"):
+            effective = target_status
+            word = {
+                "ok": "Operational", "warn": "Degraded",
+                "bad": "Disrupted", "down": "Down",
+            }[target_status]
+        else:
+            effective = "unknown"
+            word = "Awaiting probes…"
 
-        # Собираем пробы со всех моделей всех таргетов
-        targets = data.get("targets") or []
-        all_samples = []
-        last_hour_lats = []
-        for tgt in targets:
-            for m in (tgt.get("models") or []):
-                for h in (m.get("history48") or []):
-                    ts = h.get("ts") or 0
-                    cat = _fm_classify_probe(h)
-                    lat = h.get("latency") or 0
-                    all_samples.append((ts, cat, lat))
-                    if ts >= now_ms - 3600 * 1000 and h.get("ok"):
-                        last_hour_lats.append(lat)
+        word_color = self._status_color(effective)
+        self.lbl_status_word.setText(word)
+        self.lbl_status_word.setStyleSheet(
+            f"color: {word_color}; background: transparent;"
+        )
+        self.hero_frame.set_glow(word_color, effective)
+        self._update_title_dot(effective)
 
-        all_samples.sort(key=lambda x: x[0])
-        self.histogram.set_samples(all_samples)
+        host = self._host_of(tgt.get("url") or "") or "ENDPOINT"
+        self.lbl_all_systems.setText(host.upper())
 
+        last_ok = tgt.get("lastOk")
+        age = (now_ms - last_ok) if last_ok else None
+        if effective == "ok":
+            sub = f"Endpoint responding. Last successful probe {_fm_fmt_age(age)}."
+        elif effective in ("warn", "confirming"):
+            sub = f"Endpoint degraded. Last successful probe {_fm_fmt_age(age)}."
+        elif effective in ("bad", "down"):
+            err = _fm_sanitize_error((tgt.get("lastError") or {}).get("error") or "")
+            sub = f"Endpoint disrupted. Last successful probe {_fm_fmt_age(age)}."
+            if err:
+                sub += f"  •  {err}"
+        else:
+            sub = "Awaiting probes…"
+        self.lbl_status_sub.setText(sub)
+
+    def _apply_hero_latency(self, last_hour_lats):
         if last_hour_lats:
             last_hour_lats.sort()
             n = len(last_hour_lats)
@@ -1280,23 +1805,59 @@ class FreemodelStatsDialog(QDialog):
             self.lbl_lat_big.setText("—")
             self.lbl_lat_meta.setText("p10 — · p90 — · p99 —")
 
-        recent = all_samples[-100:]
-        if recent:
-            n_total = len(recent)
-            # Категории взаимоисключающие — сумма n_ok + n_slow + n_failed = n_total,
-            # ровно как на сайте: "60/100 recent probes ok · 37 slow · 3 failed".
-            n_ok     = sum(1 for _, c, _ in recent if c == "ok")
-            n_slow   = sum(1 for _, c, _ in recent if c in ("slow", "very_slow"))
-            n_failed = sum(1 for _, c, _ in recent if c == "failed")
-            latest_ts = recent[-1][0]
-            latest_age = now_ms - latest_ts if latest_ts else None
-            self.lbl_probes_sub.setText(
-                f"{n_ok}/{n_total} recent probes ok   •   {n_slow} slow "
-                f"  •   {n_failed} failed   •   "
-                f"latest {_fm_fmt_age(latest_age)}"
-            )
-        else:
-            self.lbl_probes_sub.setText("нет данных о пробах")
+    def _update_mode_bar(self, data):
+        mode = str(data.get("mode") or "").lower()
+        cadence_ms = data.get("cadenceMs") or 0
+        cadence_min = max(1, int(round(cadence_ms / 60000))) if cadence_ms else 0
+        mode_color = {
+            "healthy": _FM_COLORS["ok"],
+            "rapid": _FM_COLORS["warn"],
+            "confirming": _FM_COLORS["warn"],
+        }.get(mode, _FM_COLORS["ink_soft"])
+        mode_text = f"{mode or '—'}  •  probing every {cadence_min}m" if cadence_min else (mode or "—")
+        self.lbl_mode.setText(mode_text)
+        self.lbl_mode.setStyleSheet(f"color: {mode_color}; background: transparent;")
+        self.mode_dot.set_color(mode_color)
+
+    # ─── Менеджмент scope-views ────────────────────────────────────
+    def _rebuild_scope_layout(self, desired):
+        """desired — список (key, compact_flag) в порядке отображения.
+        Пересоздаёт виджеты только если ключ новый или поменялся compact-флаг.
+        Все лишние сносит. В контейнере раскладывает в заданном порядке."""
+        desired_keys = [k for k, _ in desired]
+
+        # Создать/пересоздать view'и, где нужно
+        for key, compact in desired:
+            existing = self._scope_views.get(key)
+            if existing is None or existing._compact != compact:
+                if existing is not None:
+                    existing.setParent(None)
+                    existing.deleteLater()
+                self._scope_views[key] = _FmScopeView(compact=compact)
+
+        # Снести лишние
+        for key in list(self._scope_views.keys()):
+            if key not in desired_keys:
+                view = self._scope_views.pop(key)
+                view.setParent(None)
+                view.deleteLater()
+
+        # Пере-выложить контейнер
+        while self.scope_container.count():
+            item = self.scope_container.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        for key, _ in desired:
+            view = self._scope_views[key]
+            view.setParent(self.probes_frame)
+            self.scope_container.addWidget(view, 1)
+            view.show()
+
+    def _on_scope_changed(self, key):
+        self._scope_mode = key
+        if self._last_data is not None:
+            self._apply_data(self._last_data)
 
     def _apply_failure(self):
         if self._last_data is None:
@@ -8626,13 +9187,11 @@ class ClaudeManager(QMainWindow):
         если сайт сейчас в режиме `confirming` (после ошибок проверяет, что
         сервис стабилен) — отдаём 'confirming' вне зависимости от overall.
         Так индикатор у бейджа жёлтый, как на сайте.
-        Запросы каждые 30 секунд; при ошибке — быстрый ретрай через 8 с,
-        чтобы не зависнуть на 'unknown' минуту."""
+        Запросы фиксированно каждые 2 секунды — и при успехе, и при ошибке."""
         url = "https://fm.bluealitas.com/api/status"
         ctx = ssl.create_default_context()
         time.sleep(1)
         while True:
-            sleep_after = 30
             try:
                 req = Request(url, headers={"User-Agent": f"ClaudeCodeManager/{APP_VERSION}"})
                 with urlopen(req, timeout=8, context=ctx) as resp:
@@ -8648,8 +9207,7 @@ class ClaudeManager(QMainWindow):
                 self.freemodel_status_signal.emit(effective)
             except Exception:
                 self.freemodel_status_signal.emit("unknown")
-                sleep_after = 8
-            time.sleep(sleep_after)
+            time.sleep(2)
 
     def _show_update_notification(self, update_info):
         """Авто-запуск скачивания обновления без подтверждения от пользователя."""
