@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.5.8"  # Для обновлений
+APP_VERSION = "5.5.9"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -464,7 +464,7 @@ TRANSLATIONS = {
     # ── Admin warning
     "Сейчас приложение работает в обычном режиме и часть\n"
     "операций может завершаться ошибкой PermissionDenied.\n\n"
-    "Без админ-прав могут не сработать:\n"
+    "Без ��дмин-прав могут не сработать:\n"
     "  •  установка Node.js (инсталлятор пишет в %ProgramFiles%)\n"
     "  •  установка Claude Code (npm i -g в системные папки)\n"
     "  •  полное удаление Claude Code и чистка залоченных файлов\n"
@@ -576,7 +576,7 @@ TRANSLATIONS = {
     "последняя стабильная версия, "
     "на которой приложение проверено целиком. Более новые версии могут работать "
     "нестабильно или вовсе не запускаться, а начиная с v2.1.181 Anthropic "
-    "заблокировала сторонние Base URL и API ключи — все запросы уходят только "
+    "заблокировала сторонние Base URL и API ключи — все запросы уходят тол��ко "
     "в официальный сервис Anthropic, и FreeModel / Omniroute / прокси не работают.\n\n"
     "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude "
     "не пострадают.":
@@ -822,7 +822,7 @@ class StatusIndicator(QWidget):
         self.update()
 
     def set_state(self, state):
-        """state: 'on' (зелёный), 'off' (красный), 'warn' (жёлтый), 'neutral' (серый)"""
+        """state: 'on' (зелёный), 'off' (крас������ы��), 'warn' (жёлтый), 'neutral' (серый)"""
         self._state = state
         self._is_active = (state == "on")
         self.update()
@@ -1253,7 +1253,7 @@ class _FmHeroCard(QFrame):
 
 
 class _FmFlatCard(QFrame):
-    """Простая карточка со скруглённым фоном и рамкой, нарисованными в
+    """Простая карточка со скру��лё��н��м фоном и рамкой, нарисованными в
     paintEvent (а не через QSS). Это важно: при stylesheet-фоне на обычном
     QFrame дочерние QLabel на Windows получают «родной» серый квадрат-подложку.
     Самоотрисовка + WA_TranslucentBackground убирает этот артефакт — так же,
@@ -1493,10 +1493,76 @@ class _FmSegmentedControl(QWidget):
         return self._current_key
 
 
+class _FmUptimeChip(QFrame):
+    """Виджет-пилюля с анимированной точкой-индикатором и текстом «UPTIME N%».
+    Точка дышит за счёт собственного QTimer-а в StatusIndicator (60 FPS).
+    Состояние индикатора:
+      • ≥85%  → 'fm_ok' (зелёный как на сайте)
+      • 50-85 → 'warn'  (жёлтый)
+      • <50   → 'off'   (красный)
+      • None  → 'neutral' (серый, спокойная пульсация)
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("FmUptimeChip")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        # QSS на сам QFrame; дочерним виджетам ставим прозрачный фон.
+        self.setStyleSheet(
+            "QFrame#FmUptimeChip {"
+            f"  background: {_FM_COLORS['bg_warm']};"
+            f"  border: 1px solid {_FM_COLORS['line_soft']};"
+            "  border-radius: 10px;"
+            "}"
+            "QFrame#FmUptimeChip QLabel {"
+            "  background: transparent;"
+            "  border: 0;"
+            "}"
+        )
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(7, 2, 11, 2)
+        lay.setSpacing(6)
+
+        # Анимированная точка — переиспользуем StatusIndicator (уже
+        # умеет дышать и переключать цвет через set_state).
+        self.dot = StatusIndicator()
+        self.dot.setFixedSize(14, 14)
+        self.dot.set_state("neutral")
+        lay.addWidget(self.dot, 0, Qt.AlignVCenter)
+
+        self.lbl = QLabel(
+            f"<span style='color:{_FM_COLORS['ink_muted']};'>UPTIME —</span>"
+        )
+        self.lbl.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
+        self.lbl.setTextFormat(Qt.RichText)
+        lay.addWidget(self.lbl, 0, Qt.AlignVCenter)
+
+    def set_uptime(self, pct):
+        """pct — float 0..100 (или None если данных нет)."""
+        if pct is None or not isinstance(pct, (int, float)) or not math.isfinite(pct):
+            self.dot.set_state("neutral")
+            self.lbl.setText(
+                f"<span style='color:{_FM_COLORS['ink_muted']};'>UPTIME —</span>"
+            )
+            return
+        if pct < 50:
+            state, col = "off", _FM_COLORS["bad"]
+        elif pct < 85:
+            state, col = "warn", _FM_COLORS["warn"]
+        else:
+            state, col = "fm_ok", _FM_COLORS["ok"]
+        self.dot.set_state(state)
+        txt = "100%" if pct >= 99.95 else f"{pct:.1f}%"
+        self.lbl.setText(
+            f"<span style='color:{_FM_COLORS['ink_muted']};'>UPTIME </span>"
+            f"<span style='color:{col};'>{txt}</span>"
+        )
+
+
 class _FmScopeView(QWidget):
     """Сабблок статистики для одного scope. Два режима:
-       • compact=False — полноразмерный: заголовок, 4 плитки stat-tiles,
-         стек-полоска, гистограмма. Используется когда выбран конкретный
+       • compact=False — полноразмерный: заголовок, 4 п��итки stat-tiles,
+         стек-полоска, гистограмма. Исп��льзуется когда выбран конкретный
          endpoint (только 1 сабблок в карточке).
        • compact=True — компактный: заголовок c inline-сводкой справа,
          стек-полоска, тонкая гистограмма. Используется в режиме All,
@@ -1518,12 +1584,20 @@ class _FmScopeView(QWidget):
         head_row = QHBoxLayout()
         head_row.setSpacing(8)
         self.title_lbl = QLabel("—")
-        title_pt = 10 if compact else 12
+        title_pt = 9 if compact else 10
         self.title_lbl.setFont(QFont("Segoe UI", title_pt, QFont.DemiBold))
+        # Тонкий виджет-пилюля вокруг названия эндпоинта — как на сайте, но мягче.
         self.title_lbl.setStyleSheet(
-            f"color: {_FM_COLORS['ink']}; background: transparent;"
+            f"color: {_FM_COLORS['ink']};"
+            f"background: {_FM_COLORS['bg_warm']};"
+            f"border: 1px solid {_FM_COLORS['line_soft']};"
+            f"border-radius: 9px; padding: 3px 10px;"
         )
         head_row.addWidget(self.title_lbl)
+        # Чип uptime — анимированная точка + проценты. Берёт uptime24
+        # из API (как на сайте), а не считает локально из последних проб.
+        self.uptime_chip = _FmUptimeChip()
+        head_row.addWidget(self.uptime_chip)
         head_row.addStretch()
         self.summary_lbl = QLabel("")
         self.summary_lbl.setFont(QFont("Segoe UI", 9))
@@ -1564,8 +1638,10 @@ class _FmScopeView(QWidget):
     def set_title(self, text):
         self.title_lbl.setText(text)
 
-    def update_from_samples(self, samples_with_ok, now_ms):
-        """samples_with_ok — отсортированный по ts список (ts, cat, lat, is_ok)."""
+    def update_from_samples(self, samples_with_ok, now_ms, explicit_up=None):
+        """samples_with_ok — отсортированный по ts список (ts, cat, lat, is_ok).
+        explicit_up — uptime24 в процентах (взвешенный по samples1h из API).
+        Если передан, используется вместо локального подсчёта по recent."""
         self.histogram.set_samples([(t, c, l) for (t, c, l, _) in samples_with_ok])
 
         recent = samples_with_ok[-96:]
@@ -1578,6 +1654,7 @@ class _FmScopeView(QWidget):
                     tile.set_data("—", label, _FM_COLORS["ink_muted"])
             self.rate_bar.set_counts(0, 0, 0, 0)
             self.summary_lbl.setText("нет данных")
+            self.uptime_chip.set_uptime(explicit_up)
             return
 
         n_total = len(recent)
@@ -1594,6 +1671,13 @@ class _FmScopeView(QWidget):
             ok_color = _FM_COLORS["bad"]
         elif ok_pct < 85:
             ok_color = _FM_COLORS["warn"]
+
+        # Uptime-чип берёт значение из uptime24 (если есть), иначе fallback
+        # на локально посчитанный процент по recent. Это сразу даёт «правдо-
+        # подобные» проценты как на сайте — 4.0% / 60.5% и т.д.
+        self.uptime_chip.set_uptime(
+            explicit_up if explicit_up is not None else ok_pct
+        )
 
         if self.stat_ok is not None:
             self.stat_ok.set_data(
@@ -1766,7 +1850,7 @@ class _FmTitleBar(QWidget):
 class _FmLegendDot(QLabel):
     """Маленькая цветная точка для легенды. Раньше рисовалась через QPainter
     в QWidget — но на Windows под кастомным paintEvent протекала дефолтная
-    системная заливка, из-за чего вокруг точки был виден серый квадрат.
+    системная заливка, из-за чего вокруг точки был виден серый квадра��.
     Теперь это QLabel с круглым фоном через CSS (border-radius) — никакой
     собственной отрисовки, неоткуда взяться квадрату."""
 
@@ -1828,7 +1912,7 @@ class FreemodelStatsDialog(QDialog):
         self.setModal(False)
         # В режиме All в карточке проб три сабблока (агрегат + 2 endpoint'а)
         # плюс hero/selector/next_bar. Если высота меньше нужной — низ
-        # гистограмм срезается родительским layout'ом и короткие бары
+        # гистограмм ��резается родительским layout'ом и короткие бары
         # (min_height = 3px) уходят под клипинг. Поэтому дефолт с запасом.
         self.setMinimumSize(820, 780)
         self.resize(940, 900)
@@ -1903,7 +1987,7 @@ class FreemodelStatsDialog(QDialog):
         cl.setContentsMargins(24, 20, 24, 22)
         cl.setSpacing(16)
 
-        # ── Hero: ALL SYSTEMS + GATEWAY LATENCY ─────────────────────
+        # ─��� Hero: ALL SYSTEMS + GATEWAY LATENCY ──────────────��──────
         self.hero_frame = _FmHeroCard()
         hero_lay = QHBoxLayout(self.hero_frame)
         hero_lay.setContentsMargins(28, 22, 28, 22)
@@ -2000,9 +2084,13 @@ class FreemodelStatsDialog(QDialog):
 
         head_row = QHBoxLayout()
         self.probes_title = QLabel("freemodel.dev model probes")
-        self.probes_title.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
+        self.probes_title.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
+        # Виджет-пилюля вокруг общего заголовка карточки проб.
         self.probes_title.setStyleSheet(
-            f"color: {_FM_COLORS['ink']}; background: transparent;"
+            f"color: {_FM_COLORS['ink']};"
+            f"background: {_FM_COLORS['bg_warm']};"
+            f"border: 1px solid {_FM_COLORS['line_soft']};"
+            f"border-radius: 10px; padding: 4px 12px;"
         )
         head_row.addWidget(self.probes_title)
         head_row.addStretch()
@@ -2094,16 +2182,23 @@ class FreemodelStatsDialog(QDialog):
         self._next_check_at_ms = data.get("nextCheckAt")
         self._update_countdown()
 
-        # Собираем пробы по таргетам (только enabled+не removed модели)
+        # Собираем пробы по таргетам (только enabled+не removed модели).
+        # Параллельно считаем взвешенный uptime24 (по samples1h) — те же
+        # цифры что и на сайте: «4.0%», «60.5%» и пр.
         targets = data.get("targets") or []
         targets_with_host = []
         by_host = {}
         aggregate_samples = []
+        up_by_host = {}
+        up_agg_num = 0.0
+        up_agg_den = 0
         for tgt in targets:
             host = self._host_of(tgt.get("url") or "")
             if not host:
                 continue
             samples = []
+            up_num = 0.0
+            up_den = 0
             for m in (tgt.get("models") or []):
                 if not m.get("enabled") or m.get("removedAt"):
                     continue
@@ -2113,18 +2208,40 @@ class FreemodelStatsDialog(QDialog):
                     lat = h.get("latency") or 0
                     is_ok = bool(h.get("ok"))
                     samples.append((ts, cat, lat, is_ok))
+                # uptime24 берётся в виде float процента, samples1h — вес.
+                up_raw = m.get("uptime24")
+                s1h = m.get("samples1h") or 0
+                if up_raw is not None and s1h:
+                    try:
+                        up_f = float(up_raw)
+                        if math.isfinite(up_f):
+                            up_num += up_f * s1h
+                            up_den += s1h
+                    except (TypeError, ValueError):
+                        pass
             samples.sort(key=lambda x: x[0])
             by_host[host] = samples
             aggregate_samples.extend(samples)
             targets_with_host.append((host, tgt))
+            if up_den > 0:
+                up_by_host[host] = up_num / up_den
+                up_agg_num += up_num
+                up_agg_den += up_den
         aggregate_samples.sort(key=lambda x: x[0])
+        up_agg = (up_agg_num / up_agg_den) if up_agg_den > 0 else None
+        self._up_by_host = up_by_host
+        self._up_agg = up_agg
 
         # Опции селектора: All + по одному на каждый таргет.
         # Пересобираем только если состав ключей изменился.
         host_tuple = tuple(h for h, _ in targets_with_host)
         if host_tuple != self._known_target_hosts:
             self._known_target_hosts = host_tuple
-            options = [("all", "All")] + [(h, h) for h in host_tuple]
+            # Подписываем endpoint-ы тегами (t0)/(t1)/… в порядке возврата
+            # сервером — синхронно с подписями в карточке probes ниже.
+            options = [("all", "All")] + [
+                (h, f"{h}  (t{i})") for i, h in enumerate(host_tuple)
+            ]
             self.scope_selector.set_options(options)
             # Если активный ключ исчез из опций — selector сам перейдёт на «all»;
             # синхронизируем _scope_mode.
@@ -2149,13 +2266,24 @@ class FreemodelStatsDialog(QDialog):
         self._apply_hero_latency(last_hour_lats)
 
         # ── Probes-карточка — пересобираем сабблоки под текущий scope ─
+        # Для All-режима подписываем endpoint-ы тегами (t0)/(t1)/… в порядке,
+        # в котором их отдаёт сервер — это помогает быстро ссылаться на
+        # «первый» / «второй» endpoint в логах и обсуждениях.
         if sel == "all":
             desired = [("__all__", "Aggregate (all endpoints)", aggregate_samples, True)]
-            for host in host_tuple:
-                desired.append((host, host, by_host.get(host, []), True))
+            for idx, host in enumerate(host_tuple):
+                tag = f"(t{idx})"
+                desired.append((host, f"{host}  {tag}", by_host.get(host, []), True))
             self.probes_title.setText("freemodel.dev model probes  •  all scopes")
         else:
-            desired = [(sel, sel, by_host.get(sel, []), False)]
+            # В single-endpoint режиме тоже добавляем тег, чтобы пользователь
+            # видел, какой именно endpoint открыт.
+            try:
+                idx = host_tuple.index(sel)
+                tag = f" (t{idx})"
+            except ValueError:
+                tag = ""
+            desired = [(sel, f"{sel}{tag}", by_host.get(sel, []), False)]
             self.probes_title.setText(f"freemodel.dev model probes  •  {sel}")
 
         self._rebuild_scope_layout([(k, c) for (k, _t, _s, c) in desired])
@@ -2163,7 +2291,8 @@ class FreemodelStatsDialog(QDialog):
             view = self._scope_views.get(key)
             if view is not None:
                 view.set_title(title)
-                view.update_from_samples(samples, now_ms)
+                up = self._up_agg if key == "__all__" else self._up_by_host.get(key)
+                view.update_from_samples(samples, now_ms, up)
 
     # ─── Hero / mode-bar помощники ─────────────────────────────────
     def _status_color(self, effective):
@@ -2470,7 +2599,7 @@ class UpdateIndicator(QWidget):
         super().mouseReleaseEvent(event)
 
         if self._is_active:
-            # Зеленое свечение с плавной пульсацией (уменьшил радиус)
+            # Зеле��ое свечение с плавной пульсацией (уменьшил радиус)
             glow_radius = 5.0 + 2.5 * pulse
             glow_alpha = int(60 * pulse)
             painter.setBrush(QColor(0, 255, 100, glow_alpha))
@@ -3687,7 +3816,7 @@ class Fable5WarningDialog(QDialog):
             "всех юрисдикций.\n\n"
             "Согласно решению, Fable 5 признана настолько мощной,\n"
             "что — по словам представителей правительства — способна\n"
-            "взломать защищённые системы Пентагона. На этом основании\n"
+            "��зломать защищённые системы Пентагона. На этом основании\n"
             "модель отнесена к технологиям двойного назначения\n"
             "и временно изъята из публичного оборота.\n\n"
             "Доступ будет восстановлен после завершения проверки\n"
@@ -4166,7 +4295,7 @@ class AnimatedProgressBar(QWidget):
         painter.setPen(QColor(220, 220, 220))
         painter.drawText(self.rect(), Qt.AlignCenter, text)
 
-        # Рисуем темный текст только на области прогресса (clipping)
+        # Рисуем ��емный текст только на области прогресса (clipping)
         if progress_width > 0:
             painter.setClipRect(0, 0, progress_width, self.height())
             painter.setPen(QColor(30, 30, 35))  # Темный текст на синем фоне
@@ -4484,7 +4613,7 @@ class LanguageToggle(QWidget):
         g = int(g0 + (g1 - g0) * t)
         b = int(b0 + (b1 - b0) * t)
 
-        # Пилюля скользит между левой и правой половиной
+        # Пилюля скользит между левой и правой по��овиной
         pad = 2.5
         pill_w = w / 2 - pad
         pill_x = pad / 2 + (w / 2) * t
@@ -6156,7 +6285,7 @@ class ClaudeJsonFixDialog(QDialog):
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
 
-        # Текст с описанием проблемы и тем, что произойдёт
+        # ��екст с описанием проблемы и тем, что произойдёт
         if json_exists:
             state_line = tr(
                 '<span style="color:#EB5A5A;"><b>● Найден файл ~/.claude.json.</b></span><br>'
@@ -7315,7 +7444,7 @@ class ClaudeManager(QMainWindow):
             self.btn_save_token.hide()
         self.token_layout.addWidget(self.btn_save_token)
 
-        self.btn_edit_token = StyledButton(tr("Изменить"))
+        self.btn_edit_token = StyledButton(tr("Измени��ь"))
         self.btn_edit_token.setMaximumWidth(100)
         self.btn_edit_token.clicked.connect(self.edit_token)
         # Если токен не сохранен, скрываем кнопку изменить
@@ -7831,7 +7960,7 @@ class ClaudeManager(QMainWindow):
         # Двигаем волну слева направо
         self._shimmer_offset += 0.015  # Средняя скорость
 
-        # Когда волна прошла весь текст, ждем 2 секунды и начинаем снова
+        # Когда волна прошла ��есь текст, ждем 2 секунды и начинаем снова
         if self._shimmer_offset > 1.3:
             self._shimmer_offset = -0.3
             # Пауза 2 секунды
@@ -8166,7 +8295,7 @@ class ClaudeManager(QMainWindow):
                 pass
 
     def _track_tr(self, widget, ru_key, kind="text"):
-        """Регистрируем виджет для авто-перевода при смене языка."""
+        """Регистрируем виджет для авто-перевода при смене язык��."""
         if not hasattr(self, "_tr_widgets"):
             self._tr_widgets = []
         self._tr_widgets.append((widget, ru_key, kind))
@@ -8661,7 +8790,7 @@ class ClaudeManager(QMainWindow):
             if not cmd:
                 return False, ""
             # Сравниваем с тем, что мы бы поставили — если уже наше,
-            # это всё равно «уже есть» (предупреждаем о замене).
+            # э��о всё равно «уже есть» (предупреждаем о замене).
             return True, cmd
         except Exception:
             return False, ""
@@ -8762,7 +8891,7 @@ class ClaudeManager(QMainWindow):
                 if not self._confirm_statusline_action(
                     title=tr("Переустановить status line?"),
                     message=tr(
-                        "Вы действительно хотите переустановить status line? "
+                        "Вы действит��льно хотите переустановить status line? "
                         "Ваш текущий блок statusLine в ~/.claude/settings.json "
                         "и файл ~/.claude/statusline-command.sh будут полностью "
                         "перезаписаны нашей версией. Откатить это нельзя."
@@ -8795,7 +8924,7 @@ class ClaudeManager(QMainWindow):
             self._perform_status_line_remove()
 
         else:
-            self.log("Действие со status line отменено", "info")
+            self.log("Д��йствие со status line отменено", "info")
 
     def _confirm_statusline_action(self, title, message, detail, confirm_text, icon, icon_color):
         """Маленькое окно подтверждения «вы действительно хотите…»."""
@@ -9164,7 +9293,7 @@ class ClaudeManager(QMainWindow):
                     # (issues #11263, #13213 в anthropics/claude-code) и реально
                     # автообновление выключается ниже через DISABLE_UPDATES=1
                     # в settings.json. autoUpdates тут — подстраховка/совместимость:
-                    # если какая-то ветка кода CLI всё-таки его уважает —
+                    # есл�� какая-то ветка кода CLI всё-таки его уважает —
                     # нам ничего не стоит её закрыть.
                     stub = {
                         "installMethod": "global",
@@ -9876,9 +10005,9 @@ class ClaudeManager(QMainWindow):
             "warning"
         )
         dlg = ConfirmActionDialog(
-            title=tr("Устаревшая версия Claude Code"),
+            title=tr("Устаревшая ��ерсия Claude Code"),
             message=(
-                tr("У тебя установлена Claude Code") + f" v{local} — " +
+                tr("У тебя установле��а Claude Code") + f" v{local} — " +
                 tr("это устаревшая версия.") + "\n\n" +
                 tr("Проверенная и стабильная версия, на которой это приложение работает гарантированно, — ") +
                 f"v{required}. " +
@@ -9936,7 +10065,7 @@ class ClaudeManager(QMainWindow):
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
                 # 2) Основная попытка удаления npm-версии
-                "Write-Host 'Удаление Claude Code (npm)...' -ForegroundColor Cyan; "
+                "Write-Host '��даление Claude Code (npm)...' -ForegroundColor Cyan; "
                 "npm uninstall -g @anthropic-ai/claude-code; "
                 # 3) Если файл всё ещё залочен и остался — повторная попытка после паузы
                 "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@anthropic-ai\\claude-code'; "
