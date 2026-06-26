@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.6"  # Для обновлений
+APP_VERSION = "5.6.1"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -344,6 +344,9 @@ TRANSLATIONS = {
     "источник: freemodel-status-mirror-jzmw.vercel.app": "source: freemodel-status-mirror-jzmw.vercel.app",
     "Нет данных по этому endpoint.": "No data for this endpoint.",
     "Нет связи": "No connection",
+    "нет данных": "no data",
+    "upstream вернул нечитаемую ошибку (обычно ответ промежуточного прокси/шлюза)":
+        "upstream returned unreadable error (likely a proxy/gateway response)",
     # ── разное
     "Пример отображения в Claude Code": "Preview in Claude Code",
     "модель  •  контекст  •  session ID  •  git-репозиторий":
@@ -1076,18 +1079,22 @@ def _fm_fmt_ms(value):
 
 
 def _fm_sanitize_error(text):
-    """Иногда промежуточный прокси/шлюз отдаёт ошибки иероглифами (часто
-    китайский — стандартные «упс» от китайских CDN/firewall'ов, например
-    «此页面无法访问» и т.п.). В UI это просто шум — пользователь не прочитает.
+    """Иногда промежуточный прокси/шлюз отдаёт ошибки иероглифами или
+    «мусором» — битый UTF-8, бинарь от сжатого/зашифрованного ответа,
+    replacement-символы U+FFFD. В UI это просто шум — пользователь не
+    прочитает, поэтому заменяем на короткое объяснение.
 
-    Логика: считаем долю CJK-символов среди значимых (не-whitespace).
-    Если >25% — заменяем строку на короткое читаемое объяснение."""
+    Логика:
+      1) если >25% значимых символов — CJK → заменить;
+      2) если >20% значимых символов — control/replacement/непечатаемые
+         или непонятные latin/extended → заменить (мусорный бинарь)."""
     if not text:
         return ""
     s = str(text).strip()
     if not s:
         return ""
     cjk = 0
+    junk = 0
     counted = 0
     for ch in s:
         if ch.isspace():
@@ -1100,9 +1107,25 @@ def _fm_sanitize_error(text):
             (0x30A0 <= c <= 0x30FF) or  # Katakana
             (0xAC00 <= c <= 0xD7AF)):   # Hangul
             cjk += 1
-    if counted and cjk / counted > 0.25:
-        return ("upstream вернул нечитаемую ошибку "
-                "(обычно ответ промежуточного прокси/шлюза)")
+            continue
+        # «Хороший» диапазон: ASCII печатное, латиница с диакритикой,
+        # кириллица, основная пунктуация. Всё остальное считаем мусором.
+        is_ok = (
+            (0x20 <= c <= 0x7E) or                # ASCII printable
+            (0x00A0 <= c <= 0x024F) or            # Latin-1/Ext A/B
+            (0x0400 <= c <= 0x04FF) or            # Cyrillic
+            c in (0x2013, 0x2014, 0x2018, 0x2019,
+                  0x201C, 0x201D, 0x2022, 0x2026) # тире/кавычки/пуля/…
+        )
+        if not is_ok:
+            junk += 1
+    if counted:
+        if cjk / counted > 0.25:
+            return tr("upstream вернул нечитаемую ошибку "
+                      "(обычно ответ промежуточного прокси/шлюза)")
+        if junk / counted > 0.20:
+            return tr("upstream вернул нечитаемую ошибку "
+                      "(обычно ответ промежуточного прокси/шлюза)")
     # На всякий случай отрезаем длинные «портянки» от стектрейсов.
     return s[:160]
 
@@ -1141,7 +1164,7 @@ class LatencyHistogram(QWidget):
         if not self._samples:
             p.setPen(QColor(_FM_COLORS["ink_muted"]))
             p.setFont(QFont("Segoe UI", 10))
-            p.drawText(self.rect(), Qt.AlignCenter, "нет данных")
+            p.drawText(self.rect(), Qt.AlignCenter, tr("нет данных"))
             return
 
         max_lat = max((s[2] for s in self._samples if s[2]), default=1.0) or 1.0
@@ -1941,7 +1964,7 @@ class _FmScopeView(QWidget):
                 ):
                     tile.set_data("—", label, _FM_COLORS["ink_muted"])
             self.rate_bar.set_counts(0, 0, 0, 0)
-            self.summary_lbl.setText("нет данных")
+            self.summary_lbl.setText(tr("нет данных"))
             self.uptime_chip.set_uptime(explicit_up)
             return
 
