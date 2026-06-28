@@ -23,10 +23,10 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics
-from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.6.1"  # Для обновлений
+APP_VERSION = "5.6.2"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -1120,12 +1120,13 @@ def _fm_sanitize_error(text):
         if not is_ok:
             junk += 1
     if counted:
-        if cjk / counted > 0.25:
-            return tr("upstream вернул нечитаемую ошибку "
-                      "(обычно ответ промежуточного прокси/шлюза)")
-        if junk / counted > 0.20:
-            return tr("upstream вернул нечитаемую ошибку "
-                      "(обычно ответ промежуточного прокси/шлюза)")
+        # Окно статистики по дизайну всегда на английском (как и серверные
+        # подписи «Down», «Operational» — приходят из API). Поэтому здесь
+        # хардкодим английский текст вне зависимости от LANG.lang, чтобы
+        # русская вставка не торчала на фоне остального английского хедера.
+        if cjk / counted > 0.25 or junk / counted > 0.20:
+            return "upstream returned an unreadable error " \
+                   "(usually from an intermediate proxy/gateway)"
     # На всякий случай отрезаем длинные «портянки» от стектрейсов.
     return s[:160]
 
@@ -1591,23 +1592,28 @@ class _FmStatTile(QFrame):
 
 
 class _FmRateBar(QWidget):
-    """Тонкая горизонтальная стек-полоска, показывает доли ok / slow / failed
-    в последних N пробах. Просто визуальный якорь поверх плиток."""
+    """Тонкая горизонтальная стек-полоска, показывает доли
+    ok / slow / very_slow / failed в последних N пробах."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFixedHeight(6)
-        self._n_ok_clean = 0   # ok минус slow — чисто зелёный сегмент
+        self._n_ok_clean = 0   # ok минус (slow + very_slow) — чисто зелёный сегмент
         self._n_slow = 0
+        self._n_very_slow = 0
         self._n_failed = 0
         self._n_total = 0
 
-    def set_counts(self, n_ok, n_slow, n_failed, n_total):
-        # n_ok на сайте включает slow (любая проба с ok=True). Чтобы стек был
-        # читаемый, выделяем «чистый ok» = ok минус slow.
-        self._n_ok_clean = max(0, n_ok - n_slow)
-        self._n_slow = max(0, n_slow)
+    def set_counts(self, n_ok, n_slow, n_failed, n_total, n_very_slow=0):
+        # n_ok на сайте включает все ok-пробы (любая проба с ok=True), в т.ч.
+        # slow и very_slow. Чтобы стек был читаемый, выделяем «чистый ok» =
+        # ok − (slow + very_slow). Жёлтый сегмент рисуем отдельно.
+        n_slow = max(0, n_slow)
+        n_very_slow = max(0, n_very_slow)
+        self._n_ok_clean = max(0, n_ok - n_slow - n_very_slow)
+        self._n_slow = n_slow
+        self._n_very_slow = n_very_slow
         self._n_failed = max(0, n_failed)
         self._n_total = max(1, n_total)
         self.update()
@@ -1626,10 +1632,13 @@ class _FmRateBar(QWidget):
         if self._n_total <= 0:
             return
 
+        # Порядок: ok (зелёный) → slow (синий) → very_slow (жёлтый) → failed (красный).
+        # Соответствует возрастанию «серьёзности».
         segments = [
-            (self._n_ok_clean, QColor(_FM_COLORS["ok"])),
-            (self._n_slow,     QColor(_FM_COLORS["slow"])),
-            (self._n_failed,   QColor(_FM_COLORS["failed"])),
+            (self._n_ok_clean,  QColor(_FM_COLORS["ok"])),
+            (self._n_slow,      QColor(_FM_COLORS["slow"])),
+            (self._n_very_slow, QColor(_FM_COLORS["very_slow"])),
+            (self._n_failed,    QColor(_FM_COLORS["failed"])),
         ]
         x = 0.0
         for count, color in segments:
@@ -1971,7 +1980,10 @@ class _FmScopeView(QWidget):
         n_total = len(recent)
         n_ok     = sum(1 for _, _, _, ok in recent if ok)
         n_failed = n_total - n_ok
-        n_slow   = sum(1 for _, c, _, _ in recent if c in ("slow", "very_slow"))
+        # Делим slow и very_slow — для отдельных сегментов в стек-полоске.
+        n_slow_only  = sum(1 for _, c, _, _ in recent if c == "slow")
+        n_very_slow  = sum(1 for _, c, _, _ in recent if c == "very_slow")
+        n_slow       = n_slow_only + n_very_slow  # для плиток/сводки оставляем общий
         latest_ts = recent[-1][0]
         latest_age = now_ms - latest_ts if latest_ts else None
         ok_pct = (n_ok * 100.0 / n_total) if n_total else 0.0
@@ -2007,7 +2019,8 @@ class _FmScopeView(QWidget):
             self.stat_latest.set_data(
                 _fm_fmt_age(latest_age), "LATEST PROBE", _FM_COLORS["ink"],
             )
-        self.rate_bar.set_counts(n_ok, n_slow, n_failed, n_total)
+        self.rate_bar.set_counts(n_ok, n_slow_only, n_failed, n_total,
+                                 n_very_slow=n_very_slow)
 
         # Inline-сводка для compact: «87/96 ok · 12 slow · 9 failed · 6m ago»
         slow_part = (f"  •  <span style='color:{_FM_COLORS['slow']};'>{n_slow}</span> slow"
@@ -2028,7 +2041,7 @@ class _FmTitleBarButton(QPushButton):
 
     def __init__(self, kind="close", parent=None):
         super().__init__(parent)
-        self._kind = kind  # 'close' | 'min'
+        self._kind = kind  # 'close' | 'min' | 'max' | 'restore'
         self.setFixedSize(38, 28)
         self.setCursor(Qt.PointingHandCursor)
         self._hover = False
@@ -2074,9 +2087,20 @@ class _FmTitleBarButton(QPushButton):
             s = 4.5
             p.drawLine(QPointF(cx - s, cy - s), QPointF(cx + s, cy + s))
             p.drawLine(QPointF(cx + s, cy - s), QPointF(cx - s, cy + s))
-        else:  # min
+        elif self._kind == "min":
             s = 5.0
             p.drawLine(QPointF(cx - s, cy + 0.5), QPointF(cx + s, cy + 0.5))
+        elif self._kind == "max":
+            # Квадратик — иконка «развернуть»
+            s = 4.5
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(QRectF(cx - s, cy - s, s * 2, s * 2))
+        elif self._kind == "restore":
+            # Два смещённых квадратика — иконка «свернуть в окно»
+            s = 4.0
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(QRectF(cx - s + 1.5, cy - s - 0.5, s * 2 - 1.5, s * 2 - 1.5))
+            p.drawRect(QRectF(cx - s - 0.5, cy - s + 1.5, s * 2 - 1.5, s * 2 - 1.5))
 
 
 class _FmTitleBar(QWidget):
@@ -2085,6 +2109,7 @@ class _FmTitleBar(QWidget):
 
     close_clicked = Signal()
     minimize_clicked = Signal()
+    maximize_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2121,11 +2146,21 @@ class _FmTitleBar(QWidget):
         self.btn_min.clicked.connect(self.minimize_clicked.emit)
         lay.addWidget(self.btn_min)
 
+        self.btn_max = _FmTitleBarButton("max")
+        self.btn_max.clicked.connect(self.maximize_clicked.emit)
+        lay.addWidget(self.btn_max)
+
         self.btn_close = _FmTitleBarButton("close")
         self.btn_close.clicked.connect(self.close_clicked.emit)
         lay.addWidget(self.btn_close)
 
         self._drag_offset = None
+
+    def set_maximized_icon(self, is_maximized):
+        """Меняем иконку кнопки между «развернуть» (квадратик) и
+        «свернуть в окно» (два квадратика)."""
+        self.btn_max._kind = "restore" if is_maximized else "max"
+        self.btn_max.update()
 
     def paintEvent(self, event):
         # Тонкая разделительная линия снизу
@@ -2153,9 +2188,12 @@ class _FmTitleBar(QWidget):
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e):
-        # Двойной клик по шапке — ничего не делает (нет максимизации),
-        # перехватываем чтобы не сработал ничего нежелательного.
-        e.accept()
+        # Двойной клик по шапке — toggle между max/restore (как в Windows).
+        if e.button() == Qt.LeftButton:
+            self.maximize_clicked.emit()
+            e.accept()
+        else:
+            super().mouseDoubleClickEvent(e)
 
 
 class _FmLegendDot(QLabel):
@@ -2208,25 +2246,50 @@ def _fm_make_legend(parent=None):
 
 
 class FreemodelStatsDialog(QDialog):
-    """Кастомное frameless-окно со статистикой freemodel.dev в реальном времени.
-    Единственное окно в приложении с собственной шапкой, перемещаемое за неё."""
+    """Frameless-окно со статусом freemodel.dev со скруглёнными углами и кастомной
+    шапкой (_FmTitleBar). Рендер — НАСТОЯЩИЙ установленный браузер: его окно
+    запускается в app-режиме и через Win32 SetParent «вшивается» как дочернее в
+    контейнер этого окна. Так мы получаем браузерную плавность 1:1, но в своей
+    рамке. Данные страница берёт сама с локального сервера (тот же origin)."""
 
-    data_updated = Signal(dict)
-    fetch_failed = Signal()
+    dot_signal = Signal(str, str)  # (overall, mode) — для индикатора в шапке
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, port=0, browser=None, token=""):
         super().__init__(parent)
         self.setWindowTitle(tr("freemodel.dev — статус и латентность"))
-        # Frameless + полупрозрачный фон под drop-shadow контейнера
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setModal(False)
-        # В режиме All в карточке проб три сабблока (агрегат + 2 endpoint'а)
-        # плюс hero/selector/next_bar. Если высота меньше нужной — низ
-        # гистограмм   резается родительским layout'ом и короткие бары
-        # (min_height = 3px) уходят под клипинг. Поэтому дефолт с запасом.
-        self.setMinimumSize(820, 780)
-        self.resize(940, 900)
+        self.setMinimumSize(560, 480)
+        self.setStyleSheet("QDialog { background-color: #0a0a0f; }")
+
+        self._port = port
+        self._browser = browser
+        self._token = token
+        self._url = f"http://127.0.0.1:{port}/?fmt={token}"
+        self._status_url = f"http://127.0.0.1:{port}/api/status"
+
+        self._stop = False
+        self._launched = False
+        self._child_hwnd = None
+        self._proc = None
+        self._embed_tries = 0
+        self._w32 = None  # (ctypes, wintypes, user32) — лениво
+
+        # Восстанавливаем сохранённую «нормальную» геометрию (без maximized).
+        saved_geo = load_settings().get("freemodel_stats_geo") or {}
+        try:
+            w = max(560, int(saved_geo.get("w") or 1100))
+            h = max(480, int(saved_geo.get("h") or 860))
+            self.resize(w, h)
+            if "x" in saved_geo and "y" in saved_geo:
+                self.move(int(saved_geo["x"]), int(saved_geo["y"]))
+        except Exception:
+            self.resize(1100, 860)
+
+        self._geo_save_timer = QTimer(self)
+        self._geo_save_timer.setSingleShot(True)
+        self._geo_save_timer.setInterval(400)
+        self._geo_save_timer.timeout.connect(self._save_geometry)
 
         try:
             for p in (
@@ -2239,631 +2302,349 @@ class FreemodelStatsDialog(QDialog):
         except Exception:
             pass
 
-        self._last_data = None
-        self._next_check_at_ms = None
-        self._stop = False
-        self._current_overall = "unknown"
-
         self._build_ui()
 
-        self.data_updated.connect(self._apply_data)
-        self.fetch_failed.connect(self._apply_failure)
+        # Таймер поиска окна браузера (после запуска) для встраивания.
+        self._embed_timer = QTimer(self)
+        self._embed_timer.setInterval(100)
+        self._embed_timer.timeout.connect(self._try_embed)
 
-        self._tick_timer = QTimer(self)
-        self._tick_timer.timeout.connect(self._update_countdown)
-        self._tick_timer.start(1000)
+        # Индикатор статуса в шапке: лёгкий поллер локального сервера.
+        self.dot_signal.connect(self._apply_dot)
+        self._dot_thread = threading.Thread(target=self._dot_loop, daemon=True)
+        self._dot_thread.start()
 
-        self._fetch_thread = threading.Thread(target=self._fetch_loop, daemon=True)
-        self._fetch_thread.start()
-
-    # ─── UI ─────────────────────────────────────────────────────────
+    # UI ---------------------------------------------------------------
     def _build_ui(self):
-        # Внешний layout — поля под drop-shadow
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 20, 20, 20)
-        outer.setSpacing(0)
-
-        # Контейнер-«окно» с реальной рамкой и фоном
-        self.container = QFrame()
-        self.container.setObjectName("fm_window")
-        self.container.setStyleSheet(f"""
-            QFrame#fm_window {{
-                background-color: #0a0a0f;
-                border: 1px solid {_FM_COLORS['line']};
-                border-radius: 16px;
-            }}
-        """)
-        shadow = QGraphicsDropShadowEffect(self.container)
-        shadow.setBlurRadius(48)
-        shadow.setColor(QColor(0, 0, 0, 200))
-        shadow.setOffset(0, 10)
-        self.container.setGraphicsEffect(shadow)
-        outer.addWidget(self.container)
-
-        # ── Фоновые слои: свечение снизу + точки (2-layer crossfade) ──
-        self._bg_glow = _FmBgGlow(self.container)
-        self._bg_dots = _FmBgDots(self.container)
-        self._bg_glow.lower()
-        self._bg_dots.lower()
-
-        # Внутренний layout контейнера
-        inner = QVBoxLayout(self.container)
-        inner.setContentsMargins(0, 0, 0, 0)
+        # 6px тёмной рамки по бокам/снизу: и красиво, и это зона нативного
+        # ресайза за края (WM_NCHITTEST) — её не перекрывает дочернее окно браузера.
+        inner = QVBoxLayout(self)
+        inner.setContentsMargins(6, 0, 6, 6)
         inner.setSpacing(0)
 
-        # Кастомная шапка
         self.title_bar = _FmTitleBar()
         self.title_bar.close_clicked.connect(self.close)
         self.title_bar.minimize_clicked.connect(self.showMinimized)
+        self.title_bar.maximize_clicked.connect(self._toggle_max_restore)
         inner.addWidget(self.title_bar)
 
-        # Контент
-        content = QWidget()
-        content.setStyleSheet("background: transparent;")
-        cl = QVBoxLayout(content)
-        cl.setContentsMargins(24, 20, 24, 22)
-        cl.setSpacing(16)
+        # Контейнер, в который вшиваем окно браузера. Делаем его нативным
+        # (own HWND) — он будет родителем для дочернего окна Chromium.
+        self.container = QWidget(self)
+        self.container.setAttribute(Qt.WA_NativeWindow, True)
+        self.container.setStyleSheet("background-color: #0a0a0f;")
+        inner.addWidget(self.container, 1)
 
-        # ─    Hero: ALL SYSTEMS + GATEWAY LATENCY ──────────────  ──────
-        self.hero_frame = _FmHeroCard()
-        hero_lay = QHBoxLayout(self.hero_frame)
-        hero_lay.setContentsMargins(28, 22, 28, 22)
-        hero_lay.setSpacing(24)
+        # Подпись на время загрузки/при ошибке встраивания.
+        self._overlay = QLabel(tr("Загрузка…"), self.container)
+        self._overlay.setAlignment(Qt.AlignCenter)
+        self._overlay.setStyleSheet(
+            "color:#9ca3af; font-family:'Segoe UI'; font-size:14px; background:transparent;")
+        self._overlay.setGeometry(0, 0, self.container.width(), self.container.height())
 
-        left_col = QVBoxLayout()
-        left_col.setSpacing(8)
-        self.lbl_all_systems = self._eyebrow("ALL SYSTEMS")
-        self.lbl_status_word = QLabel("—")
-        self.lbl_status_word.setFont(self._numeric_font(34, QFont.DemiBold))
-        self.lbl_status_word.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
-        self.lbl_status_sub = QLabel("Awaiting data…")
-        self.lbl_status_sub.setFont(QFont("Segoe UI", 10))
-        self.lbl_status_sub.setStyleSheet(f"color: {_FM_COLORS['ink_soft']}; background: transparent;")
-        self.lbl_status_sub.setWordWrap(True)
-        left_col.addWidget(self.lbl_all_systems)
-        left_col.addWidget(self.lbl_status_word)
-        left_col.addSpacing(2)
-        left_col.addWidget(self.lbl_status_sub)
-        left_col.addStretch()
-        hero_lay.addLayout(left_col, 13)
+    # Win32 -------------------------------------------------------------
+    def _win32(self):
+        if self._w32 is not None:
+            return self._w32
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        u.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]; u.SetParent.restype = wintypes.HWND
+        u.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]; u.GetWindowLongW.restype = ctypes.c_long
+        u.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]; u.SetWindowLongW.restype = ctypes.c_long
+        u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]; u.SetWindowPos.restype = wintypes.BOOL
+        u.MoveWindow.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.BOOL]; u.MoveWindow.restype = wintypes.BOOL
+        u.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]; u.GetClientRect.restype = wintypes.BOOL
+        u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]; u.GetWindowRect.restype = wintypes.BOOL
+        u.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]; u.GetClassNameW.restype = ctypes.c_int
+        u.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]; u.GetWindowTextW.restype = ctypes.c_int
+        u.IsWindowVisible.argtypes = [wintypes.HWND]; u.IsWindowVisible.restype = wintypes.BOOL
+        u.PostMessageW.argtypes = [wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM]; u.PostMessageW.restype = wintypes.BOOL
+        u.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]; u.SetWindowRgn.restype = ctypes.c_int
+        g = ctypes.windll.gdi32
+        g.CreateRoundRectRgn.argtypes = [ctypes.c_int] * 6; g.CreateRoundRectRgn.restype = wintypes.HRGN
+        self._w32 = (ctypes, wintypes, u)
+        return self._w32
 
-        # Тонкий вертикальный разделитель
-        sep = QFrame()
-        sep.setFixedWidth(1)
-        sep.setStyleSheet(f"background-color: {_FM_COLORS['line_soft']};")
-        hero_lay.addWidget(sep)
-
-        right_col = QVBoxLayout()
-        right_col.setSpacing(8)
-        self.lbl_lat_eyebrow = self._eyebrow("GATEWAY LATENCY  •  LAST HOUR")
-        right_col.addWidget(self.lbl_lat_eyebrow)
-
-        lat_row = QHBoxLayout()
-        lat_row.setSpacing(6)
-        self.lbl_lat_big = QLabel("—")
-        self.lbl_lat_big.setFont(self._numeric_font(36, QFont.DemiBold))
-        self.lbl_lat_big.setStyleSheet(f"color: {_FM_COLORS['ink']}; background: transparent;")
-        self.lbl_lat_unit = QLabel("ms")
-        self.lbl_lat_unit.setFont(QFont("Segoe UI", 14, QFont.Normal))
-        self.lbl_lat_unit.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
-        lat_row.addWidget(self.lbl_lat_big, 0, Qt.AlignBottom)
-        lat_row.addWidget(self.lbl_lat_unit, 0, Qt.AlignBottom)
-        lat_row.addStretch()
-        right_col.addLayout(lat_row)
-
-        self.lbl_lat_meta = QLabel("p10 — · p90 — · p99 —")
-        self.lbl_lat_meta.setFont(self._numeric_font(10, QFont.Normal))
-        self.lbl_lat_meta.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
-        self.lbl_lat_meta.setTextFormat(Qt.RichText)
-        right_col.addWidget(self.lbl_lat_meta)
-        right_col.addStretch()
-        hero_lay.addLayout(right_col, 10)
-
-        cl.addWidget(self.hero_frame)
-
-        # ── Полоска next check + mode ───────────────────────────────
-        # Карточка рисует фон сама (_FmFlatCard) — иначе дочерние QLabel на
-        # Windows получают серый квадрат-подложку.
-        self.next_bar = _FmFlatCard(_FM_COLORS['bg_warm'], _FM_COLORS['line_soft'], radius=11)
-        nb = QHBoxLayout(self.next_bar)
-        nb.setContentsMargins(16, 11, 16, 11)
-        nb.setSpacing(10)
-        self.lbl_next_check = QLabel("next check in —")
-        self.lbl_next_check.setFont(self._numeric_font(10, QFont.Normal))
-        self.lbl_next_check.setTextFormat(Qt.RichText)
-        self.lbl_next_check.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
-
-        # «mode pill» справа — нарисованная точка + текст (без unicode-bullet'а)
-        self.mode_dot = _FmLegendDot(_FM_COLORS["ok"])
-        self.lbl_mode = QLabel("—")
-        self.lbl_mode.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
-        self.lbl_mode.setStyleSheet(f"color: {_FM_COLORS['ok']}; background: transparent;")
-
-        nb.addWidget(self.lbl_next_check)
-        nb.addStretch()
-        nb.addWidget(self.mode_dot, 0, Qt.AlignVCenter)
-        nb.addSpacing(6)
-        nb.addWidget(self.lbl_mode, 0, Qt.AlignVCenter)
-        cl.addWidget(self.next_bar)
-
-        # ── Селектор scope: All / endpoint1 / endpoint2 / … ──────────
-        # Опции подставляются динамически в _apply_data, когда придут targets.
-        # До первой загрузки данных селектор пуст и не показывается.
-        self.scope_selector = _FmSegmentedControl()
-        self.scope_selector.selectionChanged.connect(self._on_scope_changed)
-        cl.addWidget(self.scope_selector)
-
-        # ── Карточка с гистограммой проб ─────────────────────────────
-        self.probes_frame = _FmFlatCard(_FM_COLORS['bg_card'], _FM_COLORS['line'], radius=14)
-        pf = QVBoxLayout(self.probes_frame)
-        pf.setContentsMargins(22, 18, 22, 18)
-        pf.setSpacing(10)
-
-        head_row = QHBoxLayout()
-        self.probes_title = QLabel("freemodel.dev model probes")
-        self.probes_title.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
-        # Виджет-пилюля вокруг общего заголовка карточки проб.
-        self.probes_title.setStyleSheet(
-            f"color: {_FM_COLORS['ink']};"
-            f"background: {_FM_COLORS['bg_warm']};"
-            f"border: 1px solid {_FM_COLORS['line_soft']};"
-            f"border-radius: 10px; padding: 4px 12px;"
-        )
-        head_row.addWidget(self.probes_title)
-        head_row.addStretch()
-        head_row.addWidget(_fm_make_legend(), 0, Qt.AlignVCenter)
-        pf.addLayout(head_row)
-
-        # Контейнер под scope-views. Заполняется/перестраивается в _apply_data
-        # в зависимости от выбранного режима (All — 1+N компактных блоков,
-        # конкретный таргет — один полноразмерный).
-        self.scope_container = QVBoxLayout()
-        self.scope_container.setSpacing(11)
-        self.scope_container.setContentsMargins(0, 4, 0, 0)
-        pf.addLayout(self.scope_container, 1)
-
-        # Кэш scope-view виджетов по ключу ('all' | host). Не пересоздаём при
-        # каждом тике — переиспользуем, чтобы не моргала вёрстка.
-        self._scope_views = {}
-        self._scope_mode = "all"  # текущий выбранный scope-key
-        self._known_target_hosts = ()  # tuple — для отслеживания изменений
-
-        cl.addWidget(self.probes_frame, 1)
-
-        # Подпись внизу — кликабельная ссылка «источник: <url>»
-        src_url = "https://freemodel-status-mirror-jzmw.vercel.app"
-        src_text = tr("источник: freemodel-status-mirror-jzmw.vercel.app")
-        src = QLabel(
-            f'<span style="color:{_FM_COLORS["ink_muted"]};">{src_text.split(":")[0]}: </span>'
-            f'<a href="{src_url}" style="color:#34d399; text-decoration:none;">'
-            f'{src_url[len("https://"):]}</a>'
-        )
-        src.setFont(QFont("Segoe UI", 8))
-        src.setTextFormat(Qt.RichText)
-        src.setOpenExternalLinks(True)
-        src.setStyleSheet("background: transparent;")
-        src.setAlignment(Qt.AlignCenter)
-        src.setCursor(Qt.PointingHandCursor)
-        cl.addWidget(src)
-
-        inner.addWidget(content, 1)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, '_bg_glow') and self._bg_glow:
-            cw = self.container.width()
-            ch = self.container.height()
-            self._bg_glow.setGeometry(0, 0, cw, ch)
-            self._bg_dots.setGeometry(0, 0, cw, ch)
-            self._bg_glow.lower()
-            self._bg_dots.lower()
-            self._bg_glow.update()
-            self._bg_dots.update()
-
-    def _host_of(self, url):
-        """Нормализованный хост из URL: 'https://cc.freemodel.dev/v1/' → 'cc.freemodel.dev'.
-        Чтобы можно было сравнивать с url'ами таргетов независимо от схемы и пути."""
-        if not url:
-            return ""
+    def _launch_browser(self):
+        if self._launched or not self._browser:
+            return
+        self._launched = True
+        profile_dir = os.path.join(SETTINGS_DIR, "fm_embed_profile")
         try:
-            from urllib.parse import urlparse
-            parsed = urlparse(url if "://" in url else f"https://{url}")
-            host = (parsed.hostname or "").lower().strip()
-            return host
-        except Exception:
-            return ""
-
-    def _eyebrow(self, text):
-        lbl = QLabel(text)
-        f = QFont("Segoe UI", 8, QFont.DemiBold)
-        f.setLetterSpacing(QFont.PercentageSpacing, 118)
-        lbl.setFont(f)
-        lbl.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
-        return lbl
-
-    def _numeric_font(self, pt, weight=QFont.Normal):
-        """Шрифт с включёнными tabular-цифрами — большие числа не «прыгают» при апдейте."""
-        f = QFont("Segoe UI", pt, weight)
-        try:
-            f.setStyleStrategy(QFont.PreferAntialias)
-            # Tabular figures — Qt6 поддерживает font features через setFeature на QFont 6.7+,
-            # как fallback используем стандартный шрифт. Главное — фикс-ширина у цифр у Segoe UI.
+            os.makedirs(profile_dir, exist_ok=True)
         except Exception:
             pass
-        return f
+        args = [
+            self._browser,
+            "--app=" + self._url,
+            "--user-data-dir=" + profile_dir,
+            "--disable-extensions",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-features=Translate",
+            # Создаём окно за пределами экрана, чтобы не мелькнуло отдельно
+            # до момента встраивания в контейнер.
+            "--window-position=-32000,-32000",
+            "--window-size=1200,800",
+        ]
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            self._proc = subprocess.Popen(args, creationflags=flags)
+        except Exception:
+            self._proc = None
+            self._embed_failed()
+            return
+        self._embed_tries = 0
+        self._embed_timer.start()
 
-    # ─── Фоновый поллер ────────────────────────────────────────────
-    def _fetch_loop(self):
-        url = "https://fm.bluealitas.com/api/status"
-        ctx = ssl.create_default_context()
+    def _find_browser_window(self):
+        ctypes, wintypes, u = self._win32()
+        target = "FMSTATS_" + self._token
+        found = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def _cb(hwnd, lparam):
+            try:
+                tbuf = ctypes.create_unicode_buffer(512)
+                u.GetWindowTextW(hwnd, tbuf, 512)
+                if tbuf.value == target:
+                    cbuf = ctypes.create_unicode_buffer(128)
+                    u.GetClassNameW(hwnd, cbuf, 128)
+                    if cbuf.value.startswith("Chrome_WidgetWin"):
+                        found.append(hwnd)
+                        return False
+            except Exception:
+                pass
+            return True
+
+        try:
+            u.EnumWindows(_cb, 0)
+        except Exception:
+            pass
+        return found[0] if found else None
+
+    def _try_embed(self):
+        self._embed_tries += 1
+        hwnd = self._find_browser_window()
+        if not hwnd:
+            if self._embed_tries > 60:  # ~6 секунд
+                self._embed_timer.stop()
+                self._embed_failed()
+            return
+        self._embed_timer.stop()
+        try:
+            ctypes, wintypes, u = self._win32()
+            GWL_STYLE = -16
+            WS_CHILD = 0x40000000
+            WS_VISIBLE = 0x10000000
+            WS_CLIPSIBLINGS = 0x04000000
+            REMOVE = (0x00C00000 |  # WS_CAPTION
+                      0x00040000 |  # WS_THICKFRAME
+                      0x00020000 |  # WS_MINIMIZEBOX
+                      0x00010000 |  # WS_MAXIMIZEBOX
+                      0x00080000 |  # WS_SYSMENU
+                      0x00400000 |  # WS_DLGFRAME
+                      0x00800000 |  # WS_BORDER
+                      0x80000000)   # WS_POPUP
+            style = u.GetWindowLongW(hwnd, GWL_STYLE)
+            style = (style & ~REMOVE) | WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS
+            u.SetWindowLongW(hwnd, GWL_STYLE, style)
+            parent = int(self.container.winId())
+            u.SetParent(hwnd, parent)
+            self._child_hwnd = hwnd
+            if hasattr(self, "_overlay"):
+                self._overlay.hide()
+            self._resize_embed()
+            # Применяем изменение стиля рамки.
+            u.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                           0x0001 | 0x0002 | 0x0020 | 0x0004 | 0x0040)
+            # ^ SWP_NOSIZE|SWP_NOMOVE|SWP_FRAMECHANGED|SWP_NOZORDER|SWP_SHOWWINDOW
+        except Exception:
+            self._embed_failed()
+
+    def _embed_failed(self):
+        if hasattr(self, "_overlay"):
+            self._overlay.setText(
+                tr("Не удалось встроить окно браузера."))
+            self._overlay.show()
+
+    def _resize_embed(self):
+        if not self._child_hwnd:
+            return
+        try:
+            ctypes, wintypes, u = self._win32()
+            parent = int(self.container.winId())
+            rect = wintypes.RECT()
+            u.GetClientRect(parent, ctypes.byref(rect))
+            u.MoveWindow(self._child_hwnd, 0, 0,
+                         rect.right - rect.left, rect.bottom - rect.top, True)
+        except Exception:
+            pass
+
+    def _apply_round_region(self):
+        # Скруглённые углы окна (клипает и рамку, и вшитый браузер).
+        try:
+            ctypes, wintypes, u = self._win32()
+            if self.isMaximized():
+                u.SetWindowRgn(int(self.winId()), 0, True)
+                return
+            rect = wintypes.RECT()
+            u.GetWindowRect(int(self.winId()), ctypes.byref(rect))
+            w = rect.right - rect.left
+            h = rect.bottom - rect.top
+            r = 16
+            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r)
+            u.SetWindowRgn(int(self.winId()), rgn, True)
+        except Exception:
+            pass
+
+    # Status dot poller ------------------------------------------------
+    def _dot_loop(self):
         while not self._stop:
             try:
-                req = Request(url, headers={"User-Agent": f"ClaudeCodeManager/{APP_VERSION}"})
-                with urlopen(req, timeout=8, context=ctx) as resp:
-                    data = json.loads(resp.read().decode("utf-8", errors="replace"))
-                self.data_updated.emit(data)
+                with urlopen(self._status_url, timeout=8) as resp:
+                    d = json.loads(resp.read().decode("utf-8", errors="replace"))
+                overall = str((d or {}).get("overall") or "unknown").lower()
+                mode = str((d or {}).get("mode") or "").lower()
+                self.dot_signal.emit(overall, mode)
             except Exception:
-                self.fetch_failed.emit()
-            # пауза с проверкой stop — чтобы окно быстро закрывалось
-            for _ in range(60):  # 60 × 0.1с = 6 секунд
+                self.dot_signal.emit("unknown", "")
+            for _ in range(50):  # ~5 секунд
                 if self._stop:
                     return
                 time.sleep(0.1)
 
-    # ─── Применение данных ─────────────────────────────────────────
-    def _apply_data(self, data):
-        self._last_data = data
-        now_ms = int(time.time() * 1000)
-
-        # Мод-бар (cadence/mode) — всегда серверный общий, не зависит от scope
-        self._update_mode_bar(data)
-        self._next_check_at_ms = data.get("nextCheckAt")
-        self._update_countdown()
-
-        # Собираем пробы по таргетам (только enabled+не removed модели).
-        # Параллельно считаем взвешенный uptime24 (по samples1h) — те же
-        # цифры что и на сайте: «4.0%», «60.5%» и пр.
-        targets = data.get("targets") or []
-        targets_with_host = []
-        by_host = {}
-        aggregate_samples = []
-        up_by_host = {}
-        up_agg_num = 0.0
-        up_agg_den = 0
-        for tgt in targets:
-            host = self._host_of(tgt.get("url") or "")
-            if not host:
-                continue
-            samples = []
-            up_num = 0.0
-            up_den = 0
-            for m in (tgt.get("models") or []):
-                if not m.get("enabled") or m.get("removedAt"):
-                    continue
-                for h in (m.get("history48") or []):
-                    ts = h.get("ts") or 0
-                    cat = _fm_classify_probe(h)
-                    lat = h.get("latency") or 0
-                    is_ok = bool(h.get("ok"))
-                    samples.append((ts, cat, lat, is_ok))
-                # uptime24 берётся в виде float процента, samples1h — вес.
-                up_raw = m.get("uptime24")
-                s1h = m.get("samples1h") or 0
-                if up_raw is not None and s1h:
-                    try:
-                        up_f = float(up_raw)
-                        if math.isfinite(up_f):
-                            up_num += up_f * s1h
-                            up_den += s1h
-                    except (TypeError, ValueError):
-                        pass
-            samples.sort(key=lambda x: x[0])
-            by_host[host] = samples
-            aggregate_samples.extend(samples)
-            targets_with_host.append((host, tgt))
-            if up_den > 0:
-                up_by_host[host] = up_num / up_den
-                up_agg_num += up_num
-                up_agg_den += up_den
-        aggregate_samples.sort(key=lambda x: x[0])
-        up_agg = (up_agg_num / up_agg_den) if up_agg_den > 0 else None
-        self._up_by_host = up_by_host
-        self._up_agg = up_agg
-
-        # Опции селектора: All + по одному на каждый таргет.
-        # Пересобираем только если состав ключей изменился.
-        host_tuple = tuple(h for h, _ in targets_with_host)
-        if host_tuple != self._known_target_hosts:
-            self._known_target_hosts = host_tuple
-            # Подписываем endpoint-ы тегами (t0)/(t1)/… в порядке возврата
-            # сервером — синхронно с подписями в карточке probes ниже.
-            options = [("all", "All")] + [
-                (h, f"{h}  (t{i})") for i, h in enumerate(host_tuple)
-            ]
-            self.scope_selector.set_options(options)
-            # Если активный ключ исчез из опций — selector сам перейдёт на «all»;
-            # синхронизируем _scope_mode.
-            sel = self.scope_selector.current_key() or "all"
-            if sel != self._scope_mode:
-                self._scope_mode = sel
-
-        sel = self.scope_selector.current_key() or "all"
-        self._scope_mode = sel
-
-        # ── Hero (верхняя панель) — обновляем под выбранный scope ────
-        if sel == "all":
-            self._apply_hero_aggregate(data, now_ms)
-            lat_pool = aggregate_samples
-        else:
-            tgt = next((t for h, t in targets_with_host if h == sel), None)
-            self._apply_hero_for_target(tgt, data, now_ms)
-            lat_pool = by_host.get(sel, [])
-
-        last_hour_lats = [l for (t, _c, l, ok) in lat_pool
-                          if ok and t >= now_ms - 3600 * 1000]
-        self._apply_hero_latency(last_hour_lats)
-
-        # ── Probes-карточка — пересобираем сабблоки под текущий scope ─
-        # Для All-режима подписываем endpoint-ы тегами (t0)/(t1)/… в порядке,
-        # в котором их отдаёт сервер — это помогает быстро ссылаться на
-        # «первый» / «второй» endpoint в логах и обсуждениях.
-        def _fmt_for(host, idx):
-            return "anthropic"
-
-        if sel == "all":
-            desired = [("__all__", "Aggregate (all endpoints)", aggregate_samples, True, None)]
-            for idx, host in enumerate(host_tuple):
-                tag = f"(t{idx})"
-                desired.append((host, f"{host}  {tag}", by_host.get(host, []), True, _fmt_for(host, idx)))
-            self.probes_title.setText("freemodel.dev model probes  •  all scopes")
-        else:
-            # В single-endpoint режиме тоже добавляем тег, чтобы пользователь
-            # видел, какой именно endpoint открыт.
-            try:
-                idx = host_tuple.index(sel)
-                tag = f" (t{idx})"
-                fmt = _fmt_for(sel, idx)
-            except ValueError:
-                tag = ""
-                fmt = None
-            desired = [(sel, f"{sel}{tag}", by_host.get(sel, []), False, fmt)]
-            self.probes_title.setText(f"freemodel.dev model probes  •  {sel}")
-
-        self._rebuild_scope_layout([(k, c) for (k, _t, _s, c, _f) in desired])
-        for key, title, samples, _compact, fmt in desired:
-            view = self._scope_views.get(key)
-            if view is not None:
-                view.set_title(title, fmt)
-                up = self._up_agg if key == "__all__" else self._up_by_host.get(key)
-                view.update_from_samples(samples, now_ms, up)
-
-    # ─── Hero / mode-bar помощники ─────────────────────────────────
-    def _status_color(self, effective):
-        return {
-            "ok":         _FM_COLORS["ok"],
-            "warn":       _FM_COLORS["warn"],
-            "confirming": _FM_COLORS["warn"],
-            "bad":        _FM_COLORS["bad"],
-            "down":       _FM_COLORS["down"],
-            "unknown":    _FM_COLORS["ink_muted"],
-        }.get(effective, _FM_COLORS["ink_muted"])
-
-    def _update_title_dot(self, effective):
-        if effective == "ok":
-            self.title_bar.dot.set_state("fm_ok")
-        elif effective in ("warn", "confirming"):
+    def _apply_dot(self, overall, mode):
+        if not hasattr(self, "title_bar"):
+            return
+        if mode == "confirming" or overall == "warn":
             self.title_bar.dot.set_state("warn")
-        elif effective in ("bad", "down"):
+        elif overall == "ok":
+            self.title_bar.dot.set_state("fm_ok")
+        elif overall in ("bad", "down"):
             self.title_bar.dot.set_state("off")
         else:
             self.title_bar.dot.set_state("neutral")
 
-    def _apply_hero_aggregate(self, data, now_ms):
-        """Hero в режиме All — берёт серверные overall/mode/lastOkOverall,
-        ровно как было до селектора."""
-        overall = str(data.get("overall") or "unknown").lower()
-        mode = str(data.get("mode") or "").lower()
-        labels = data.get("statusLabels") or {}
-
-        if mode == "confirming":
-            effective = "confirming"
-            word = "Confirming…"
+    # Max / restore / resize / persistence -----------------------------
+    def _toggle_max_restore(self):
+        if self.isMaximized():
+            self.showNormal()
         else:
-            effective = overall
-            word = labels.get(overall) or {
-                "ok": "Operational", "warn": "Degraded", "bad": "Disrupted",
-                "down": "Down", "unknown": "Awaiting probes…"
-            }.get(overall, "—")
+            self.showMaximized()
 
-        word_color = self._status_color(effective)
-        self.lbl_status_word.setText(word)
-        self.lbl_status_word.setStyleSheet(
-            f"color: {word_color}; background: transparent;"
-        )
-        self.hero_frame.set_glow(word_color, effective)
-        self._update_title_dot(effective)
-        if self._current_overall != effective:
-            self._current_overall = effective
-            self._bg_glow.set_status(effective)
-            self._bg_dots.set_status(effective, word_color)
-        self.lbl_all_systems.setText("ALL SYSTEMS")
+    def changeEvent(self, event):
+        try:
+            from PySide6.QtCore import QEvent
+            if event.type() == QEvent.WindowStateChange and hasattr(self, "title_bar"):
+                self.title_bar.set_maximized_icon(self.isMaximized())
+                self._apply_round_region()
+                self._resize_embed()
+        except Exception:
+            pass
+        super().changeEvent(event)
 
-        last_ok = data.get("lastOkOverall")
-        age = (now_ms - last_ok) if last_ok else None
-        if overall == "ok":
-            sub = f"All tested models are responding. Last successful check {_fm_fmt_age(age)}."
-        elif overall == "warn":
-            sub = f"Some models are degraded. Last successful check {_fm_fmt_age(age)}."
-        elif overall in ("bad", "down"):
-            sub = f"Service is disrupted. Last successful check {_fm_fmt_age(age)}."
-        else:
-            sub = "Awaiting probes…"
-        self.lbl_status_sub.setText(sub)
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, "title_bar"):
+            self.title_bar.set_maximized_icon(self.isMaximized())
+        self._apply_round_region()
+        # Запускаем браузер один раз, когда окно уже показано (есть HWND контейнера).
+        if not self._launched:
+            QTimer.singleShot(0, self._launch_browser)
 
-    def _apply_hero_for_target(self, tgt, data, now_ms):
-        """Hero в режиме конкретного endpoint — статус и lastOk берём из
-        самого таргета (data.targets[i].status / lastOk)."""
-        if tgt is None:
-            self.lbl_all_systems.setText("ENDPOINT")
-            self.lbl_status_word.setText("—")
-            self.lbl_status_word.setStyleSheet(
-                f"color: {_FM_COLORS['ink_muted']}; background: transparent;"
-            )
-            self.hero_frame.set_glow(None, "unknown")
-            self._update_title_dot("unknown")
-            if self._current_overall != "unknown":
-                self._current_overall = "unknown"
-                self._bg_glow.set_status("unknown")
-                self._bg_dots.set_status("unknown", _FM_COLORS["ink_muted"])
-            self.lbl_status_sub.setText(tr("Нет данных по этому endpoint."))
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_overlay"):
+            self._overlay.setGeometry(0, 0, self.container.width(), self.container.height())
+        self._resize_embed()
+        self._apply_round_region()
+        if not self.isMaximized() and not self.isMinimized() and self.isVisible():
+            self._geo_save_timer.start()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if not self.isMaximized() and not self.isMinimized() and self.isVisible():
+            self._geo_save_timer.start()
+
+    def nativeEvent(self, eventType, message):
+        # Нативный ресайз frameless-окна за края (Windows WM_NCHITTEST).
+        try:
+            if eventType == "windows_generic_MSG" and not self.isMaximized():
+                import ctypes
+                from ctypes import wintypes
+                msg = wintypes.MSG.from_address(int(message))
+                if msg.message == 0x0084:  # WM_NCHITTEST
+                    gx = ctypes.c_short(msg.lParam & 0xFFFF).value
+                    gy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                    rect = wintypes.RECT()
+                    ctypes.windll.user32.GetWindowRect(
+                        int(self.winId()), ctypes.byref(rect)
+                    )
+                    m = 8
+                    left = gx - rect.left < m
+                    right = rect.right - gx < m
+                    top = gy - rect.top < m
+                    bottom = rect.bottom - gy < m
+                    if top and left:
+                        return True, 13
+                    if top and right:
+                        return True, 14
+                    if bottom and left:
+                        return True, 16
+                    if bottom and right:
+                        return True, 17
+                    if left:
+                        return True, 10
+                    if right:
+                        return True, 11
+                    if top:
+                        return True, 12
+                    if bottom:
+                        return True, 15
+        except Exception:
+            pass
+        return super().nativeEvent(eventType, message)
+
+    def _save_geometry(self):
+        if self.isMaximized() or self.isMinimized():
             return
+        try:
+            s = load_settings()
+            s["freemodel_stats_geo"] = {
+                "x": int(self.x()),
+                "y": int(self.y()),
+                "w": int(self.width()),
+                "h": int(self.height()),
+            }
+            save_settings(s)
+        except Exception:
+            pass
 
-        target_status = str(tgt.get("status") or "unknown").lower()
-        # Серверный режим confirming тоже отражаем — индикатор бейджа
-        # тогда жёлтый, как и на сайте.
-        if str(data.get("mode") or "").lower() == "confirming" and target_status == "ok":
-            effective = "confirming"
-            word = "Confirming…"
-        elif target_status in ("ok", "warn", "bad", "down"):
-            effective = target_status
-            word = {
-                "ok": "Operational", "warn": "Degraded",
-                "bad": "Disrupted", "down": "Down",
-            }[target_status]
-        else:
-            effective = "unknown"
-            word = "Awaiting probes…"
-
-        word_color = self._status_color(effective)
-        self.lbl_status_word.setText(word)
-        self.lbl_status_word.setStyleSheet(
-            f"color: {word_color}; background: transparent;"
-        )
-        self.hero_frame.set_glow(word_color, effective)
-        self._update_title_dot(effective)
-        if self._current_overall != effective:
-            self._current_overall = effective
-            self._bg_glow.set_status(effective)
-            self._bg_dots.set_status(effective, word_color)
-
-        host = self._host_of(tgt.get("url") or "") or "ENDPOINT"
-        self.lbl_all_systems.setText(host.upper())
-
-        last_ok = tgt.get("lastOk")
-        age = (now_ms - last_ok) if last_ok else None
-        if effective == "ok":
-            sub = f"Endpoint responding. Last successful probe {_fm_fmt_age(age)}."
-        elif effective in ("warn", "confirming"):
-            sub = f"Endpoint degraded. Last successful probe {_fm_fmt_age(age)}."
-        elif effective in ("bad", "down"):
-            err = _fm_sanitize_error((tgt.get("lastError") or {}).get("error") or "")
-            sub = f"Endpoint disrupted. Last successful probe {_fm_fmt_age(age)}."
-            if err:
-                sub += f"  •  {err}"
-        else:
-            sub = "Awaiting probes…"
-        self.lbl_status_sub.setText(sub)
-
-    def _apply_hero_latency(self, last_hour_lats):
-        if last_hour_lats:
-            last_hour_lats.sort()
-            n = len(last_hour_lats)
-            def pct(p):
-                if n == 1:
-                    return last_hour_lats[0]
-                idx = max(0, min(n - 1, int(round((p / 100) * (n - 1)))))
-                return last_hour_lats[idx]
-            self.lbl_lat_big.setText(_fm_fmt_ms(pct(50)))
-            self.lbl_lat_meta.setText(
-                f"p10 <b style='color:{_FM_COLORS['ink_soft']};'>{_fm_fmt_ms(pct(10))}</b>"
-                f"   p90 <b style='color:{_FM_COLORS['ink_soft']};'>{_fm_fmt_ms(pct(90))}</b>"
-                f"   p99 <b style='color:{_FM_COLORS['ink_soft']};'>{_fm_fmt_ms(pct(99))}</b>"
-            )
-        else:
-            self.lbl_lat_big.setText("—")
-            self.lbl_lat_meta.setText("p10 — · p90 — · p99 —")
-
-    def _update_mode_bar(self, data):
-        mode = str(data.get("mode") or "").lower()
-        cadence_ms = data.get("cadenceMs") or 0
-        cadence_min = max(1, int(round(cadence_ms / 60000))) if cadence_ms else 0
-        mode_color = {
-            "healthy": _FM_COLORS["ok"],
-            "rapid": _FM_COLORS["warn"],
-            "confirming": _FM_COLORS["warn"],
-        }.get(mode, _FM_COLORS["ink_soft"])
-        mode_text = f"{mode or '—'}  •  probing every {cadence_min}m" if cadence_min else (mode or "—")
-        self.lbl_mode.setText(mode_text)
-        self.lbl_mode.setStyleSheet(f"color: {mode_color}; background: transparent;")
-        self.mode_dot.set_color(mode_color)
-
-    # ─── Менеджмент scope-views ────────────────────────────────────
-    def _rebuild_scope_layout(self, desired):
-        """desired — список (key, compact_flag) в порядке отображения.
-        Пересоздаёт виджеты только если ключ новый или поменялся compact-флаг.
-        Все лишние сносит. В контейнере раскладывает в заданном порядке."""
-        desired_keys = [k for k, _ in desired]
-
-        # Создать/пересоздать view'и, где нужно
-        for key, compact in desired:
-            existing = self._scope_views.get(key)
-            if existing is None or existing._compact != compact:
-                if existing is not None:
-                    existing.setParent(None)
-                    existing.deleteLater()
-                self._scope_views[key] = _FmScopeView(compact=compact)
-
-        # Снести лишние
-        for key in list(self._scope_views.keys()):
-            if key not in desired_keys:
-                view = self._scope_views.pop(key)
-                view.setParent(None)
-                view.deleteLater()
-
-        # Пере-выложить контейнер
-        while self.scope_container.count():
-            item = self.scope_container.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-        for key, _ in desired:
-            view = self._scope_views[key]
-            view.setParent(self.probes_frame)
-            self.scope_container.addWidget(view, 1)
-            view.show()
-
-    def _on_scope_changed(self, key):
-        self._scope_mode = key
-        if self._last_data is not None:
-            self._apply_data(self._last_data)
-
-    def _apply_failure(self):
-        if self._last_data is None:
-            self.lbl_status_word.setText(tr("Нет связи"))
-            self.lbl_status_word.setStyleSheet(
-                f"color: {_FM_COLORS['ink_muted']}; background: transparent;"
-            )
-            self.lbl_status_sub.setText(tr(
-                "Не удалось получить /api/status. Повторим через несколько секунд."
-            ))
-
-    def _update_countdown(self):
-        if not self._next_check_at_ms:
-            self.lbl_next_check.setText("next check in —")
-            return
-        now_ms = int(time.time() * 1000)
-        remaining = self._next_check_at_ms - now_ms
-        self.lbl_next_check.setText(
-            f'<span style="color:{_FM_COLORS["ink_muted"]};">next check in </span>'
-            f'<span style="color:{_FM_COLORS["ink"]};">{_fm_fmt_eta(remaining)}</span>'
-        )
+    def _kill_browser(self):
+        # Закрываем вшитое окно и завершаем процесс браузера.
+        try:
+            if self._child_hwnd:
+                ctypes, wintypes, u = self._win32()
+                u.PostMessageW(self._child_hwnd, 0x0010, 0, 0)  # WM_CLOSE
+        except Exception:
+            pass
+        try:
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         self._stop = True
         try:
-            self._tick_timer.stop()
+            self._embed_timer.stop()
         except Exception:
             pass
+        if not self.isMaximized() and not self.isMinimized():
+            self._save_geometry()
+        self._kill_browser()
         super().closeEvent(event)
 
 # ============================================================
@@ -10524,17 +10305,188 @@ class ClaudeManager(QMainWindow):
         except Exception as e:
             pass
 
+    def _freemodel_html_path(self):
+        """Путь к freemodel_stats.html рядом с приложением (учитывает PyInstaller)."""
+        candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "freemodel_stats.html"),
+            os.path.join(os.path.dirname(sys.executable), "freemodel_stats.html"),
+        ]
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.insert(0, os.path.join(meipass, "freemodel_stats.html"))
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+        return candidates[0]
+
+    def _find_browser(self):
+        """Находит установленный Chromium-браузер (Chrome → Edge). Оба поддерживают --app.
+
+        Сначала — авторитетный реестр Windows (App Paths), затем стандартные пути.
+        """
+        # 1) Реестр App Paths — ловит и нестандартные места установки.
+        try:
+            import winreg
+            for exe in ("chrome.exe", "msedge.exe"):
+                for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                    try:
+                        key = winreg.OpenKey(
+                            hive,
+                            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\\" + exe)
+                        path, _ = winreg.QueryValueEx(key, None)
+                        winreg.CloseKey(key)
+                        if path and os.path.isfile(path):
+                            return path
+                    except OSError:
+                        continue
+        except Exception:
+            pass
+
+        # 2) Стандартные пути установки.
+        local = os.environ.get("LOCALAPPDATA", "")
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        candidates = [
+            os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(local, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(pfx86, "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+        return None
+
+    def _ensure_freemodel_server(self):
+        """Поднимает (один раз) локальный сервер на 127.0.0.1, который отдаёт HTML и
+        проксирует /api/status. Возвращает порт. Так страница и данные — с одного
+        origin (http), CORS вообще не возникает, флаги-костыли браузеру не нужны.
+        """
+        port = getattr(self, "_fm_server_port", None)
+        if getattr(self, "_fm_server", None) is not None and port:
+            return port
+
+        import http.server, socketserver
+        html_path = self._freemodel_html_path()
+        html_dir = os.path.dirname(os.path.abspath(html_path))
+        upstream = "https://fm.bluealitas.com/api/status"
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):  # тишина в консоли
+                pass
+
+            def _send(self, code, ctype, body):
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                if body:
+                    try:
+                        self.wfile.write(body)
+                    except Exception:
+                        pass
+
+            def do_GET(self):
+                path = self.path.split("?", 1)[0]
+                # --- API-прокси (серверный запрос, без CORS) ---
+                if path == "/api/status":
+                    try:
+                        ctx = ssl.create_default_context()
+                        req = Request(upstream, headers={
+                            "User-Agent": f"ClaudeCodeManager/{APP_VERSION}"})
+                        with urlopen(req, timeout=8, context=ctx) as r:
+                            body = r.read()
+                        self._send(200, "application/json; charset=utf-8", body)
+                    except Exception:
+                        self._send(502, "application/json; charset=utf-8",
+                                   b'{"error":"upstream"}')
+                    return
+                # --- Статика (только из папки с html) ---
+                if path in ("", "/"):
+                    fp = html_path
+                else:
+                    fp = os.path.normpath(os.path.join(html_dir, path.lstrip("/")))
+                    if not fp.startswith(html_dir):
+                        self._send(403, "text/plain", b"forbidden")
+                        return
+                if os.path.isfile(fp):
+                    ctype = "text/html; charset=utf-8" if fp.lower().endswith(".html") \
+                        else "application/octet-stream"
+                    try:
+                        with open(fp, "rb") as f:
+                            data = f.read()
+                        self._send(200, ctype, data)
+                    except Exception:
+                        self._send(500, "text/plain", b"read error")
+                else:
+                    self._send(404, "text/plain", b"not found")
+
+        httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Handler)
+        httpd.daemon_threads = True
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self._fm_server = httpd
+        self._fm_server_port = port
+        return port
+
     def _open_freemodel_stats(self):
-        """Открывает диалог статистики freemodel.dev. Если он уже открыт — поднимает наверх."""
-        existing = getattr(self, "_freemodel_stats_dialog", None)
-        if existing is not None and existing.isVisible():
-            existing.raise_()
-            existing.activateWindow()
+        """Открывает окно статистики freemodel.dev в установленном браузере (app-режим).
+
+        Рендеринг — целиком в браузере (плавность как на сайте). Данные отдаёт
+        локальный сервер 127.0.0.1 (тот же origin → без CORS). Изолированный профиль
+        (--user-data-dir) не мешает обычному браузеру и сам запоминает размер окна.
+        Защита от расширений тёмной темы: отдельный профиль + --disable-extensions
+        + мета-теги на странице.
+        """
+        html_path = self._freemodel_html_path()
+        if not os.path.isfile(html_path):
+            QMessageBox.warning(self, "freemodel stats",
+                                "Файл freemodel_stats.html не найден рядом с приложением.")
             return
-        dlg = FreemodelStatsDialog(self)
-        # держим ссылку, чтобы не собрался GC и чтобы можно было фокусировать повторно
-        self._freemodel_stats_dialog = dlg
-        dlg.show()
+
+        try:
+            port = self._ensure_freemodel_server()
+        except Exception as e:
+            QMessageBox.warning(self, "freemodel stats",
+                                f"Не удалось запустить локальный сервер:\n{e}")
+            return
+        url = f"http://127.0.0.1:{port}/"
+
+        browser = self._find_browser()
+        if not browser:
+            # Браузер не найден — открываем в браузере по умолчанию обычной вкладкой.
+            try:
+                import webbrowser
+                webbrowser.open(url)
+            except Exception:
+                QMessageBox.warning(self, "freemodel stats",
+                                    "Не найден установленный браузер (Chrome/Edge).")
+            return
+
+        profile_dir = os.path.join(SETTINGS_DIR, "fm_stats_profile")
+        try:
+            os.makedirs(profile_dir, exist_ok=True)
+        except Exception:
+            pass
+
+        args = [
+            browser,
+            "--app=" + url,
+            "--user-data-dir=" + profile_dir,
+            "--disable-extensions",   # защита: никакие расширения (Dark Reader и т.п.) не грузятся
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-features=Translate",
+        ]
+        try:
+            flags = 0
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                flags = subprocess.CREATE_NO_WINDOW
+            self._freemodel_browser_proc = subprocess.Popen(args, creationflags=flags)
+        except Exception as e:
+            QMessageBox.warning(self, "freemodel stats",
+                                f"Не удалось запустить браузер:\n{e}")
 
     def _poll_freemodel_status(self):
         """Фоновый поллер https://fm.bluealitas.com/api/status.
