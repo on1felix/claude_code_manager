@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.6.2"  # Для обновлений
+APP_VERSION = "5.6.3"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")

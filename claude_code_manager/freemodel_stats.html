@@ -46,8 +46,8 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;fl
 .hero .left{flex:13 1 0;padding-right:8px}
 .hero .vsep{width:1px;background:#1f1f1f;align-self:stretch}
 .hero .right{flex:10 1 0;padding-left:8px}
-.status-word{font-size:36px;font-weight:600;letter-spacing:-.6px;line-height:1.02;color:#9ca3af;font-variant-numeric:tabular-nums;transition:color .35s ease}
-.status-sub{color:#d1d5db;font-size:13px;margin-top:6px;line-height:1.4}
+.status-word{font-size:36px;font-weight:600;letter-spacing:-.6px;line-height:1.02;color:#9ca3af;font-variant-numeric:tabular-nums;transition:color .35s ease,opacity .18s ease}
+.status-sub{color:#d1d5db;font-size:13px;margin-top:6px;line-height:1.4;transition:opacity .18s ease}
 .lat-row{display:flex;align-items:baseline;gap:6px;margin-top:2px}
 .lat-big{font-size:36px;font-weight:600;letter-spacing:-.5px;color:#f3f4f6;font-variant-numeric:tabular-nums;line-height:1}
 .lat-unit{font-size:14px;color:#9ca3af;font-weight:400}
@@ -97,6 +97,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;fl
 @keyframes shimmer{0%{left:-50%}50%,100%{left:120%}}
 .scope.full .scope-title{font-size:12px;padding:5px 13px;background:linear-gradient(180deg,#141414 0%,#0d0d0d 100%);-webkit-background-clip:initial;background-clip:initial;-webkit-text-fill-color:#e5e7eb;color:#e5e7eb}
 .scope-summary{font-size:11px;color:#9ca3af;font-variant-numeric:tabular-nums}
+.scope-summary b{transition:color .4s ease}
 .scope-summary b{font-weight:700;margin:0 1px}
 .uptime-chip{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.6px;font-variant-numeric:tabular-nums;background:linear-gradient(180deg,#141414 0%,#0f0f0f 100%);border:1px solid #1f1f1f;transition:border-color .3s ease,box-shadow .3s ease,transform .3s ease}
 .uptime-chip:hover{transform:translateY(-1px)}
@@ -105,7 +106,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;fl
 @keyframes chipBreath{0%,100%{box-shadow:0 0 4px currentColor,0 0 1px currentColor;transform:scale(1)}50%{box-shadow:0 0 7px currentColor,0 0 2px currentColor;transform:scale(1.06)}}
 @keyframes chipPing{0%{transform:scale(.85);opacity:.55}70%{opacity:0}100%{transform:scale(1.7);opacity:0}}
 .uptime-chip .lbl{color:#6b7280;font-weight:600;letter-spacing:1.2px;font-size:9px;text-transform:uppercase}
-.uptime-chip .val{font-weight:700}
+.uptime-chip .val{font-weight:700;transition:color .4s ease}
 .scope-head{align-items:center}
 
 .tile-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:8px 0 10px}
@@ -115,7 +116,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;fl
 .tile:hover::before{opacity:1}
 .tile:hover{transform:translateY(-2px);box-shadow:0 8px 22px -14px rgba(0,0,0,.7)}
 .tile .k{font-size:9px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600}
-.tile .v{font-size:20px;font-weight:700;color:#f3f4f6;font-variant-numeric:tabular-nums;line-height:1.1}
+.tile .v{font-size:20px;font-weight:700;color:#f3f4f6;font-variant-numeric:tabular-nums;line-height:1.1;transition:color .4s ease}
 .tile .s{font-size:10px;color:#6b7280;font-variant-numeric:tabular-nums}
 .ratebar{display:flex;height:4px;border-radius:3px;overflow:hidden;background:#1f1f1f;margin:2px 0 8px}
 .ratebar span{display:block;height:100%;transition:width .8s cubic-bezier(.4,0,.2,1)}
@@ -131,14 +132,68 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;fl
 
 @media(max-width:880px){.tile-row{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:680px){.hero{flex-direction:column}.hero .vsep{height:1px;width:100%}}
+
+/* --- Умная плашка стабильности (top-right toast) --- */
+.stab-toast{position:fixed;top:14px;right:14px;z-index:60;width:300px;max-width:calc(100vw - 28px);font-family:inherit;transition:width .35s cubic-bezier(.16,.84,.44,1)}
+.stab-toast.collapsed{width:auto}
+.stab-card{position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(22,22,22,.93) 0%,rgba(15,15,15,.93) 100%);backdrop-filter:blur(11px);-webkit-backdrop-filter:blur(11px);border:1px solid #2a2a2a;border-radius:13px;padding:13px 15px;box-shadow:0 18px 44px -20px rgba(0,0,0,.85);opacity:1;transform:none;transform-origin:top right;transition:opacity .3s ease,transform .35s cubic-bezier(.16,.84,.44,1),border-color .5s ease}
+.stab-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--stab-col,#9ca3af),transparent);opacity:.75}
+.stab-toast.collapsed .stab-card{opacity:0;transform:translateY(-8px) scale(.96);pointer-events:none;position:absolute;top:0;right:0;width:300px}
+@keyframes stabIn{from{opacity:0;transform:translateY(-12px) scale(.95)}to{opacity:1;transform:none}}
+.stab-chip{display:none;align-items:center;gap:8px;cursor:pointer;background:linear-gradient(180deg,rgba(22,22,22,.93),rgba(15,15,15,.93));backdrop-filter:blur(11px);-webkit-backdrop-filter:blur(11px);border:1px solid #2a2a2a;border-radius:999px;padding:7px 13px 7px 11px;box-shadow:0 12px 28px -18px rgba(0,0,0,.85);transition:border-color .3s ease,transform .2s ease}
+.stab-chip:hover{transform:translateY(-1px);border-color:var(--stab-col,#2a2a2a)}
+.stab-toast.collapsed .stab-chip{display:inline-flex}
+.stab-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--stab-col,#9ca3af);box-shadow:0 0 8px var(--stab-col,#9ca3af);animation:stabPulse 2s cubic-bezier(.45,.05,.55,.95) infinite;transition:background .5s ease}
+@keyframes stabPulse{0%,100%{box-shadow:0 0 5px var(--stab-col);opacity:.92}50%{box-shadow:0 0 14px var(--stab-col),0 0 22px var(--stab-col);opacity:1}}
+.stab-chip-pct{font-size:12px;font-weight:700;color:#e5e7eb;font-variant-numeric:tabular-nums;letter-spacing:.2px}
+.stab-head{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+.stab-level{font-size:13px;font-weight:700;letter-spacing:.2px;color:var(--stab-col,#e5e7eb);flex:1;transition:color .5s ease,opacity .18s ease}
+.stab-headline{font-size:11.5px;line-height:1.4;color:#cbd5e1;margin-bottom:9px;transition:opacity .18s ease}
+.stab-collapse{background:none;border:none;color:#6b7280;font-size:13px;cursor:pointer;padding:2px 4px;line-height:1;font-family:inherit;transition:color .2s ease}
+.stab-collapse:hover{color:#d1d5db}
+.stab-risk{display:flex;align-items:baseline;gap:8px;margin-bottom:9px}
+.stab-pct{font-size:26px;font-weight:700;color:#f3f4f6;font-variant-numeric:tabular-nums;letter-spacing:-.5px;line-height:1}
+.stab-risk-lbl{font-size:10px;color:#9ca3af;line-height:1.25}
+.stab-reasons{display:flex;flex-direction:column;gap:5px}
+.stab-reason{font-size:11px;color:#d1d5db;line-height:1.4;padding-left:13px;position:relative}
+.stab-reason::before{content:'';position:absolute;left:2px;top:6px;width:4px;height:4px;border-radius:50%;background:var(--stab-col,#9ca3af);transition:background .5s ease}
+.stab-reasons{transition:opacity .18s ease}
+.stab-cause{margin-top:9px;font-size:10.5px;line-height:1.45;color:#fcd34d;background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.18);border-radius:8px;padding:7px 9px;transition:opacity .18s ease}
+.stab-toast[data-level="stable"]{--stab-col:#34d399}
+.stab-toast[data-level="watch"]{--stab-col:#fbbf24}
+.stab-toast[data-level="unstable"]{--stab-col:#fb923c}
+.stab-toast[data-level="critical"]{--stab-col:#ef4444}
+.stab-toast[data-level="unknown"]{--stab-col:#9ca3af}
+@media(max-width:680px){.stab-toast{width:calc(100vw - 24px);top:10px;right:12px}.stab-toast.collapsed .stab-card{width:calc(100vw - 24px)}}
 </style>
 </head>
 <body>
 <div class="bg-glow bg-a" id="bgA"></div><div class="bg-glow bg-b" id="bgB"></div><div class="bg-dots bg-1" id="dotA"></div><div class="bg-dots bg-2" id="dotB"></div>
+
+<!-- Умная плашка стабильности (сверху справа). Анализирует API глубже, чем
+     бинарный overall: ловит разрыв «график зелёный ↔ uptime24 низкий», режим
+     сервера, флаппинг, хвост латентности и тип ошибки → честный прогноз риска. -->
+<div id="stabToast" class="stab-toast collapsed" data-level="unknown" aria-live="polite">
+  <div class="stab-chip" id="stabChip" title="Expand stability forecast">
+    <span class="stab-dot"></span><span class="stab-chip-pct" id="stabChipPct">…</span>
+  </div>
+  <div class="stab-card" id="stabCard">
+    <div class="stab-head">
+      <span class="stab-dot"></span>
+      <span class="stab-level" id="stabLevel">Checking…</span>
+      <button class="stab-collapse" id="stabCollapseBtn" title="Collapse" aria-label="Collapse">▸</button>
+    </div>
+    <div class="stab-risk"><span class="stab-pct" id="stabPct">—</span><span class="stab-risk-lbl">chance of error<br>on next request</span></div>
+    <div class="stab-headline" id="stabHeadline"></div>
+    <div class="stab-reasons" id="stabReasons"></div>
+    <div class="stab-cause" id="stabCause" style="display:none"></div>
+  </div>
+</div>
+
 <div class="wrap">
   <header>
     <div class="brand"><span class="led" id="brandLed"></span><span class="g">freemodel</span><span class="d">.dev</span><span class="sep">• live status</span></div>
-    <div class="clock"><span class="dot"></span><span id="clockTime">--:--:--</span><span class="uptime" id="metaSummary">…</span></div>
+    <div class="clock"><span class="dot"></span><span id="clockTime">--:--:--</span><span class="uptime" id="metaSummary">cycle <b id="metaCycle">—</b> · <span id="metaMode">…</span></span></div>
   </header>
 
   <div id="hero" class="hero glow-unknown"><div class="hero-glow-wrap"><div class="hero-glow"></div></div>
@@ -151,7 +206,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;fl
     <div class="hcol right">
       <div class="eyebrow">GATEWAY LATENCY · LAST HOUR</div>
       <div class="lat-row"><span id="latBig" class="lat-big">—</span><span class="lat-unit">ms</span></div>
-      <div id="latMeta" class="lat-meta">p10 — · p90 — · p99 —</div>
+      <div id="latMeta" class="lat-meta">p10 <b id="latP10">—</b>  p90 <b id="latP90">—</b>  p99 <b id="latP99">—</b></div>
     </div>
   </div>
 
@@ -258,6 +313,7 @@ function applyFailure(){
   if(state.data)return;
   var er=document.getElementById('err');er.style.display='block';
   er.textContent='Failed to load data from upstream.';
+  try{__stabOffline();}catch(e){}
 }
 
 function collectSamples(st){
@@ -304,6 +360,7 @@ function render(){
   renderHero(nowMs,s.byHost,s.agg);
   renderMode();
   renderScopes(nowMs,s.byHost,s.agg,hosts,s.upByHost,s.upAgg);
+  updateStability(st);
 }
 
 function renderHero(nowMs,byHost,agg){
@@ -315,13 +372,25 @@ function renderHero(nowMs,byHost,agg){
 
   if(sel==='all'){
     heroLabel='ALL SYSTEMS';
-    if(mode==='confirming'){effective='confirming';word='Confirming…';}
+    if(mode==='confirming'){effective='confirming';word='Confirming';}
     else{effective=overall;word=(st.statusLabels||{})[overall]||STATUS_WORDS[overall]||'—';}
     var lastOk=st.lastOkOverall;var age=lastOk?(nowMs-lastOk):null;
-    if(overall==='ok')subText='All tested models are responding. Last successful check '+fmtAge(age)+'.';
-    else if(overall==='warn')subText='Some models are degraded. Last successful check '+fmtAge(age)+'.';
-    else if(overall==='bad'||overall==='down'){subText='Service is disrupted. Last successful check '+fmtAge(age)+'.';var _err=sanitizeError((st.lastErrorOverall||{}).error||'');if(_err)subText+='  •  '+_err;}
-    else subText='Awaiting probes…';
+    // Текст под статусом: 1:1 как на fm.bluealitas.com — разные формулировки
+    // для confirming / есть-первый-успех / ещё-нет-успехов; warn/bad/down различаются.
+    if(mode==='confirming'){
+      var _rem=(st.healthyConfirmationRemaining!=null)?st.healthyConfirmationRemaining:0;
+      subText='All current probes are passing. Confirming stability with '+_rem+' more successful probe '+(_rem===1?'request':'requests')+' before returning to normal cadence.';
+    } else if(lastOk){
+      var _prefix=(overall==='ok')?'All tested models are responding.'
+                : (overall==='warn')?'Some tested models are degraded.'
+                : 'Tested models are failing.';
+      subText=_prefix+' Last successful check '+fmtAge(age)+'.';
+      if(overall==='bad'||overall==='down'){var _err=sanitizeError((st.lastErrorOverall||{}).error||'');if(_err)subText+='  •  '+_err;}
+    } else {
+      subText=(overall==='down')?'No endpoint is responding. Retrying every minute…'
+            : (overall==='warn')?'Some endpoints are failing. Investigating…'
+            : 'Waiting for first probe to complete.';
+    }
     latPool=agg;
   } else {
     var tgt=null;var tt=st.targets||[];for(var i=0;i<tt.length;i++){if(hostOf(tt[i].url||'')===sel){tgt=tt[i];break;}}
@@ -343,8 +412,8 @@ function renderHero(nowMs,byHost,agg){
 
   var col=statusColor(effective);
   document.getElementById('heroLabel').textContent=heroLabel;
-  var wEl=document.getElementById('statusWord');wEl.textContent=word;wEl.style.color=col;
-  document.getElementById('statusSub').textContent=subText;
+  var wEl=document.getElementById('statusWord');fadeSwapText(wEl,word);wEl.style.color=col;
+  fadeSwapText(document.getElementById('statusSub'),subText);
   var hero=document.getElementById('hero');
   hero.style.setProperty('--glow',col);
   var bgAccents={ok:'rgba(52,211,153,.10)',warn:'rgba(251,191,36,.09)',confirming:'rgba(251,191,36,.09)',bad:'rgba(239,68,68,.12)',down:'rgba(239,68,68,.12)',unknown:'rgba(156,163,175,.05)'};
@@ -374,9 +443,13 @@ function renderHero(nowMs,byHost,agg){
 
   var okLast=latPool.filter(function(s){return s.ok&&s.ts>=nowMs-3600000;}).map(function(s){return s.lat;}).sort(function(a,b){return a-b;});
   function pct(p){if(!okLast.length)return null;if(okLast.length===1)return okLast[0];var i=Math.max(0,Math.min(okLast.length-1,Math.round((p/100)*(okLast.length-1))));return okLast[i];}
-  document.getElementById('latBig').textContent=fmtMs(pct(50));
-  document.getElementById('latMeta').innerHTML=okLast.length?('p10 <b>'+fmtMs(pct(10))+'</b>  p90 <b>'+fmtMs(pct(90))+'</b>  p99 <b>'+fmtMs(pct(99))+'</b>'):'p10 — · p90 — · p99 —';
-  document.getElementById('metaSummary').textContent='cycle '+(st.cycleCount||0)+' · '+(st.mode||'—');
+  var _has=okLast.length>0;
+  countUp(document.getElementById('latBig'),_has?pct(50):null,fmtMs);
+  countUp(document.getElementById('latP10'),_has?pct(10):null,fmtMs);
+  countUp(document.getElementById('latP90'),_has?pct(90):null,fmtMs);
+  countUp(document.getElementById('latP99'),_has?pct(99):null,fmtMs);
+  countUp(document.getElementById('metaCycle'),(st.cycleCount||0));
+  setText(document.getElementById('metaMode'),(st.mode||'—'));
 }
 
 function renderMode(){
@@ -384,7 +457,17 @@ function renderMode(){
   var mode=String(st.mode||'').toLowerCase();
   var cad=Math.max(1,Math.round((st.cadenceMs||0)/60000));
   var col=({healthy:C.ok,rapid:C.warn,confirming:C.warn})[mode]||C.ink_soft;
-  var text=mode?mode+'  ·  probing every '+cad+'m':'—';
+  var text;
+  if(mode==='confirming'){
+    var rem=(st.healthyConfirmationRemaining!=null)?st.healthyConfirmationRemaining:0;
+    text='confirming  ·  probing every '+cad+'m for '+rem+' more ok '+(rem===1?'request':'requests');
+  } else if(mode==='rapid'){
+    text='rapid  ·  probing every '+cad+'m';
+  } else if(mode){
+    text=mode+'  ·  probing every '+cad+'m';
+  } else {
+    text='—';
+  }
   var pill=document.getElementById('modePill');
   document.getElementById('modeText').textContent=text;
   document.getElementById('modeText').style.color=col;
@@ -430,6 +513,8 @@ function createScopeShell(title,compact,fmt){
   var chipVal=document.createElement('span');chipVal.className='val';chipVal.textContent='—';chipEl.appendChild(chipVal);
   head.appendChild(chipEl);
   var summaryEl=document.createElement('span');summaryEl.className='scope-summary';
+  summaryEl.innerHTML='<b class="ss-ok">—</b> ok · <b class="ss-slow">0</b> slow · <b class="ss-fail">0</b> failed · latest <span class="ss-latest">—</span>';
+  var ssOk=summaryEl.querySelector('.ss-ok'),ssSlow=summaryEl.querySelector('.ss-slow'),ssFail=summaryEl.querySelector('.ss-fail'),ssLatest=summaryEl.querySelector('.ss-latest');
   if(compact)head.appendChild(summaryEl);
   root.appendChild(head);
   var tileEls=null;
@@ -454,7 +539,7 @@ function createScopeShell(title,compact,fmt){
   var canvas=document.createElement('canvas');hw.appendChild(canvas);
   var emp=document.createElement('div');emp.className='empty';emp.textContent='no probes yet';emp.style.display='none';hw.appendChild(emp);
   root.appendChild(hw);
-  return {root:root,titleEl:titleEl,fmtEl:fmtEl,summaryEl:summaryEl,chipEl:chipEl,chipDot:chipDot,chipVal:chipVal,tileEls:tileEls,ratebarSpans:spans,canvas:canvas,emptyEl:emp,compact:compact};
+  return {root:root,titleEl:titleEl,fmtEl:fmtEl,summaryEl:summaryEl,ssOk:ssOk,ssSlow:ssSlow,ssFail:ssFail,ssLatest:ssLatest,chipEl:chipEl,chipDot:chipDot,chipVal:chipVal,tileEls:tileEls,ratebarSpans:spans,canvas:canvas,emptyEl:emp,compact:compact};
 }
 
 function updateScope(shell,title,samples,compact,nowMs,explicitUp,animate,fmt){
@@ -468,15 +553,18 @@ function updateScope(shell,title,samples,compact,nowMs,explicitUp,animate,fmt){
   var latest=recent.length?recent[recent.length-1].ts:null;
   var ageStr=latest?fmtAge(nowMs-latest):'—';
   var total=recent.length||1;
-  if(compact&&shell.summaryEl){
-    var okTotal=recent.length-counts.failed;var okPct=recent.length?(okTotal*100/recent.length):0;var okColor=okPct>=85?C.ok:(okPct>=50?C.warn:C.failed);var newHtml='<b style="color:'+okColor+'">'+okTotal+'/'+recent.length+'</b> ok · <b style="color:'+C.slow+'">'+slowAll+'</b> slow · <b style="color:'+C.failed+'">'+counts.failed+'</b> failed · latest '+ageStr;
-    if(shell.summaryEl.innerHTML!==newHtml)shell.summaryEl.innerHTML=newHtml;
+  if(compact&&shell.ssOk){
+    var okTotal=recent.length-counts.failed;var okPct=recent.length?(okTotal*100/recent.length):0;var okColor=okPct>=85?C.ok:(okPct>=50?C.warn:C.failed);var _denS=recent.length;
+    countUp(shell.ssOk,okTotal,function(v){return Math.round(v)+'/'+_denS;});shell.ssOk.style.color=okColor;
+    countUp(shell.ssSlow,slowAll);shell.ssSlow.style.color=C.slow;
+    countUp(shell.ssFail,counts.failed);shell.ssFail.style.color=C.failed;
+    setText(shell.ssLatest,ageStr);
   }
   if(!compact&&shell.tileEls){
     var t=shell.tileEls;
-    var okTotalT=recent.length-counts.failed;var okPctT=recent.length?(okTotalT*100/recent.length):0;var okColorT=okPctT>=85?C.ok:(okPctT>=50?C.warn:C.failed);setText(t.OK.v,okTotalT+'/'+recent.length);t.OK.v.style.color=okColorT;setText(t.OK.s,'OK • '+Math.round(okPctT)+'%');
-    setText(t.SLOW.v,String(slowAll));setText(t.SLOW.s,counts.slow+' slow · '+counts.very_slow+' very');
-    setText(t.FAILED.v,String(counts.failed));setText(t.FAILED.s,recent.length?Math.round(counts.failed/recent.length*100)+'%':'0%');
+    var okTotalT=recent.length-counts.failed;var okPctT=recent.length?(okTotalT*100/recent.length):0;var okColorT=okPctT>=85?C.ok:(okPctT>=50?C.warn:C.failed);var _denT=recent.length;countUp(t.OK.v,okTotalT,function(v){return Math.round(v)+'/'+_denT;});t.OK.v.style.color=okColorT;setText(t.OK.s,'OK • '+Math.round(okPctT)+'%');
+    countUp(t.SLOW.v,slowAll);setText(t.SLOW.s,counts.slow+' slow · '+counts.very_slow+' very');
+    countUp(t.FAILED.v,counts.failed);setText(t.FAILED.s,recent.length?Math.round(counts.failed/recent.length*100)+'%':'0%');
     setText(t.LATEST.v,ageStr);setText(t.LATEST.s,latest?'probe':'');
   }
   var pOk=(counts.ok/total)*100,pSlow=(counts.slow/total)*100,pVery=(counts.very_slow/total)*100,pFail=(counts.failed/total)*100;
@@ -496,13 +584,59 @@ function updateScope(shell,title,samples,compact,nowMs,explicitUp,animate,fmt){
   var _up=_hasUp?explicitUp:(recent.length?(_okT*100/recent.length):0);
   var _upStr=(_hasUp||recent.length)?(_up>=99.95?'100%':_up.toFixed(1)+'%'):'—';
   var _upCol=_up>=85?C.ok:(_up>=50?C.warn:C.failed);
-  if(shell.chipVal){if(shell.chipVal.textContent!==_upStr)shell.chipVal.textContent=_upStr;shell.chipVal.style.color=_upCol;}
+  if(shell.chipVal){
+    if(_hasUp||recent.length)countUp(shell.chipVal,_up,function(v){return v>=99.95?'100%':v.toFixed(1)+'%';});
+    else{shell.chipVal.__cuCur=null;if(shell.chipVal.textContent!=='—')shell.chipVal.textContent='—';}
+    shell.chipVal.style.color=_upCol;
+  }
   if(shell.chipDot){shell.chipDot.style.background=_upCol;shell.chipDot.style.color=_upCol;}
   if(shell.chipEl){shell.chipEl.style.borderColor=_upCol+'33';shell.chipEl.style.boxShadow='0 0 14px -8px '+_upCol;}
   drawHisto(shell.canvas,recent,animate);
 }
 
 function setText(el,t){if(el.textContent!==t)el.textContent=t;}
+
+// CountUp: плавный прокрут числа от предыдущего значения к новому (easeOutCubic).
+// format(v) превращает текущее дробное значение в строку. При null/NaN — без анимации.
+function countUp(el,target,format,dur){
+  if(!el)return;
+  format=format||function(v){return String(Math.round(v));};
+  if(target==null||(typeof target==='number'&&isNaN(target))){
+    if(el.__cuRaf)cancelAnimationFrame(el.__cuRaf);el.__cuRaf=null;el.__cuCur=null;
+    el.textContent=format(target);return;
+  }
+  dur=dur||650;
+  var from=(el.__cuCur!=null)?el.__cuCur:0;
+  if(Math.abs(from-target)<1e-6){
+    if(el.__cuRaf)cancelAnimationFrame(el.__cuRaf);el.__cuRaf=null;el.__cuCur=target;
+    el.textContent=format(target);return;
+  }
+  if(el.__cuRaf)cancelAnimationFrame(el.__cuRaf);
+  var start=0;
+  function loop(now){
+    if(!start)start=now;
+    var t=Math.min(1,(now-start)/dur);
+    var e=1-Math.pow(1-t,3);
+    var v=from+(target-from)*e;
+    el.__cuCur=v;el.textContent=format(v);
+    if(t<1){el.__cuRaf=requestAnimationFrame(loop);}
+    else{el.__cuCur=target;el.textContent=format(target);el.__cuRaf=null;}
+  }
+  el.__cuRaf=requestAnimationFrame(loop);
+}
+// Плавная замена текста: короткий fade-out → подмена → fade-in.
+function fadeSwapText(el,txt,dur){
+  if(!el)return;if(el.__fx===txt)return;el.__fx=txt;
+  dur=dur||170;el.style.opacity='0';
+  if(el.__fxtm)clearTimeout(el.__fxtm);
+  el.__fxtm=setTimeout(function(){el.textContent=txt;el.style.opacity='1';},dur);
+}
+function fadeSwapHTML(el,html,dur){
+  if(!el)return;if(el.__fx===html)return;el.__fx=html;
+  dur=dur||170;el.style.opacity='0';
+  if(el.__fxtm)clearTimeout(el.__fxtm);
+  el.__fxtm=setTimeout(function(){el.innerHTML=html;el.style.opacity='1';},dur);
+}
 
 function drawHistoFrame(canvas,samples,progress){
   if(!canvas)return;
@@ -570,6 +704,175 @@ try{
   var __fmt=new URLSearchParams(location.search).get('fmt');
   if(__fmt){document.title='FMSTATS_'+__fmt;}
 }catch(e){}
+
+// ===========================================================================
+// УМНЫЙ АНАЛИЗ СТАБИЛЬНОСТИ
+// Идея: overall=ok отражает только ПОСЛЕДНИЙ проб. Но в API есть память —
+// uptime24 (истинное 24ч-окно, считает сервер) часто сильно ниже, чем чистый
+// график history48 (он покрывает лишь ~7.5ч в rapid-режиме). Плюс режим
+// сервера, флаппинг (частые ok↔fail), хвост латентности и тип ошибки. Из этого
+// собираем композитный прогноз риска — честнее бинарного статуса источника.
+// ===========================================================================
+function __stabModel(h,uptime24,mode,streak,confReq,p50,p99){
+  // Свежий fail-rate с экспоненциальным весом (последние пробы важнее).
+  var wSum=0,wFail=0;
+  for(var i=0;i<h.length;i++){var age=h.length-1-i;var w=Math.pow(0.92,age);wSum+=w;if(!h[i].ok)wFail+=w;}
+  var recentFail=wSum?wFail/wSum:0;
+  // Флаппинг — число переходов ok<->fail на окне.
+  var flips=0;for(var k=1;k<h.length;k++){if(!!h[k].ok!==!!h[k-1].ok)flips++;}
+  // upFail — доля простоя за 24ч (приор «памяти»).
+  var upFail=(uptime24!=null&&isFinite(uptime24))?Math.max(0,1-uptime24/100):0;
+  var p=0.55*recentFail+0.35*upFail+0.10*Math.min(1,flips/10);
+  // Модификаторы: сам сервер сигналит проблемами / хрупкое восстановление / хвост латентности.
+  if(mode==='rapid')p=p*1.15+0.05;
+  else if(mode==='confirming')p+=0.03;
+  var fragile=(streak!=null&&confReq)&&(streak<confReq*0.5)&&(recentFail>0||upFail>0.1);
+  if(fragile)p+=0.05;
+  if(p50&&p99&&(p99/p50)>3)p+=0.05;
+  p=Math.max(0,Math.min(0.97,p));
+  return {pFail:p,recentFail:recentFail,upFail:upFail,flips:flips,uptime24:uptime24};
+}
+function __stabCause(models){
+  var txt='';
+  models.forEach(function(o){
+    var arr=(o.m.history48||[]).slice(-12);
+    arr.forEach(function(p){if(!p.ok&&p.error)txt+=' '+p.error;});
+    if(o.tgt&&o.tgt.lastError&&o.tgt.lastError.error)txt+=' '+o.tgt.lastError.error;
+  });
+  txt=txt.toLowerCase();
+  if(!txt)return'';
+  if(txt.indexOf('oauth')>=0||txt.indexOf('cooling down')>=0||txt.indexOf('account')>=0)
+    return'Cause: the gateway account pool is exhausted — 503s can happen even under normal load, regardless of your traffic.';
+  if(txt.indexOf('concurrent')>=0)
+    return'Cause: concurrent-request limit on the gateway.';
+  if(txt.indexOf('rate')>=0&&txt.indexOf('limit')>=0)
+    return'Cause: rate limiting on the gateway.';
+  if(txt.indexOf('timeout')>=0||txt.indexOf('timed out')>=0)
+    return'Cause: gateway response timeouts.';
+  if(txt.indexOf('503')>=0||txt.indexOf('502')>=0||txt.indexOf('gateway')>=0||txt.indexOf('unavailable')>=0)
+    return'Cause: gateway errors (502/503).';
+  return'';
+}
+// Варианты «заголовка» под уровнем — для разнообразия. Индекс перевыбирается
+// только при смене ситуации (sig), чтобы текст не мигал каждые 6с.
+var STAB_HEAD={
+  stable:['All clear — the gateway is steady.','Smooth right now — nothing concerning.','Healthy and responding normally.'],
+  watch:['Holding up, but a little shaky.','Mostly fine — worth keeping an eye on.','A slight wobble in the signals.'],
+  unstable:['Bumpy — errors are fairly likely.','Flaky right now — expect occasional failures.','Intermittent trouble in progress.'],
+  critical:['Rough patch — failures are frequent.','Heavy disruption right now.','The gateway is struggling.'],
+  unknown:['Reading the latest probes…']
+};
+function __stabAnalyze(st){
+  var mode=String(st.mode||'').toLowerCase();
+  var streak=st.okProbeStreak,confReq=st.healthyConfirmationRequests;
+  var models=[];
+  (st.targets||[]).forEach(function(t){(t.models||[]).forEach(function(m){if(m.enabled&&!m.removedAt&&(m.history48||[]).length)models.push({tgt:t,m:m});});});
+  if(!models.length)return{level:'unknown',rank:-1,pFail:null,reasons:['No active probes yet.'],cause:''};
+  var worst=null,downCount=0,totalNow=0;
+  models.forEach(function(o){
+    var a=__stabModel(o.m.history48,o.m.uptime24,mode,streak,confReq,o.m.p50,o.m.p99);
+    a.host=hostOf(o.tgt.url||'');
+    if(!worst||a.pFail>worst.pFail)worst=a;
+    var last=o.m.last||o.m.history48[o.m.history48.length-1];
+    totalNow++;if(last&&!last.ok)downCount++;
+  });
+  var overall=String(st.overall||'').toLowerCase();
+  var p=worst.pFail,rank;
+  var allDownNow=(totalNow>0&&downCount===totalNow);
+  if(overall==='down'||allDownNow)rank=3;
+  else if(p>=0.5)rank=3;else if(p>=0.2)rank=2;else if(p>=0.05)rank=1;else rank=0;
+  var level=['stable','watch','unstable','critical'][rank];
+  var reasons=[];
+  if(worst.uptime24!=null&&isFinite(worst.uptime24)&&worst.uptime24<95)
+    reasons.push('Only '+worst.uptime24.toFixed(0)+'% uptime over 24h — extended outages earlier.');
+  if(worst.recentFail>0.02)
+    reasons.push('Recent probe failures (~'+(worst.recentFail*100).toFixed(0)+'%).');
+  if(worst.flips>=4)
+    reasons.push('Service is flapping — frequent ok/fail switches.');
+  if(mode==='rapid')reasons.push('Server escalated to rapid probing — it sees trouble.');
+  else if(mode==='confirming')reasons.push('Server is re-confirming stability after a dip.');
+  if(downCount>0&&downCount<totalNow)reasons.push(downCount+' of '+totalNow+' endpoints not responding right now.');
+  if(allDownNow&&totalNow>0)reasons.push('All endpoints are failing right now.');
+  if(!reasons.length)reasons.push(rank===0?'No failures detected, uptime is healthy.':'Elevated risk from combined signals.');
+  return{level:level,rank:rank,pFail:p,reasons:reasons.slice(0,3),cause:__stabCause(models)};
+}
+
+// everData — был ли хоть один РЕАЛЬНЫЙ снимок данных. Пока его нет (страница
+// грузится, всё серое), плашка НЕ разворачивается — иначе она «вспыхивала» на
+// неизвестном состоянии и сворачивалась до того, как приходили настоящие данные.
+var __STAB={rank:-1,everData:false,timer:null,userCollapsed:false,sig:'',headIdx:0};
+function __stabExpand(){var t=document.getElementById('stabToast');if(t)t.classList.remove('collapsed');}
+function __stabCollapse(){var t=document.getElementById('stabToast');if(t)t.classList.add('collapsed');}
+function __stabSchedule(rank){
+  if(__STAB.timer){clearTimeout(__STAB.timer);__STAB.timer=null;}
+  if(rank>=3)return; // critical не сворачиваем автоматически
+  __STAB.timer=setTimeout(function(){__stabCollapse();},6000);
+}
+function __stabPickHead(level,sig){
+  if(sig!==__STAB.sig){
+    var arr=STAB_HEAD[level]||STAB_HEAD.unknown;
+    __STAB.headIdx=Math.floor(Math.random()*arr.length);
+    __STAB.sig=sig;
+  }
+  var a=STAB_HEAD[level]||STAB_HEAD.unknown;
+  return a[Math.min(__STAB.headIdx,a.length-1)];
+}
+function __stabOffline(){
+  var t=document.getElementById('stabToast');if(!t)return;
+  if(!__STAB.everData){
+    // Данных ещё не было — ждём в свёрнутом чипе, ничего не разворачиваем.
+    t.dataset.level='unknown';
+    fadeSwapText(document.getElementById('stabLevel'),'Checking…');
+    fadeSwapText(document.getElementById('stabHeadline'),'Waiting for the first probe…');
+    countUp(document.getElementById('stabPct'),null);
+    document.getElementById('stabChipPct').textContent='…';
+    fadeSwapHTML(document.getElementById('stabReasons'),'<div class="stab-reason">Connecting to the status source…</div>');
+    document.getElementById('stabCause').style.display='none';
+    return;
+  }
+  // Связь потеряна уже после данных.
+  t.dataset.level='critical';
+  fadeSwapText(document.getElementById('stabLevel'),'Connection lost');
+  fadeSwapText(document.getElementById('stabHeadline'),'Lost contact with the status source.');
+  countUp(document.getElementById('stabPct'),null);
+  document.getElementById('stabChipPct').textContent='!';
+  fadeSwapHTML(document.getElementById('stabReasons'),'<div class="stab-reason">Could not fetch data from upstream.</div>');
+  document.getElementById('stabCause').style.display='none';
+  if(__STAB.rank<3){__STAB.userCollapsed=false;__stabExpand();}
+  __STAB.rank=3;
+}
+function updateStability(st){
+  var a=__stabAnalyze(st);
+  var t=document.getElementById('stabToast');if(!t)return;
+  if(a.rank<0){__stabOffline();return;} // нет активных проб — трактуем как загрузку
+  t.dataset.level=a.level;
+  var words={stable:'Stable',watch:'Unsteady',unstable:'Unstable',critical:'Disrupted'};
+  fadeSwapText(document.getElementById('stabLevel'),words[a.level]||'—');
+  // Числа — CountUp (плавный прокрут).
+  var pv=(a.pFail!=null)?a.pFail*100:null;
+  countUp(document.getElementById('stabPct'),pv,function(v){return'≈'+Math.round(v)+'%';});
+  countUp(document.getElementById('stabChipPct'),pv,function(v){return Math.round(v)+'%';});
+  // Заголовок с разнообразием + причины — плавная замена текста.
+  var sig=a.level+'|'+a.reasons.join('§');
+  fadeSwapText(document.getElementById('stabHeadline'),__stabPickHead(a.level,sig));
+  var rh=a.reasons.map(function(r){return'<div class="stab-reason">'+r+'</div>';}).join('');
+  fadeSwapHTML(document.getElementById('stabReasons'),rh);
+  var cEl=document.getElementById('stabCause');
+  if(a.cause){cEl.style.display='block';fadeSwapText(cEl,a.cause);}
+  else cEl.style.display='none';
+  // Раскрытие: на ПЕРВОМ реальном показе данных и при УХУДШЕНИИ уровня.
+  var worsened=__STAB.everData&&(a.rank>__STAB.rank);
+  if(!__STAB.everData){__STAB.everData=true;__STAB.userCollapsed=false;__stabExpand();__stabSchedule(a.rank);}
+  else if(worsened){__STAB.userCollapsed=false;__stabExpand();__stabSchedule(a.rank);}
+  else if(a.rank>=3&&__STAB.timer){clearTimeout(__STAB.timer);__STAB.timer=null;}
+  __STAB.rank=a.rank;
+}
+(function(){
+  var chip=document.getElementById('stabChip');
+  var btn=document.getElementById('stabCollapseBtn');
+  if(chip)chip.addEventListener('click',function(){__stabExpand();if(__STAB.timer){clearTimeout(__STAB.timer);__STAB.timer=null;}});
+  if(btn)btn.addEventListener('click',function(){__STAB.userCollapsed=true;__stabCollapse();});
+})();
 
 // --- Автономная загрузка данных напрямую из API (без Python) ----------------
 // Окно открывается в установленном браузере (app-режим) и само опрашивает
