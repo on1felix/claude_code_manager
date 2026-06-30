@@ -360,7 +360,7 @@ function render(){
   renderHero(nowMs,s.byHost,s.agg);
   renderMode();
   renderScopes(nowMs,s.byHost,s.agg,hosts,s.upByHost,s.upAgg);
-  updateStability(st);
+  updateStability(st,state.scope);
 }
 
 function renderHero(nowMs,byHost,agg){
@@ -762,12 +762,17 @@ var STAB_HEAD={
   critical:['Rough patch — failures are frequent.','Heavy disruption right now.','The gateway is struggling.'],
   unknown:['Reading the latest probes…']
 };
-function __stabAnalyze(st){
+function __stabAnalyze(st,scope){
   var mode=String(st.mode||'').toLowerCase();
   var streak=st.okProbeStreak,confReq=st.healthyConfirmationRequests;
+  var isSingle=!!(scope&&scope!=='all');
   var models=[];
-  (st.targets||[]).forEach(function(t){(t.models||[]).forEach(function(m){if(m.enabled&&!m.removedAt&&(m.history48||[]).length)models.push({tgt:t,m:m});});});
-  if(!models.length)return{level:'unknown',rank:-1,pFail:null,reasons:['No active probes yet.'],cause:''};
+  (st.targets||[]).forEach(function(t){
+    var h=hostOf(t.url||'');
+    if(isSingle&&h!==scope)return;
+    (t.models||[]).forEach(function(m){if(m.enabled&&!m.removedAt&&(m.history48||[]).length)models.push({tgt:t,m:m});});
+  });
+  if(!models.length)return{level:'unknown',rank:-1,pFail:null,reasons:[isSingle?'No active probes on this endpoint.':'No active probes yet.'],cause:''};
   var worst=null,downCount=0,totalNow=0;
   models.forEach(function(o){
     var a=__stabModel(o.m.history48,o.m.uptime24,mode,streak,confReq,o.m.p50,o.m.p99);
@@ -779,7 +784,9 @@ function __stabAnalyze(st){
   var overall=String(st.overall||'').toLowerCase();
   var p=worst.pFail,rank;
   var allDownNow=(totalNow>0&&downCount===totalNow);
-  if(overall==='down'||allDownNow)rank=3;
+  // Глобальный overall='down' имеет смысл только для 'all'. На отдельном
+  // эндпоинте смотрим только его собственные пробы.
+  if((!isSingle&&overall==='down')||allDownNow)rank=3;
   else if(p>=0.5)rank=3;else if(p>=0.2)rank=2;else if(p>=0.05)rank=1;else rank=0;
   var level=['stable','watch','unstable','critical'][rank];
   var reasons=[];
@@ -791,16 +798,21 @@ function __stabAnalyze(st){
     reasons.push('Service is flapping — frequent ok/fail switches.');
   if(mode==='rapid')reasons.push('Server escalated to rapid probing — it sees trouble.');
   else if(mode==='confirming')reasons.push('Server is re-confirming stability after a dip.');
-  if(downCount>0&&downCount<totalNow)reasons.push(downCount+' of '+totalNow+' endpoints not responding right now.');
-  if(allDownNow&&totalNow>0)reasons.push('All endpoints are failing right now.');
+  if(isSingle){
+    if(allDownNow&&totalNow>0)reasons.push('This endpoint is not responding right now.');
+    else if(downCount>0)reasons.push(downCount+' of '+totalNow+' models on this endpoint not responding right now.');
+  } else {
+    if(downCount>0&&downCount<totalNow)reasons.push(downCount+' of '+totalNow+' endpoints not responding right now.');
+    if(allDownNow&&totalNow>0)reasons.push('All endpoints are failing right now.');
+  }
   if(!reasons.length)reasons.push(rank===0?'No failures detected, uptime is healthy.':'Elevated risk from combined signals.');
-  return{level:level,rank:rank,pFail:p,reasons:reasons.slice(0,3),cause:__stabCause(models)};
+  return{level:level,rank:rank,pFail:p,reasons:reasons.slice(0,3),cause:__stabCause(models),scope:scope||'all'};
 }
 
 // everData — был ли хоть один РЕАЛЬНЫЙ снимок данных. Пока его нет (страница
 // грузится, всё серое), плашка НЕ разворачивается — иначе она «вспыхивала» на
 // неизвестном состоянии и сворачивалась до того, как приходили настоящие данные.
-var __STAB={rank:-1,everData:false,timer:null,userCollapsed:false,sig:'',headIdx:0};
+var __STAB={rank:-1,everData:false,timer:null,userCollapsed:false,sig:'',headIdx:0,scope:null};
 function __stabExpand(){var t=document.getElementById('stabToast');if(t)t.classList.remove('collapsed');}
 function __stabCollapse(){var t=document.getElementById('stabToast');if(t)t.classList.add('collapsed');}
 function __stabSchedule(rank){
@@ -841,31 +853,36 @@ function __stabOffline(){
   if(__STAB.rank<3){__STAB.userCollapsed=false;__stabExpand();}
   __STAB.rank=3;
 }
-function updateStability(st){
-  var a=__stabAnalyze(st);
+function updateStability(st,scope){
+  var a=__stabAnalyze(st,scope);
   var t=document.getElementById('stabToast');if(!t)return;
   if(a.rank<0){__stabOffline();return;} // нет активных проб — трактуем как загрузку
   t.dataset.level=a.level;
+  // Уровень + контекст scope в верхней строке плашки.
   var words={stable:'Stable',watch:'Unsteady',unstable:'Unstable',critical:'Disrupted'};
-  fadeSwapText(document.getElementById('stabLevel'),words[a.level]||'—');
+  var levelText=words[a.level]||'—';
+  if(a.scope&&a.scope!=='all')levelText+='  ·  '+a.scope;
+  fadeSwapText(document.getElementById('stabLevel'),levelText);
   // Числа — CountUp (плавный прокрут).
   var pv=(a.pFail!=null)?a.pFail*100:null;
   countUp(document.getElementById('stabPct'),pv,function(v){return'≈'+Math.round(v)+'%';});
   countUp(document.getElementById('stabChipPct'),pv,function(v){return Math.round(v)+'%';});
   // Заголовок с разнообразием + причины — плавная замена текста.
-  var sig=a.level+'|'+a.reasons.join('§');
+  var sig=a.scope+'|'+a.level+'|'+a.reasons.join('§');
   fadeSwapText(document.getElementById('stabHeadline'),__stabPickHead(a.level,sig));
   var rh=a.reasons.map(function(r){return'<div class="stab-reason">'+r+'</div>';}).join('');
   fadeSwapHTML(document.getElementById('stabReasons'),rh);
   var cEl=document.getElementById('stabCause');
   if(a.cause){cEl.style.display='block';fadeSwapText(cEl,a.cause);}
   else cEl.style.display='none';
-  // Раскрытие: на ПЕРВОМ реальном показе данных и при УХУДШЕНИИ уровня.
+  // Раскрытие: на ПЕРВОМ реальном показе данных, при УХУДШЕНИИ уровня
+  // ИЛИ при переключении пользователем scope (новый контекст — стоит показать).
   var worsened=__STAB.everData&&(a.rank>__STAB.rank);
+  var scopeChanged=__STAB.everData&&(__STAB.scope!==a.scope);
   if(!__STAB.everData){__STAB.everData=true;__STAB.userCollapsed=false;__stabExpand();__stabSchedule(a.rank);}
-  else if(worsened){__STAB.userCollapsed=false;__stabExpand();__stabSchedule(a.rank);}
+  else if(worsened||scopeChanged){__STAB.userCollapsed=false;__stabExpand();__stabSchedule(a.rank);}
   else if(a.rank>=3&&__STAB.timer){clearTimeout(__STAB.timer);__STAB.timer=null;}
-  __STAB.rank=a.rank;
+  __STAB.rank=a.rank;__STAB.scope=a.scope;
 }
 (function(){
   var chip=document.getElementById('stabChip');
