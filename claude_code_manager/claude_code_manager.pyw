@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.6.5"  # Для обновлений
+APP_VERSION = "5.6.6"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -334,9 +334,6 @@ TRANSLATIONS = {
     "Claude Code обновлён ✓": "Claude Code updated ✓",
     "Claude Code установлен ✓": "Claude Code installed ✓",
     # ── баннеры
-    "Fable 5 временно недоступна": "Fable 5 temporarily unavailable",
-    "Модель заблокирована\nправительством США": "Model blocked\nby the US government",
-    "Источник: официальное заявление правительства США": "Source: official US government statement",
     "Запуск без прав администратора": "Running without administrator rights",
     "Рекомендуется запустить\nот имени администратора": "Recommended to run\nas administrator",
     # ── freemodel dialog
@@ -444,26 +441,25 @@ TRANSLATIONS = {
     "Не удалось получить /api/status. Повторим через несколько секунд.":
         "Failed to fetch /api/status. We'll retry in a few seconds.",
     # ── Fable 5
-    "По официальному заявлению правительства США, доступ\n"
-    "к модели Fable 5 временно приостановлен на территории\n"
-    "всех юрисдикций.\n\n"
-    "Согласно решению, Fable 5 признана настолько мощной,\n"
-    "что — по словам представителей правительства — способна\n"
-    "взломать защищённые системы Пентагона. На этом основании\n"
-    "модель отнесена к технологиям двойного назначения\n"
-    "и временно изъята из публичного оборота.\n\n"
-    "Доступ будет восстановлен после завершения проверки\n"
-    "и установки регулирующих ограничений Anthropic.":
-        "By official statement of the US government, access to\n"
-        "the Fable 5 model is temporarily suspended in every\n"
-        "jurisdiction.\n\n"
-        "According to the ruling, Fable 5 is considered so powerful\n"
-        "that — in the words of government officials — it is capable\n"
-        "of breaking into the Pentagon's secured systems. On that\n"
-        "basis the model is classified as a dual-use technology and\n"
-        "withdrawn from public circulation.\n\n"
-        "Access will be restored once Anthropic completes the review\n"
-        "and installs the regulating restrictions.",
+    "Модель высшего класса": "Top-tier model",
+    "Fable 5 — самая мощная модель Claude.\n\n"
+    "При использовании /effort High одна генерация может расходовать\n"
+    "до 15% вашего дневного лимита.\n\n"
+    "Fable 5 на Medium эквивалентна Opus 4.8 на xHigh/Max\n"
+    "по затратам (~5%), но при этом обладает примерно в 2 раза\n"
+    "большей мощностью.\n\n"
+    "Используйте её для самых сложных задач, когда другие модели\n"
+    "не справляются.":
+        "Fable 5 is the most powerful Claude model.\n\n"
+        "When using /effort High, a single generation can consume\n"
+        "up to 15% of your daily limit.\n\n"
+        "Fable 5 on Medium is equivalent to Opus 4.8 on xHigh/Max\n"
+        "in cost (~5%), but has approximately 2x\n"
+        "the power.\n\n"
+        "Use it for the most complex tasks when other models\n"
+        "can't handle them.",
+    "Выпущена Anthropic · 09 июня 2026": "Released by Anthropic · June 09, 2026",
+    "Продолжить": "Continue",
     # ── Admin warning
     "Сейчас приложение работает в обычном режиме и часть\n"
     "операций может завершаться ошибкой PermissionDenied.\n\n"
@@ -3875,7 +3871,7 @@ class ConfirmDeleteDialog(QDialog):
 # ============================================================
 
 class Fable5WarningDialog(QDialog):
-    """Сообщение о блокировке модели Fable 5 правительством США."""
+    """Предупреждение о модели Fable 5 — модель высшего класса."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
@@ -3892,7 +3888,7 @@ class Fable5WarningDialog(QDialog):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 rgba(28, 12, 12, 0.99),
                     stop:1 rgba(20, 8, 8, 0.99));
-                border: 2px solid rgba(235, 60, 60, 0.75);
+                border: 2px solid rgba(235, 90, 90, 0.6);
                 border-radius: 18px;
             }
         """)
@@ -3901,37 +3897,19 @@ class Fable5WarningDialog(QDialog):
         layout.setContentsMargins(32, 26, 32, 26)
         layout.setSpacing(12)
 
-        # Верхняя плашка-заголовок
-        top_banner = QLabel(tr("Fable 5 временно недоступна"))
-        top_banner.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        top_banner.setStyleSheet("""
-            QLabel {
-                color: rgb(255, 220, 220);
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(180, 30, 30, 0.55),
-                    stop:1 rgba(140, 20, 20, 0.55));
-                border: 1px solid rgba(255, 100, 100, 0.45);
-                border-radius: 8px;
-                padding: 7px 12px;
-                letter-spacing: 0.5px;
-            }
-        """)
-        top_banner.setAlignment(Qt.AlignCenter)
-        layout.addWidget(top_banner)
-
-        # Иконка — замок
-        icon_label = QLabel("🔒")
+        # Иконка — огонь
+        icon_label = QLabel("🔥")
         icon_label.setFont(QFont("Segoe UI Emoji", 38))
         icon_label.setStyleSheet("background: transparent; border: none;")
         icon_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(icon_label)
 
         # Главный заголовок
-        title_label = QLabel(tr("Модель заблокирована\nправительством США"))
+        title_label = QLabel(tr("Модель высшего класса"))
         title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title_label.setStyleSheet("""
             QLabel {
-                color: rgb(245, 95, 95);
+                color: rgb(235, 110, 110);
                 background: transparent;
                 border: none;
             }
@@ -3942,21 +3920,19 @@ class Fable5WarningDialog(QDialog):
         # Разделитель
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: rgba(235, 60, 60, 0.3); background: rgba(235, 60, 60, 0.3); border: none; max-height: 1px;")
+        sep.setStyleSheet("color: rgba(235, 90, 90, 0.3); background: rgba(235, 90, 90, 0.3); border: none; max-height: 1px;")
         layout.addWidget(sep)
 
         # Основное описание
         desc_label = QLabel(tr(
-            "По официальному заявлению правительства США, доступ\n"
-            "к модели Fable 5 временно приостановлен на территории\n"
-            "всех юрисдикций.\n\n"
-            "Согласно решению, Fable 5 признана настолько мощной,\n"
-            "что — по словам представителей правительства — способна\n"
-            "  зломать защищённые системы Пентагона. На этом основании\n"
-            "модель отнесена к технологиям двойного назначения\n"
-            "и временно изъята из публичного оборота.\n\n"
-            "Доступ будет восстановлен после завершения проверки\n"
-            "и установки регулирующих ограничений Anthropic."
+            "Fable 5 — самая мощная модель Claude.\n\n"
+            "При использовании /effort High одна генерация может расходовать\n"
+            "до 15% вашего дневного лимита.\n\n"
+            "Fable 5 на Medium эквивалентна Opus 4.8 на xHigh/Max\n"
+            "по затратам (~5%), но при этом обладает примерно в 2 раза\n"
+            "большей мощностью.\n\n"
+            "Используйте её для самых сложных задач, когда другие модели\n"
+            "не справляются."
         ))
         desc_label.setFont(QFont("Segoe UI", 10))
         desc_label.setStyleSheet("""
@@ -3970,40 +3946,46 @@ class Fable5WarningDialog(QDialog):
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
 
-        # Плашка-источник
-        source_label = QLabel(tr("Источник: официальное заявление правительства США"))
-        source_label.setFont(QFont("Segoe UI", 9))
-        source_label.setStyleSheet("""
+        # Плашка с датой релиза
+        release_label = QLabel(tr("Выпущена Anthropic · 09 июня 2026"))
+        release_label.setFont(QFont("Segoe UI", 9))
+        release_label.setStyleSheet("""
             QLabel {
-                color: rgba(235, 90, 90, 0.85);
-                background: rgba(235, 60, 60, 0.1);
-                border: 1px solid rgba(235, 60, 60, 0.28);
+                color: rgba(235, 110, 110, 0.85);
+                background: rgba(235, 90, 90, 0.1);
+                border: 1px solid rgba(235, 90, 90, 0.28);
                 border-radius: 6px;
                 padding: 6px 12px;
             }
         """)
-        source_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(source_label)
+        release_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(release_label)
 
         layout.addSpacing(4)
 
-        # Кнопка OK — не на всю ширину, по центру
+        # Кнопки
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_ok = GlowDialogButton(tr("Понятно"),
-                                  base_rgb=(235, 70, 70),
-                                  hover_rgb=(245, 100, 100))
+        btn_cancel = GlowDialogButton(tr("Отмена"),
+                                      base_rgb=(90, 90, 90),
+                                      hover_rgb=(120, 120, 120))
+        btn_cancel.clicked.connect(self.reject)
+        btn_ok = GlowDialogButton(tr("Продолжить"),
+                                  base_rgb=(235, 90, 90),
+                                  hover_rgb=(235, 110, 110))
         btn_ok.clicked.connect(self.accept)
         btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        btn_row.addSpacing(12)
         btn_row.addWidget(btn_ok)
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
         main_layout.addWidget(container)
         self.setLayout(main_layout)
-        self.setFixedWidth(450)
+        self.setFixedWidth(480)
 
-        # Анимация появления через windowOpacity (не конфликтует с дочерними виджетами)
+        # Анимация появления
         self.setWindowOpacity(0.0)
         self.fade_in = QPropertyAnimation(self, b"windowOpacity")
         self.fade_in.setDuration(220)
@@ -5264,12 +5246,13 @@ class CustomTokenDialog(QDialog):
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
-        models = ["Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Sonnet 4"]
+        models = ["Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6", "Sonnet 4"]
         self.model_combo.addItems(models)
         # Цвета для каждой модели (от зелёного к красному)
         _sd_model_colors = {
             "Sonnet 4":     QColor(120, 220, 120),
-            "Sonnet 4.6":   QColor(100, 230, 100),
+            "Sonnet 4.6":   QColor(110, 240, 110),
+            "Sonnet 5":     QColor(100, 230, 100),
             "Opus 4.6":     QColor(230, 220, 130),
             "Opus 4.7":     QColor(235, 180, 110),
             "Opus 4.8":     QColor(235, 150, 130),
@@ -5278,20 +5261,13 @@ class CustomTokenDialog(QDialog):
         for i in range(self.model_combo.count()):
             txt = self.model_combo.itemText(i)
             if txt in _sd_model_colors:
-                if txt == "Fable 5":
-                    # Затемнённый красный — модель видно, но она помечена как недоступная
-                    c = _sd_model_colors[txt]
-                    dim = QColor(int(c.red() * 0.55), int(c.green() * 0.55), int(c.blue() * 0.55))
-                    self.model_combo.setItemData(i, dim, Qt.ForegroundRole)
-                else:
-                    self.model_combo.setItemData(i, _sd_model_colors[txt], Qt.ForegroundRole)
+                self.model_combo.setItemData(i, _sd_model_colors[txt], Qt.ForegroundRole)
             pass
-        # Fable 5 заблокирована правительством США — нельзя выбрать
-        self._fable5_index = models.index("Fable 5") if "Fable 5" in models else -1
         # Маппинг старых сохранённых значений на новые метки
         model_remap = {
             "default (claude-opus-4-8)": "Opus 4.8",
             "Opus 4.8 (default)": "Opus 4.8",
+            "claude-sonnet-5": "Sonnet 5",
             "claude-sonnet-4-6 (/model → 2)": "Sonnet 4.6",
             "claude-sonnet-4-6": "Sonnet 4.6",
             "claude-opus-4-7": "Opus 4.7",
@@ -5300,12 +5276,8 @@ class CustomTokenDialog(QDialog):
         }
         saved_model = settings.get("custom_model", "Opus 4.8")
         saved_model = model_remap.get(saved_model, saved_model)
-        if saved_model == "Fable 5":
-            saved_model = "Opus 4.8"
         if saved_model in models:
             self.model_combo.setCurrentText(saved_model)
-        self._last_valid_model = self.model_combo.currentText()
-        self.model_combo.activated.connect(self._on_model_activated)
         layout.addWidget(self.model_combo)
 
         # Кнопки
@@ -5385,19 +5357,6 @@ class CustomTokenDialog(QDialog):
             self.settings["custom_base_urls"] = list(self.base_urls)
             save_settings(self.settings)
 
-    def _on_model_activated(self, idx):
-        """Блокирует выбор Fable 5 и показывает окно о блокировке."""
-        if idx == self._fable5_index:
-            # Откатываем на предыдущее валидное значение
-            prev = self._last_valid_model if self._last_valid_model != "Fable 5" else "Opus 4.8"
-            self.model_combo.blockSignals(True)
-            self.model_combo.setCurrentText(prev)
-            self.model_combo.blockSignals(False)
-            dlg = Fable5WarningDialog(self)
-            dlg.exec()
-            return
-        self._last_valid_model = self.model_combo.itemText(idx)
-
     def save_settings(self):
         """Сохраняет настройки"""
         api_key = self.key_input.text().strip()
@@ -5406,8 +5365,6 @@ class CustomTokenDialog(QDialog):
             return
 
         chosen_model = self.model_combo.currentText()
-        if chosen_model == "Fable 5":
-            chosen_model = "Opus 4.8"
 
         self.settings["custom_api_key"] = api_key
         self.settings["custom_base_url"] = self.url_combo.currentText()
@@ -7722,12 +7679,13 @@ class ClaudeManager(QMainWindow):
         self.fm_model_combo = PickerComboBox()
         self.fm_model_combo.setFont(QFont("Segoe UI", 9))
         self.fm_model_combo.setMaxVisibleItems(4)
-        fm_models = ["Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6"]
+        fm_models = ["Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6"]
         self.fm_model_combo.addItems(fm_models)
         # Цвета для каждой модели (от зелёного к красному — по «дороговизне»)
         model_colors = {
             "Sonnet 4":     QColor(120, 220, 120),  # зелёный
-            "Sonnet 4.6":   QColor(180, 235, 150),  # светло-зелёный
+            "Sonnet 4.6":   QColor(190, 240, 160),  # светло-зелёный (чуть зеленее)
+            "Sonnet 5":     QColor(180, 235, 150),  # светло-зелёный (старый цвет 4.6)
             "Opus 4.6":     QColor(230, 220, 130),  # слегка жёлтый
             "Opus 4.7":     QColor(235, 180, 110),  # жёлтый с переходом в красноватый
             "Opus 4.8":     QColor(235, 150, 130),  # слабо красноватый
@@ -7745,13 +7703,12 @@ class ClaudeManager(QMainWindow):
             colors=model_colors,
             tooltips=model_tooltips,
             title=tr("Выбор модели"),
-            disabled=["Fable 5"],
         )
-        self.fm_model_combo.blockedPicked.connect(self._fm_show_fable5_blocked)
         saved_m = self.settings.get("custom_model", "Opus 4.8")
         remap = {
             "default (claude-opus-4-8)": "Opus 4.8",
             "Opus 4.8 (default)": "Opus 4.8",
+            "claude-sonnet-5": "Sonnet 5",
             "claude-sonnet-4-6 (/model → 2)": "Sonnet 4.6",
             "claude-sonnet-4-6": "Sonnet 4.6",
             "claude-opus-4-7": "Opus 4.7",
@@ -7759,17 +7716,14 @@ class ClaudeManager(QMainWindow):
             "claude-fable-5": "Fable 5",
         }
         saved_m = remap.get(saved_m, saved_m)
-        # Fable 5 заблокирована — нельзя оставлять её как сохранённую выбранную модель
-        if saved_m == "Fable 5":
-            saved_m = "Opus 4.8"
-            self.settings["custom_model"] = saved_m
-            save_settings(self.settings)
         if saved_m in fm_models:
             self.fm_model_combo.setCurrentText(saved_m)
         # Начальный цвет текста и рамки под выбранную модель
         if saved_m in model_colors:
             self.fm_model_combo.setTextColor(model_colors[saved_m])
             self.fm_model_combo.setAccentColor(model_colors[saved_m])
+        # Запомнить исходную модель для отката при отмене предупреждения
+        self._fm_prev_model = saved_m if saved_m in fm_models else "Opus 4.8"
         self.fm_model_combo.currentTextChanged.connect(self._fm_model_changed)
         model_row.addWidget(self.fm_model_combo, 1)
 
@@ -8483,9 +8437,20 @@ class ClaudeManager(QMainWindow):
 
     def _fm_model_changed(self, new_model):
         """Сохраняет выбранную модель FreeModel"""
-        # Fable 5 заблокирована — её нельзя ни выбрать, ни сохранить
+        # Показать предупреждение при выборе Fable 5
         if new_model == "Fable 5":
-            return
+            dlg = Fable5WarningDialog(self)
+            if dlg.exec() != QDialog.Accepted:
+                # Пользователь отменил — откатить на ту модель, с которой переключались
+                prev = getattr(self, "_fm_prev_model", "Opus 4.8")
+                self.fm_model_combo.blockSignals(True)
+                self.fm_model_combo.setCurrentText(prev)
+                self.fm_model_combo.blockSignals(False)
+                # Вернуть цвет предыдущей модели
+                if hasattr(self, "_fm_model_colors") and prev in self._fm_model_colors:
+                    self.fm_model_combo.setTextColor(self._fm_model_colors[prev])
+                    self.fm_model_combo.setAccentColor(self._fm_model_colors[prev])
+                return
         if new_model:
             self.settings["custom_model"] = new_model
             save_settings(self.settings)
@@ -8494,11 +8459,9 @@ class ClaudeManager(QMainWindow):
             if hasattr(self, "_fm_model_colors") and new_model in self._fm_model_colors:
                 self.fm_model_combo.setTextColor(self._fm_model_colors[new_model])
                 self.fm_model_combo.setAccentColor(self._fm_model_colors[new_model])
-
-    def _fm_show_fable5_blocked(self, _model_name):
-        """Показывает окно блокировки Fable 5 при попытке выбора."""
-        dlg = Fable5WarningDialog(self)
-        dlg.exec()
+        # Обновить «предыдущую» модель для будущих откатов
+        if new_model:
+            self._fm_prev_model = new_model
 
     def _on_effort_changed(self, effort):
         """Сохраняет выбранный reasoning effort, пишет в ~/.claude/settings.json и обновляет цвет рамки"""
@@ -8699,6 +8662,7 @@ class ClaudeManager(QMainWindow):
         "Opus 4.8": "claude-opus-4-8",
         "Opus 4.8 (default)": "claude-opus-4-8",
         "Fable 5": "claude-fable-5",
+        "Sonnet 5": "claude-sonnet-5",
         "Sonnet 4.6": "claude-sonnet-4-6",
         "Sonnet 4": "claude-sonnet-4",
         "Opus 4.7": "claude-opus-4-7",
@@ -9060,7 +9024,7 @@ class ClaudeManager(QMainWindow):
             self._perform_status_line_remove()
 
         else:
-            self.log("Д  йствие со status line отменено", "info")
+            self.log(tr("Действие со status line отменено"), "info")
 
     def _confirm_statusline_action(self, title, message, detail, confirm_text, icon, icon_color):
         """Маленькое окно подтверждения «вы действительно хотите…»."""
