@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.6.8"  # Для обновлений
+APP_VERSION = "5.6.9"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -299,13 +299,17 @@ def _new_key_id():
     return f"k{int(time.time() * 1000)}{random.randint(1000, 9999)}"
 
 def key_color_state(key):
-    """green / red / yellow — визуальное состояние ключа."""
-    if not key.get("enabled", False):
-        return "red"
-    activated = key.get("activated_at", 0) or 0
-    if activated and (time.time() - activated) >= KEY_REACTIVATE_SECONDS:
+    """green / red / yellow — визуальное состояние ключа.
+    - ON  (enabled=True)  → всегда зелёный.
+    - OFF (enabled=False) → красный сразу после выключения;
+      через 5 часов после выключения → жёлтый (напоминание/подтверждение).
+    """
+    if key.get("enabled", False):
+        return "green"
+    disabled = key.get("disabled_at", 0) or 0
+    if disabled and (time.time() - disabled) >= KEY_REACTIVATE_SECONDS:
         return "yellow"
-    return "green"
+    return "red"
 
 def first_active_key(settings):
     """Активный ключ, который реально пойдёт в ANTHROPIC_API_KEY.
@@ -5302,8 +5306,9 @@ class KeyToggle(QWidget):
     """Переключатель состояния ключа OFF / ON — карбоновая копия LanguageToggle.
 
     OFF (слева) = красный (ключ выключен), ON (справа) = зелёный (активен).
-    Клик по любой стороне эмитит toggled(bool); по стороне ON эмитит всегда —
-    это позволяет повторно подтвердить «пожелтевший» ключ (сброс 5ч-таймера)."""
+    Клик эмитит toggled(bool) ТОЛЬКО если состояние реально меняется —
+    т.е. клик по стороне, на которой ползунок уже стоит, ничего не делает
+    (без «моргания»). Подтвердить «пожелтевший» ключ можно, кликнув по ON."""
     toggled = Signal(bool)  # True = ON/enabled
 
     _OFF_COL = (224, 90, 90)   # красный
@@ -5357,6 +5362,10 @@ class KeyToggle(QWidget):
 
     def mousePressEvent(self, event):
         new_on = event.pos().x() >= self.width() / 2
+        if new_on == self._on:
+            # Клик по стороне, на которой ползунок уже стоит — игнорируем,
+            # чтобы не было «моргания» и лишних toggled-событий.
+            return
         self._on = new_on
         self._target = 1.0 if new_on else 0.0
         self.toggled.emit(new_on)
@@ -5491,7 +5500,9 @@ class KeyCard(QFrame):
         lay.setContentsMargins(14, 8, 12, 8)
         lay.setSpacing(10)
 
-        self.toggle = KeyToggle(on=(state != "red"))
+        # Ползунок в позиции ON только когда ключ действительно активен (зелёный).
+        # Жёлтый и красный — оба означают OFF, ползунок слева.
+        self.toggle = KeyToggle(on=(state == "green"))
         self.toggle.toggled.connect(self._on_toggle)
         lay.addWidget(self.toggle, 0, Qt.AlignVCenter)
 
@@ -5539,9 +5550,11 @@ class KeyCard(QFrame):
     def _on_toggle(self, on):
         if on:
             self.key["enabled"] = True
-            self.key["activated_at"] = time.time()  # (пере)активация сбрасывает 5ч-таймер
+            self.key["activated_at"] = time.time()
+            self.key["disabled_at"] = 0  # ключ включён — сбрасываем таймер выключения
         else:
             self.key["enabled"] = False
+            self.key["disabled_at"] = time.time()  # старт 5ч-таймера до пожелтения
         self._retarget()
         self._update_status_text()
         self.toggled.emit(self.key.get("id", ""), on)
