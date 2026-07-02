@@ -14,19 +14,19 @@
 AUTHOR_NAME = "on1felix"
 AUTHOR_DISCORD = "on1felix"
 AUTHOR_GITHUB = "https://github.com/on1felix/claude_code_manager"
-import sys, subprocess, os, threading, time, json, socket, math, ssl, random
+import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
                                QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy)
-from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize
+from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize, QEvent
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics
 from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.6.6"  # Для обновлений
+APP_VERSION = "5.6.7"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -189,26 +189,49 @@ def ensure_settings_dir():
             pass
 
 def load_settings():
-    try:
-        if os.path.exists(SETTINGS_FILE):
+    if os.path.exists(SETTINGS_FILE):
+        try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
-
-                # Дописываем недостающие поля для совместимости
-                if "custom_base_urls" not in loaded or not loaded.get("custom_base_urls"):
-                    loaded["custom_base_urls"] = ["https://cc.freemodel.dev"]
+        except Exception as e:
+            # Файл существует, но не распарсился (битый JSON и т.п.).
+            # Делаем бэкап, чтобы save_settings НЕ затёр пользовательские данные дефолтами.
+            try:
+                backup_path = SETTINGS_FILE + ".corrupt.bak"
+                # Не перезаписываем предыдущий бэкап, если он уже есть
+                if not os.path.exists(backup_path):
+                    shutil.copy2(SETTINGS_FILE, backup_path)
                 else:
-                    for u in ["https://cc.freemodel.dev"]:
-                        if u not in loaded["custom_base_urls"]:
-                            loaded["custom_base_urls"].insert(0, u)
-                if not loaded.get("custom_base_url"):
-                    loaded["custom_base_url"] = loaded["custom_base_urls"][0]
-                # Язык интерфейса: по умолчанию ru, перезаписывается LangManager
-                if "app_language" not in loaded:
-                    loaded["app_language"] = "ru"
-                return loaded
-    except:
-        pass
+                    # Складываем нумерованные бэкапы, чтобы ничего не терялось
+                    i = 2
+                    while os.path.exists(f"{backup_path}.{i}"):
+                        i += 1
+                    shutil.copy2(SETTINGS_FILE, f"{backup_path}.{i}")
+            except:
+                pass
+            # Возвращаем None-подобный сигнал через исключение наверх было бы правильнее,
+            # но чтобы не ломать вызывающий код — возвращаем дефолт. Бэкап уже сделан.
+            print(f"[load_settings] Ошибка чтения {SETTINGS_FILE}: {e}. Бэкап сохранён рядом.")
+            return _default_settings()
+        else:
+            # Дописываем недостающие поля для совместимости
+            if "custom_base_urls" not in loaded or not loaded.get("custom_base_urls"):
+                loaded["custom_base_urls"] = ["https://cc.freemodel.dev"]
+            else:
+                for u in ["https://cc.freemodel.dev"]:
+                    if u not in loaded["custom_base_urls"]:
+                        loaded["custom_base_urls"].insert(0, u)
+            if not loaded.get("custom_base_url"):
+                loaded["custom_base_url"] = loaded["custom_base_urls"][0]
+            # Язык интерфейса: по умолчанию ru, перезаписывается LangManager
+            if "app_language" not in loaded:
+                loaded["app_language"] = "ru"
+            loaded.setdefault("auto_update_enabled", True)
+            migrate_api_keys(loaded)
+            return loaded
+    return _default_settings()
+
+def _default_settings():
     return {
         "models": [
             "kr/claude-sonnet-4.5"
@@ -225,7 +248,11 @@ def load_settings():
         ],
         "custom_model": "",
         "custom_endpoint": "",
-        "app_language": "ru"
+        "app_language": "ru",
+        "auto_update_enabled": True,
+        "use_1m_context": False,
+        "api_keys": [],
+        "selected_key_id": ""
     }
 
 DEFAULT_BASE_URLS = ["https://cc.freemodel.dev"]
@@ -241,6 +268,7 @@ def migrate_settings(settings):
                 settings["custom_base_urls"].insert(0, u)
     if not settings.get("custom_base_url"):
         settings["custom_base_url"] = settings["custom_base_urls"][0]
+    settings.setdefault("auto_update_enabled", True)
     return settings
 
 def save_settings(settings):
@@ -250,6 +278,99 @@ def save_settings(settings):
             json.dump(settings, f, ensure_ascii=False, indent=2)
     except:
         pass
+
+
+# ============================================================
+# УПРАВЛЕНИЕ API-КЛЮЧАМИ (пул именованных ключей)
+# ============================================================
+# Модель: settings["api_keys"] = [
+#   {"id", "name", "value", "enabled": bool, "activated_at": epoch-seconds}
+# ]
+# Цвет рамки карточки:
+#   red    — enabled=False (ключ выключен пользователем)
+#   green  — enabled=True и с активации прошло < 5ч (активен/подтверждён)
+#   yellow — enabled=True и прошло >= 5ч (нужно подтвердить работоспособность)
+# При запуске Claude берётся первый ЗЕЛЁНЫЙ ключ; его значение зеркалируется
+# в settings["custom_api_key"] для обратной совместимости со старым кодом.
+
+KEY_REACTIVATE_SECONDS = 5 * 3600  # 5 часов до «пожелтения»
+
+def _new_key_id():
+    return f"k{int(time.time() * 1000)}{random.randint(1000, 9999)}"
+
+def key_color_state(key):
+    """green / red / yellow — визуальное состояние ключа."""
+    if not key.get("enabled", False):
+        return "red"
+    activated = key.get("activated_at", 0) or 0
+    if activated and (time.time() - activated) >= KEY_REACTIVATE_SECONDS:
+        return "yellow"
+    return "green"
+
+def first_active_key(settings):
+    """Активный ключ, который реально пойдёт в ANTHROPIC_API_KEY.
+    Приоритет: явно выбранный пользователем (selected_key_id), если он зелёный;
+    иначе — первый зелёный по порядку."""
+    keys = settings.get("api_keys", [])
+    sel_id = settings.get("selected_key_id") or ""
+    if sel_id:
+        for k in keys:
+            if k.get("id") == sel_id and key_color_state(k) == "green":
+                return k
+    for k in keys:
+        if key_color_state(k) == "green":
+            return k
+    return None
+
+def sync_custom_api_key(settings):
+    """Зеркалирует значение активного ключа в custom_api_key
+    (обратная совместимость: код запуска читает именно custom_api_key).
+    Заодно чистит устаревший selected_key_id, если такого ключа больше нет."""
+    keys = settings.get("api_keys", [])
+    ids = {k.get("id") for k in keys}
+    if settings.get("selected_key_id") and settings["selected_key_id"] not in ids:
+        settings["selected_key_id"] = ""
+    k = first_active_key(settings)
+    settings["custom_api_key"] = k.get("value", "") if k else ""
+    # Если явного выбора нет, но есть зелёный кандидат — зафиксируем его как выбранный,
+    # чтобы UI сразу подсветил активную карточку.
+    if k and not settings.get("selected_key_id"):
+        settings["selected_key_id"] = k.get("id", "")
+    return settings
+
+def migrate_api_keys(settings):
+    """Приводит settings["api_keys"] к нормальному виду; при отсутствии списка
+    переносит старый одиночный custom_api_key как «Ключ 1»."""
+    keys = settings.get("api_keys")
+    if not isinstance(keys, list):
+        keys = []
+    if not keys:
+        legacy = (settings.get("custom_api_key") or "").strip()
+        if legacy:
+            keys = [{
+                "id": _new_key_id(),
+                "name": "Ключ 1",
+                "value": legacy,
+                "enabled": True,
+                "activated_at": time.time(),
+            }]
+    norm = []
+    for k in keys:
+        if not isinstance(k, dict):
+            continue
+        val = (k.get("value") or "").strip()
+        if not val:
+            continue
+        norm.append({
+            "id": k.get("id") or _new_key_id(),
+            "name": (k.get("name") or "Ключ").strip() or "Ключ",
+            "value": val,
+            "enabled": bool(k.get("enabled", True)),
+            "activated_at": k.get("activated_at", 0) or 0,
+        })
+    settings["api_keys"] = norm
+    sync_custom_api_key(settings)
+    return settings
 
 
 # ============================================================
@@ -264,6 +385,8 @@ TRANSLATIONS = {
     # ── главное окно: кнопки шапки
     "Установить Claude Code": "Install Claude Code",
     "Удалить Claude Code": "Uninstall Claude Code",
+    "Поддержка новых версий Claude Code": "Support for new Claude Code versions",
+    "Авто-обновление": "Auto-update",
     "Status line": "Status line",
     "Fix Claude": "Fix Claude",
     "Запустить Omniroute": "Start Omniroute",
@@ -298,7 +421,6 @@ TRANSLATIONS = {
     "Показать": "Show",
     "Скрыть": "Hide",
     "Обновить": "Update",
-    "Открыть папку": "Open folder",
     "Управление": "Manage",
     "Настроить": "Configure",
     "Обзор": "Browse",
@@ -315,6 +437,20 @@ TRANSLATIONS = {
     "Управление Base URL": "Manage Base URL",
     "Добавьте или удалите URL из списка": "Add or remove URL from the list",
     "Добавить новый URL:": "Add new URL:",
+    "Управление API ключами": "Manage API keys",
+    "Зелёный — активен, красный — выключен, жёлтый — подтвердите ключ (прошло 5 ч)": "Green — active, red — disabled, yellow — confirm the key (5 h passed)",
+    "Ключей пока нет — добавьте первый ниже": "No keys yet — add the first one below",
+    "Добавить новый ключ:": "Add new key:",
+    "Название": "Name",
+    "Удалить этот API ключ?": "Delete this API key?",
+    "Ключ и его настройки будут удалены безвозвратно.": "The key and its settings will be permanently removed.",
+    "Да, удалить": "Yes, delete",
+    "Ключ": "Key",
+    "активен": "active",
+    "подтвердите": "confirm",
+    "выключен": "disabled",
+    "Ключи не добавлены — откройте «Управление»": "No keys added — open “Manage”",
+    "Нет активного API ключа — включите ключ в окне «Управление»": "No active API key — enable one in the “Manage” window",
     "Базовый URL нельзя удалить": "Default URL can't be removed",
     "Удалить выбранный URL": "Remove selected URL",
     "Настройки кастомного токена": "Custom token settings",
@@ -328,6 +464,8 @@ TRANSLATIONS = {
     "Обновление скачано!": "Update downloaded!",
     "Завершаем обновление…": "Finalizing update…",
     "Ошибка скачивания": "Download error",
+    "Ошибка": "Error",
+    "МБ": "MB",
     "Удаление status line": "Removing status line",
     "Status line удалён ✓": "Status line removed ✓",
     "Claude исправлен ✓": "Claude fixed ✓",
@@ -441,23 +579,26 @@ TRANSLATIONS = {
     "Не удалось получить /api/status. Повторим через несколько секунд.":
         "Failed to fetch /api/status. We'll retry in a few seconds.",
     # ── Fable 5
-    "Модель высшего класса": "Top-tier model",
-    "Fable 5 — самая мощная модель Claude.\n\n"
-    "При использовании /effort High одна генерация может расходовать\n"
-    "до 15% вашего дневного лимита.\n\n"
-    "Fable 5 на Medium эквивалентна Opus 4.8 на xHigh/Max\n"
-    "по затратам (~5%), но при этом обладает примерно в 2 раза\n"
-    "большей мощностью.\n\n"
-    "Используйте её для самых сложных задач, когда другие модели\n"
-    "не справляются.":
-        "Fable 5 is the most powerful Claude model.\n\n"
-        "When using /effort High, a single generation can consume\n"
-        "up to 15% of your daily limit.\n\n"
-        "Fable 5 on Medium is equivalent to Opus 4.8 on xHigh/Max\n"
-        "in cost (~5%), but has approximately 2x\n"
-        "the power.\n\n"
-        "Use it for the most complex tasks when other models\n"
-        "can't handle them.",
+    "Fable 5 — Модель высшего класса": "Fable 5 — Top-tier model",
+    "Один запрос при уровне /effort High может потребовать "
+    "до 15% вашего дневного лимита токенов.\n\n"
+    "Fable 5 на среднем уровне /effort (Medium) превосходит "
+    "Opus 4.8 на максимальных настройках (xHigh / Max) — разрыв "
+    "составляет около 5% в пользу Fable 5.\n\n"
+    "По общей мощности Fable 5 превосходит Opus 4.8 примерно "
+    "в 2 раза — но и стоит соответственно.\n\n"
+    "Используйте эту модель только тогда, когда другие уже не "
+    "справляются — она стоит каждого токена, но расходует их "
+    "значительно быстрее.":
+        "A single request at /effort High can burn up to 15% of "
+        "your daily token limit.\n\n"
+        "Fable 5 at /effort Medium beats Opus 4.8 at its maximum "
+        "settings (xHigh / Max) — the gap is about 5% in Fable 5's "
+        "favor.\n\n"
+        "Overall Fable 5 is roughly 2× more powerful than Opus 4.8 — "
+        "and priced accordingly.\n\n"
+        "Use this model only when others no longer keep up — it's "
+        "worth every token, but it spends them much faster.",
     "Выпущена Anthropic · 09 июня 2026": "Released by Anthropic · June 09, 2026",
     "Продолжить": "Continue",
     # ── Admin warning
@@ -683,6 +824,125 @@ TRANSLATIONS = {
     "Будет удалён глобальный npm-пакет Claude Code": "The global npm package Claude Code will be removed",
     "Настройки в %USERPROFILE%\\.claude не пострадают — удалится только бинарь.":
         "Settings in %USERPROFILE%\\.claude won't be affected — only the binary is removed.",
+
+    # ── status label
+    "Установлена": "Installed",
+    "Доступно обновление": "Update available",
+    "Обновить Claude Code": "Update Claude Code",
+    "Откатить Claude Code": "Rollback Claude Code",
+
+    # ── Add to PATH button + dialog
+    "Добавить в PATH": "Add to PATH",
+    "Добавлено в PATH": "Added to PATH",
+    "Уже в PATH": "Already in PATH",
+    "Не удалось добавить в PATH": "Could not add to PATH",
+    "Claude Code не найден": "Claude Code not found",
+    "Не нашёл папку с установленной Claude Code. "
+    "Сначала установи Claude Code кнопкой выше, потом жми «Добавить в PATH».":
+        "The Claude Code install folder wasn't found. "
+        "Install Claude Code with the button above first, then click «Add to PATH».",
+    "Папка с Claude Code уже прописана в пользовательской PATH.":
+        "The Claude Code folder is already in your user PATH.",
+    "Добавит папку с Claude Code в пользовательскую PATH, чтобы "
+    "команду «claude» можно было запускать из любой консоли. "
+    "После этого перезапусти терминал.":
+        "Adds the Claude Code folder to your user PATH so the «claude» "
+        "command works from any console. Restart the terminal after this.",
+    "Папка с Claude Code добавлена в пользовательскую PATH. "
+    "Открой новую консоль и проверь: claude --version.":
+        "The Claude Code folder was added to your user PATH. "
+        "Open a new console and check: claude --version.",
+    "Что-то пошло не так при записи в реестр:":
+        "Something went wrong while writing to the registry:",
+    "Понятно": "Got it",
+    "Ок": "OK",
+    "Добавить": "Add",
+
+    # ── Safe-mode install / rollback / block-launch dialogs
+    "проверенная стабильная версия, на которой приложение работает всегда. "
+    "Установщик поставит именно её. Настройки в %USERPROFILE%\\.claude не пострадают.":
+        "the proven stable version the app always works on. "
+        "The installer will pin exactly this version. Settings in %USERPROFILE%\\.claude are untouched.",
+    "проверенная стабильная версия, на которой приложение работает всегда.":
+        "the proven stable version the app always works on.",
+    "проверенная стабильная версия, на которой приложение работает всегда.\n\n"
+    "Откроется окно PowerShell, где пойдёт установка.":
+        "the proven stable version the app always works on.\n\n"
+        "A PowerShell window will open and the install will start.",
+    "а приложение сейчас в безопасном режиме и работает только с":
+        "and the app is in safe mode and only runs on",
+    "проверенная стабильная версия, на которой приложение работает всегда.\n\n"
+    "Нажми «Откатить» — установщик поставит проверенную версию, и запуск снова заработает.\n\n"
+    "Если откатывать версию не хочется — включи «Авто-обновление» на панели над кнопками. "
+    "В этом режиме приложение перестаёт следить за версией и запускает любую установленную.":
+        "the proven stable version the app always works on.\n\n"
+        "Click «Roll back» — the installer will put back the proven version and launch will work again.\n\n"
+        "If you don't want to roll back — turn on «Auto-update» on the panel above the buttons. "
+        "In that mode the app stops watching the version and launches whatever is installed.",
+    "установщик поставит нужную версию, настройки в %USERPROFILE%\\.claude не пострадают.":
+        "the installer will put the required version; settings in %USERPROFILE%\\.claude aren't affected.",
+
+    # ── Auto-update toggle confirm dialog
+    "Включится официальный установщик "
+    "(irm https://claude.ai/install.ps1 | iex). Claude Code будет "
+    "обновляться сам до последней версии.\n\n"
+    "Сейчас всё работает и на последней версии. Если что-то "
+    "вдруг перестанет работать — просто выключи этот переключатель, "
+    "и приложение вернёт проверенную версию, на которой всё "
+    "гарантированно работает.":
+        "The official installer will kick in "
+        "(irm https://claude.ai/install.ps1 | iex). Claude Code will "
+        "keep itself updated to the latest version.\n\n"
+        "Right now everything works on the latest version too. If something "
+        "suddenly breaks — just turn this switch off and the app will bring back "
+        "the proven version everything is guaranteed to work on.",
+    "Включить": "Enable",
+
+    # ── Install Claude Code (official variant title/text)
+    "Скачает и поставит последнюю версию Claude Code официальным "
+    "установщиком claude.ai.\n\n"
+    "Настройки в %USERPROFILE%\\.claude не пострадают.\n\n"
+    "Откроется окно PowerShell, где пойдёт установка.":
+        "Downloads and installs the latest Claude Code via the official "
+        "claude.ai installer.\n\n"
+        "Settings in %USERPROFILE%\\.claude are not affected.\n\n"
+        "A PowerShell window will open and the install will start.",
+    "Обновление Claude Code": "Update Claude Code",
+    "последняя": "latest",
+
+    # ── Safe-mode switch (turning auto-update OFF)
+    "Переход в безопасный режим": "Switching to safe mode",
+    "Приложение перестанет обновлять Claude Code и зафиксируется "
+    f"на проверенной версии v{REQUIRED_CLAUDE_VERSION} — именно на ней "
+    "гарантированно работают FreeModel / Omniroute / любые сторонние "
+    "Base URL и API-ключи.\n\n"
+    "Встроенный автообновлятор Claude Code будет выключен "
+    "(DISABLE_UPDATES=1, autoUpdates=false), чтобы CLI сам не "
+    "подтянул новую версию за спиной. Если сейчас установлена "
+    "версия новее — запуск будет заблокирован, пока не откатишь "
+    "её кнопкой «Откатить Claude Code».\n\n"
+    "Включай этот режим только если сам этого хочешь или если "
+    "на новой версии реально появились проблемы.":
+        "The app will stop updating Claude Code and will pin to the proven "
+        f"version v{REQUIRED_CLAUDE_VERSION} — the one that reliably works "
+        "with FreeModel / Omniroute / any third-party Base URLs and API keys.\n\n"
+        "Claude Code's built-in auto-updater will be turned off "
+        "(DISABLE_UPDATES=1, autoUpdates=false), so the CLI can't quietly "
+        "pull in a newer version behind your back. If you currently have a "
+        "newer version installed, launch will be blocked until you roll it "
+        "back with the «Roll back Claude Code» button.\n\n"
+        "Turn this on only if you actually want to, or if the newer version "
+        "has caused real problems for you.",
+    "Перейти в безопасный режим": "Switch to safe mode",
+    "Поддержка новых версий: включение отменено": "Support for new versions: enabling cancelled",
+    "Поддержка новых версий Claude Code включена": "Support for new Claude Code versions enabled",
+    "Безопасный режим: переход отменён": "Safe mode: switch cancelled",
+    "Поддержка новых версий Claude Code выключена — вернулись к безопасному режиму":
+        "Support for new Claude Code versions disabled — back to safe mode",
+
+    # ── 1M-context toggle
+    "1M-контекст включён": "1M context enabled",
+    "1M-контекст выключен": "1M context disabled",
 }
 
 
@@ -780,6 +1040,20 @@ def check_app_update():
         }
     except:
         return None
+
+def check_claude_code_latest_version():
+    """Запрашивает реально опубликованную последнюю версию Claude Code CLI
+    (npm registry). Возвращает пустую строку при любой ошибке сети."""
+    try:
+        req = Request(
+            "https://registry.npmjs.org/@anthropic-ai/claude-code/latest",
+            headers={'User-Agent': 'ClaudeManager-Updater'}
+        )
+        with urlopen(req, timeout=8, context=_ssl_context) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        return data.get('version', '') or ''
+    except:
+        return ''
 
 def compare_versions(v1, v2):
     """Сравнивает две версии (возвращает 1 если v1 > v2, -1 если v1 < v2, 0 если равны)"""
@@ -3905,7 +4179,7 @@ class Fable5WarningDialog(QDialog):
         layout.addWidget(icon_label)
 
         # Главный заголовок
-        title_label = QLabel(tr("Модель высшего класса"))
+        title_label = QLabel(tr("Fable 5 — Модель высшего класса"))
         title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title_label.setStyleSheet("""
             QLabel {
@@ -3925,14 +4199,16 @@ class Fable5WarningDialog(QDialog):
 
         # Основное описание
         desc_label = QLabel(tr(
-            "Fable 5 — самая мощная модель Claude.\n\n"
-            "При использовании /effort High одна генерация может расходовать\n"
-            "до 15% вашего дневного лимита.\n\n"
-            "Fable 5 на Medium эквивалентна Opus 4.8 на xHigh/Max\n"
-            "по затратам (~5%), но при этом обладает примерно в 2 раза\n"
-            "большей мощностью.\n\n"
-            "Используйте её для самых сложных задач, когда другие модели\n"
-            "не справляются."
+            "Один запрос при уровне /effort High может потребовать "
+            "до 15% вашего дневного лимита токенов.\n\n"
+            "Fable 5 на среднем уровне /effort (Medium) превосходит "
+            "Opus 4.8 на максимальных настройках (xHigh / Max) — разрыв "
+            "составляет около 5% в пользу Fable 5.\n\n"
+            "По общей мощности Fable 5 превосходит Opus 4.8 примерно "
+            "в 2 раза — но и стоит соответственно.\n\n"
+            "Используйте эту модель только тогда, когда другие уже не "
+            "справляются — она стоит каждого токена, но расходует их "
+            "значительно быстрее."
         ))
         desc_label.setFont(QFont("Segoe UI", 10))
         desc_label.setStyleSheet("""
@@ -4405,7 +4681,7 @@ class AnimatedProgressBar(QWidget):
         # Текст - сначала белый на темном фоне (не накрытая часть)
         painter.setFont(QFont("Consolas", 9, QFont.Bold))
         if self._total_mb > 0:
-            text = f"{self._progress}%  •  {self._downloaded_mb:.1f} / {self._total_mb:.1f} МБ"
+            text = f"{self._progress}%  •  {self._downloaded_mb:.1f} / {self._total_mb:.1f} {tr('МБ')}"
         else:
             text = f"{self._progress}%"
 
@@ -4430,6 +4706,7 @@ class ToggleSwitch(QWidget):
     def __init__(self, checked=False, parent=None):
         super().__init__(parent)
         self.setFixedSize(42, 22)
+        self.setCursor(Qt.PointingHandCursor)
         self._checked = checked
         self._progress = 1.0 if checked else 0.0
         self._target = 1.0 if checked else 0.0
@@ -4624,7 +4901,7 @@ class LanguageToggle(QWidget):
 
     def __init__(self, lang="ru", parent=None):
         super().__init__(parent)
-        self.setFixedSize(96, 26)
+        self.setFixedSize(78, 22)
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
         self._lang = lang
@@ -4801,6 +5078,923 @@ class LanguageToggle(QWidget):
         p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignCenter, "EN")
 
         p.end()
+
+
+class ContextToggle(QWidget):
+    """Компактный переключатель размера контекста 200K / 1M.
+
+    Полная стилистическая копия LanguageToggle: слегка скруглённый прямоугольник
+    (radius ~6), плавная анимация цвета пилюли и яркости лейблов, hover-подсветка
+    неактивной стороны в цвет соответствующей опции.
+
+    200K активен → холодная голубоватая (#6aa9ff, как RU в LanguageToggle).
+    1M активен → зелёная (#34d399, как EN — цвет «freemodel» с сайта).
+    """
+    toggled = Signal(bool)  # True = 1M, False = 200K
+
+    _200K_COL = (106, 169, 255)  # #6aa9ff (как RU)
+    _1M_COL = (52, 211, 153)     # #34d399 (как EN)
+
+    def __init__(self, one_m=False, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(78, 22)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        self._one_m = bool(one_m)
+        self._progress = 1.0 if self._one_m else 0.0
+        self._target = self._progress
+
+        self._hover_200 = 0.0
+        self._hover_1m = 0.0
+        self._hover_200_target = 0.0
+        self._hover_1m_target = 0.0
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def isOneM(self):
+        return self._one_m
+
+    def setOneM(self, val, animate=True):
+        val = bool(val)
+        if val == self._one_m:
+            return
+        self._one_m = val
+        self._target = 1.0 if val else 0.0
+        if not animate:
+            self._progress = self._target
+        self.update()
+
+    def _tick(self):
+        changed = False
+        diff = self._target - self._progress
+        if abs(diff) > 0.004:
+            self._progress += diff * 0.18
+            changed = True
+        elif self._progress != self._target:
+            self._progress = self._target
+            changed = True
+        for name in ("_hover_200", "_hover_1m"):
+            cur = getattr(self, name)
+            tgt = getattr(self, name + "_target")
+            d = tgt - cur
+            if abs(d) > 0.003:
+                setattr(self, name, cur + d * 0.07)
+                changed = True
+            elif cur != tgt:
+                setattr(self, name, tgt)
+                changed = True
+        if changed:
+            self.update()
+
+    def mousePressEvent(self, event):
+        is_right = event.pos().x() >= self.width() / 2
+        new_val = is_right
+        if new_val != self._one_m:
+            self._one_m = new_val
+            self._target = 1.0 if new_val else 0.0
+            self.toggled.emit(new_val)
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        is_right = event.pos().x() >= self.width() / 2
+        if is_right:
+            self._hover_1m_target = 0.0 if self._one_m else 1.0
+            self._hover_200_target = 0.0
+        else:
+            self._hover_200_target = 0.0 if not self._one_m else 1.0
+            self._hover_1m_target = 0.0
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_200_target = 0.0
+        self._hover_1m_target = 0.0
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        t = self._progress
+        w, h = self.width(), self.height()
+
+        track_r = 6.0
+        pill_r = 5.0
+
+        p.setBrush(QColor(28, 28, 33))
+        p.setPen(QPen(QColor(60, 60, 65), 1.4))
+        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
+
+        r0, g0, b0 = self._200K_COL
+        r1, g1, b1 = self._1M_COL
+        r = int(r0 + (r1 - r0) * t)
+        g = int(g0 + (g1 - g0) * t)
+        b = int(b0 + (b1 - b0) * t)
+
+        pad = 2.5
+        pill_w = w / 2 - pad
+        pill_x = pad / 2 + (w / 2) * t
+
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
+        p.save()
+        p.setClipPath(clip)
+        for i in range(1, 4):
+            alpha = int(48 * (1 - (i - 1) / 3.2))
+            p.setPen(QPen(QColor(r, g, b, alpha), 1))
+            p.setBrush(Qt.NoBrush)
+            ex = i * 1.4
+            p.drawRoundedRect(
+                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
+                pill_r + ex, pill_r + ex
+            )
+        p.restore()
+
+        grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
+        grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
+        grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
+        p.setBrush(QBrush(grad))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
+
+        p.setFont(QFont("Segoe UI", 9, QFont.Bold))
+
+        left_active = 1.0 - t
+        if left_active > 0.5:
+            left_pen = QColor(20, 22, 28)
+        else:
+            shade = int(130 + 25 * (1 - t))
+            base = QColor(shade, shade, shade + 5)
+            hr, hg, hb = self._200K_COL
+            hover = self._hover_200
+            left_pen = QColor(
+                int(base.red()   + (hr - base.red())   * hover),
+                int(base.green() + (hg - base.green()) * hover),
+                int(base.blue()  + (hb - base.blue())  * hover),
+            )
+        p.setPen(left_pen)
+        p.drawText(QRectF(0, 0, w / 2, h), Qt.AlignCenter, "200K")
+
+        if t > 0.5:
+            right_pen = QColor(15, 28, 22)
+        else:
+            shade = int(130 + 25 * t)
+            base = QColor(shade, shade + 5, shade)
+            hr, hg, hb = self._1M_COL
+            hover = self._hover_1m
+            right_pen = QColor(
+                int(base.red()   + (hr - base.red())   * hover),
+                int(base.green() + (hg - base.green()) * hover),
+                int(base.blue()  + (hb - base.blue())  * hover),
+            )
+        p.setPen(right_pen)
+        p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignCenter, "1M")
+
+        p.end()
+
+
+class _CtxSeparator(QWidget):
+    """Тонкая сероватая вертикальная полоска — визуальный разделитель между
+    текстом выбранной модели и 1M-тумблером. Служит также «hover-щитом»:
+    когда курсор над ней, рамка combobox'а модели не подсвечивается."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(6, 22)
+        # Курсор — стрелка (не рука), полоска не кликабельная
+        self.setCursor(Qt.ArrowCursor)
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(120, 120, 130), 1.2))
+        x = self.width() / 2.0
+        p.drawLine(QPointF(x, 3.0), QPointF(x, self.height() - 3.0))
+        p.end()
+
+
+class _CtxShield(QWidget):
+    """Прозрачный «щит» на всю правую полосу combobox'а — от палочки-разделителя
+    до правого края. Ничего не рисует, но:
+      • перехватывает клики (чтобы под ним не открывался picker модели);
+      • при Enter/Leave (через eventFilter в главном окне) гасит подсветку
+        рамки combobox'а, чтобы она не «загоралась» при наведении в этой
+        полосе — в том числе в зазорах вокруг самого тумблера."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.ArrowCursor)
+        # Прозрачный: не рисуем фон/содержимое
+
+    def mousePressEvent(self, ev):
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        ev.accept()
+
+    def mouseDoubleClickEvent(self, ev):
+        ev.accept()
+
+
+# ============================================================
+# УПРАВЛЕНИЕ API-КЛЮЧАМИ — виджеты
+# ============================================================
+
+class KeyToggle(QWidget):
+    """Переключатель состояния ключа OFF / ON — карбоновая копия LanguageToggle.
+
+    OFF (слева) = красный (ключ выключен), ON (справа) = зелёный (активен).
+    Клик по любой стороне эмитит toggled(bool); по стороне ON эмитит всегда —
+    это позволяет повторно подтвердить «пожелтевший» ключ (сброс 5ч-таймера)."""
+    toggled = Signal(bool)  # True = ON/enabled
+
+    _OFF_COL = (224, 90, 90)   # красный
+    _ON_COL = (52, 211, 153)   # #34d399 зелёный
+
+    def __init__(self, on=False, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(78, 22)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        self._on = bool(on)
+        self._progress = 1.0 if self._on else 0.0
+        self._target = self._progress
+        self._hover_off = 0.0
+        self._hover_on = 0.0
+        self._hover_off_target = 0.0
+        self._hover_on_target = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def set_on(self, on, animate=True):
+        on = bool(on)
+        self._on = on
+        self._target = 1.0 if on else 0.0
+        if not animate:
+            self._progress = self._target
+        self.update()
+
+    def _tick(self):
+        changed = False
+        diff = self._target - self._progress
+        if abs(diff) > 0.004:
+            self._progress += diff * 0.18
+            changed = True
+        elif self._progress != self._target:
+            self._progress = self._target
+            changed = True
+        for name in ("_hover_off", "_hover_on"):
+            cur = getattr(self, name)
+            tgt = getattr(self, name + "_target")
+            d = tgt - cur
+            if abs(d) > 0.003:
+                setattr(self, name, cur + d * 0.07)
+                changed = True
+            elif cur != tgt:
+                setattr(self, name, tgt)
+                changed = True
+        if changed:
+            self.update()
+
+    def mousePressEvent(self, event):
+        new_on = event.pos().x() >= self.width() / 2
+        self._on = new_on
+        self._target = 1.0 if new_on else 0.0
+        self.toggled.emit(new_on)
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        is_right = event.pos().x() >= self.width() / 2
+        if is_right:
+            self._hover_on_target = 0.0 if self._on else 1.0
+            self._hover_off_target = 0.0
+        else:
+            self._hover_off_target = 0.0 if not self._on else 1.0
+            self._hover_on_target = 0.0
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_off_target = 0.0
+        self._hover_on_target = 0.0
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        t = self._progress
+        w, h = self.width(), self.height()
+        track_r = 6.0
+        pill_r = 5.0
+
+        p.setBrush(QColor(28, 28, 33))
+        p.setPen(QPen(QColor(60, 60, 65), 1.4))
+        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
+
+        r0, g0, b0 = self._OFF_COL
+        r1, g1, b1 = self._ON_COL
+        r = int(r0 + (r1 - r0) * t)
+        g = int(g0 + (g1 - g0) * t)
+        b = int(b0 + (b1 - b0) * t)
+
+        pad = 2.5
+        pill_w = w / 2 - pad
+        pill_x = pad / 2 + (w / 2) * t
+
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
+        p.save()
+        p.setClipPath(clip)
+        for i in range(1, 4):
+            alpha = int(48 * (1 - (i - 1) / 3.2))
+            p.setPen(QPen(QColor(r, g, b, alpha), 1))
+            p.setBrush(Qt.NoBrush)
+            ex = i * 1.4
+            p.drawRoundedRect(
+                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
+                pill_r + ex, pill_r + ex
+            )
+        p.restore()
+
+        grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
+        grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
+        grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
+        p.setBrush(QBrush(grad))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
+
+        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+
+        # OFF (левая) — яркая когда t=0
+        if (1.0 - t) > 0.5:
+            off_pen = QColor(30, 15, 15)
+        else:
+            shade = int(130 + 25 * (1 - t))
+            base = QColor(shade + 5, shade, shade)
+            hr, hg, hb = self._OFF_COL
+            hov = self._hover_off
+            off_pen = QColor(
+                int(base.red()   + (hr - base.red())   * hov),
+                int(base.green() + (hg - base.green()) * hov),
+                int(base.blue()  + (hb - base.blue())  * hov),
+            )
+        p.setPen(off_pen)
+        p.drawText(QRectF(0, 0, w / 2, h), Qt.AlignCenter, "OFF")
+
+        # ON (правая) — яркая когда t=1
+        if t > 0.5:
+            on_pen = QColor(15, 28, 22)
+        else:
+            shade = int(130 + 25 * t)
+            base = QColor(shade, shade + 5, shade)
+            hr, hg, hb = self._ON_COL
+            hov = self._hover_on
+            on_pen = QColor(
+                int(base.red()   + (hr - base.red())   * hov),
+                int(base.green() + (hg - base.green()) * hov),
+                int(base.blue()  + (hb - base.blue())  * hov),
+            )
+        p.setPen(on_pen)
+        p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignCenter, "ON")
+        p.end()
+
+
+class KeyCard(QFrame):
+    """Строка одного API-ключа: тумблер OFF/ON, имя, маскированное значение,
+    статус, глаз, крестик удаления. Рамка плавно перекрашивается под состояние
+    (зелёный/красный/жёлтый) и мягко «загорается» при смене."""
+    toggled = Signal(str, bool)      # (key_id, on)
+    delete_requested = Signal(str)   # key_id
+    select_requested = Signal(str)   # key_id — клик по телу карточки
+
+    _COLORS = {
+        "green":  (52, 211, 153),
+        "red":    (224, 90, 90),
+        "yellow": (235, 200, 90),
+    }
+
+    def __init__(self, key, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.setFixedHeight(58)
+        self.setCursor(Qt.PointingHandCursor)
+        state = key_color_state(key)
+        col = self._COLORS[state]
+        self._cur = list(col)
+        self._target = list(col)
+        self._glow = 0.0
+        self._last_state = state
+        self._revealed = False
+        self._selected = False
+        # Плавный «пульс» выбранной карточки — интерполируется 0..1 (усиливает рамку и лёгкое свечение)
+        self._sel_progress = 0.0
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 8, 12, 8)
+        lay.setSpacing(10)
+
+        self.toggle = KeyToggle(on=(state != "red"))
+        self.toggle.toggled.connect(self._on_toggle)
+        lay.addWidget(self.toggle, 0, Qt.AlignVCenter)
+
+        info = QVBoxLayout()
+        info.setSpacing(1)
+        self.name_lbl = QLabel(key.get("name", "Ключ"))
+        self.name_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.name_lbl.setStyleSheet("color: rgb(220,220,225); background: transparent; border: none;")
+        # Игнорируем «естественную» ширину текста, чтобы длинное имя/ключ не
+        # распирали строку и не выталкивали глаз/крестик за край карточки.
+        self.name_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        info.addWidget(self.name_lbl)
+        self.val_lbl = QLabel(self._mask(key.get("value", "")))
+        self.val_lbl.setFont(QFont("Consolas", 9))
+        self.val_lbl.setStyleSheet("color: rgb(140,140,148); background: transparent; border: none;")
+        self.val_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        info.addWidget(self.val_lbl)
+        lay.addLayout(info, 1)
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        self.status_lbl.setStyleSheet("background: transparent; border: none;")
+        lay.addWidget(self.status_lbl, 0, Qt.AlignVCenter)
+
+        self.eye = EyeToggleButton()
+        self.eye.setFixedSize(34, 30)
+        self.eye.clicked.connect(self._toggle_reveal)
+        lay.addWidget(self.eye, 0, Qt.AlignVCenter)
+
+        self.del_btn = _CloseButton()
+        self.del_btn.clicked.connect(lambda: self.delete_requested.emit(self.key.get("id", "")))
+        lay.addWidget(self.del_btn, 0, Qt.AlignVCenter)
+
+        self._update_status_text()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def _mask(self, v):
+        v = v or ""
+        if len(v) <= 4:
+            return "•" * len(v)
+        return v[:6] + "•" * 8
+
+    def _on_toggle(self, on):
+        if on:
+            self.key["enabled"] = True
+            self.key["activated_at"] = time.time()  # (пере)активация сбрасывает 5ч-таймер
+        else:
+            self.key["enabled"] = False
+        self._retarget()
+        self._update_status_text()
+        self.toggled.emit(self.key.get("id", ""), on)
+
+    def _retarget(self):
+        state = key_color_state(self.key)
+        self._last_state = state
+        self._target = list(self._COLORS[state])
+        self._glow = 1.0
+        self.update()
+
+    def refresh_state(self):
+        """Вызывается по таймеру окна: если зелёный «пожелтел» (прошло 5ч) —
+        плавно перекрашиваем без клика пользователя."""
+        state = key_color_state(self.key)
+        if state != self._last_state:
+            self._retarget()
+            self._update_status_text()
+
+    def _toggle_reveal(self):
+        self._revealed = not self._revealed
+        self.eye.setRevealed(self._revealed)
+        self._apply_value_text()
+
+    def _apply_value_text(self):
+        """Раскрытый ключ показываем целиком, но с многоточием в середине,
+        чтобы уместить его в доступную ширину (видны начало и конец)."""
+        full = self.key.get("value", "")
+        if not self._revealed:
+            self.val_lbl.setText(self._mask(full))
+            return
+        fm = QFontMetrics(self.val_lbl.font())
+        avail = max(40, self.val_lbl.width())
+        self.val_lbl.setText(fm.elidedText(full, Qt.ElideMiddle, avail))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Ширина изменилась — переэлидируем раскрытый ключ под новую ширину.
+        if getattr(self, "_revealed", False):
+            self._apply_value_text()
+
+    def _update_status_text(self):
+        state = key_color_state(self.key)
+        txt = {"green": tr("активен"), "yellow": tr("подтвердите"), "red": tr("выключен")}[state]
+        r, g, b = self._COLORS[state]
+        self.status_lbl.setText(txt)
+        self.status_lbl.setStyleSheet(f"color: rgb({r},{g},{b}); background: transparent; border: none;")
+
+    def set_selected(self, selected):
+        selected = bool(selected)
+        if selected == self._selected:
+            return
+        self._selected = selected
+        # Обновляем целевое состояние пульса — сам анимируется в _tick
+        self.update()
+
+    def mousePressEvent(self, event):
+        # Клик по «телу» карточки (не по toggle/eye/delete/status) — заявка на выбор.
+        # Дочерние виджеты обрабатывают клик у себя и сюда событие не пробрасывают.
+        if event.button() == Qt.LeftButton:
+            self.select_requested.emit(self.key.get("id", ""))
+        super().mousePressEvent(event)
+
+    def _tick(self):
+        changed = False
+        for i in range(3):
+            d = self._target[i] - self._cur[i]
+            if abs(d) > 0.8:
+                self._cur[i] += d * 0.12
+                changed = True
+            elif self._cur[i] != self._target[i]:
+                self._cur[i] = self._target[i]
+                changed = True
+        if self._glow > 0.001:
+            self._glow *= 0.94
+            if self._glow < 0.02:
+                self._glow = 0.0
+            changed = True
+        # Плавный ход к _selected (0..1)
+        sel_target = 1.0 if self._selected else 0.0
+        d = sel_target - self._sel_progress
+        if abs(d) > 0.004:
+            self._sel_progress += d * 0.15
+            changed = True
+        elif self._sel_progress != sel_target:
+            self._sel_progress = sel_target
+            changed = True
+        if changed:
+            self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r, g, b = int(self._cur[0]), int(self._cur[1]), int(self._cur[2])
+        glow = self._glow
+        sel = self._sel_progress
+        rect = QRectF(1.5, 1.5, w - 3, h - 3)
+        # тёмный фон
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(26, 26, 31, 235))
+        p.drawRoundedRect(rect, 10, 10)
+        # цветная подложка: усиливается при «загорании» + при выборе
+        tint_a = int(20 + 34 * glow + 26 * sel)
+        p.setBrush(QColor(r, g, b, min(255, tint_a)))
+        p.drawRoundedRect(rect, 10, 10)
+        # рамка — ярче и толще на пике glow и когда карточка выбрана
+        boost = int(45 * glow + 35 * sel)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(
+            QColor(min(255, r + boost), min(255, g + boost), min(255, b + boost)),
+            2.0 + 1.4 * glow + 1.2 * sel
+        ))
+        p.drawRoundedRect(rect, 10, 10)
+        # Индикатор выбора: маленькая цветная точка у левого верхнего угла
+        if sel > 0.02:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(r, g, b, int(255 * sel)))
+            dot_r = 3.2
+            p.drawEllipse(QPointF(9.5, 8.5), dot_r, dot_r)
+        p.end()
+
+
+class ApiKeyManagerDialog(QDialog):
+    """Широкое окно управления API-ключами: список карточек (до 6 видимых,
+    дальше скролл), создание нового ключа с именем. Единственное место, где
+    можно добавлять/выбирать/включать ключи."""
+    CARD_H = 58
+    GAP = 8
+    MAX_VISIBLE = 4
+
+    def __init__(self, keys, selected_id="", parent=None):
+        super().__init__(parent)
+        # рабочая копия — на случай отмены мутации не заденут settings напрямую
+        self.keys = [dict(k) for k in (keys or [])]
+        self.selected_id = selected_id or ""
+        # Если выбранного ключа больше нет в списке — сбрасываем выбор
+        if self.selected_id and not any(k.get("id") == self.selected_id for k in self.keys):
+            self.selected_id = ""
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("apiKeyManagerContainer")
+        container.setStyleSheet("""
+            QFrame#apiKeyManagerContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(28, 18, 28, 24)
+        layout.setSpacing(12)
+
+        # Заголовок + крестик
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(28, 28)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(left_spacer)
+        title = QLabel(tr("Управление API ключами"))
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        title_row.addWidget(title, 1)
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.accept)
+        title_row.addWidget(self.btn_close)
+        layout.addLayout(title_row)
+
+        info = QLabel(tr("Зелёный — активен, красный — выключен, жёлтый — подтвердите ключ (прошло 5 ч)"))
+        info.setFont(QFont("Segoe UI", 9))
+        info.setAlignment(Qt.AlignCenter)
+        info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        layout.addWidget(info)
+
+        # Скролл-область с карточками
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("""
+            QScrollArea { border: none; background: transparent; }
+            QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+            QScrollBar::handle:vertical { background: rgb(70,70,78); border-radius: 4px; min-height: 30px; }
+            QScrollBar::handle:vertical:hover { background: rgb(95,95,105); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+        self.cards_host = QWidget()
+        self.cards_host.setStyleSheet("background: transparent;")
+        self.cards_layout = QVBoxLayout(self.cards_host)
+        self.cards_layout.setContentsMargins(0, 0, 6, 0)
+        self.cards_layout.setSpacing(self.GAP)
+        self.cards_layout.addStretch()
+        self.scroll.setWidget(self.cards_host)
+        layout.addWidget(self.scroll)
+
+        # Пустой плейсхолдер
+        self.empty_lbl = QLabel(tr("Ключей пока нет — добавьте первый ниже"))
+        self.empty_lbl.setFont(QFont("Segoe UI", 9))
+        self.empty_lbl.setAlignment(Qt.AlignCenter)
+        self.empty_lbl.setStyleSheet("color: rgb(110,110,116); background: transparent; border: none;")
+        layout.addWidget(self.empty_lbl)
+
+        # Секция добавления
+        add_label = QLabel(tr("Добавить новый ключ:"))
+        add_label.setFont(QFont("Segoe UI", 10))
+        add_label.setStyleSheet("color: rgb(180, 180, 180); background: transparent; border: none;")
+        layout.addWidget(add_label)
+
+        _input_style = """
+            QLineEdit {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """
+        add_row = QHBoxLayout()
+        add_row.setSpacing(8)
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText(tr("Название"))
+        self.name_input.setFont(QFont("Segoe UI", 9))
+        self.name_input.setFixedWidth(150)
+        self.name_input.setStyleSheet(_input_style)
+        add_row.addWidget(self.name_input)
+
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("fe_oa_xxxxx...")
+        self.key_input.setFont(QFont("Segoe UI", 9))
+        self.key_input.setStyleSheet(_input_style)
+        self.key_input.returnPressed.connect(self.add_key)
+        add_row.addWidget(self.key_input, 1)
+
+        self.btn_add = GreenButton(tr("Добавить"))
+        self.btn_add.setMinimumHeight(0)
+        self.btn_add.setFixedHeight(38)
+        self.btn_add.setMaximumWidth(120)
+        self.btn_add.clicked.connect(self.add_key)
+        add_row.addWidget(self.btn_add)
+        layout.addLayout(add_row)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(620)
+
+        self._rebuild_cards()
+
+        # Живой пересчёт жёлтого статуса, пока окно открыто
+        self._state_timer = QTimer(self)
+        self._state_timer.timeout.connect(self._refresh_states)
+        self._state_timer.start(15000)
+
+        # Плавное появление
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(220)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_anim.start()
+        # Центрируем окно относительно родителя (или экрана) РОВНО при первом
+        # показе — до этого позиция ещё «дефолтная», и Qt при переводе RU→EN
+        # может выставить её не по центру. После центрирования выставляем
+        # _positioned = True, чтобы дальнейшие _refit_window сохраняли позицию.
+        if not getattr(self, "_positioned", False):
+            self._center_on_parent()
+            self._positioned = True
+
+    def _reference_height(self):
+        """Высота, которую окно занимало бы при MAX_VISIBLE карточках (полный
+        скролл-потолок). Верх окна цепляется за эту высоту — тогда при 1-2
+        ключах окно короче снизу, но верх остаётся на том же уровне и не
+        подъезжает к переключателю Omniroute/BaseURL."""
+        return (self.MAX_VISIBLE * self.CARD_H
+                + (self.MAX_VISIBLE - 1) * self.GAP + 6  # scroll area
+                + 200)  # шапка + плейсхолдер + строка добавления + отступы
+
+    def _center_on_parent(self):
+        try:
+            self.adjustSize()
+            self.setFixedWidth(620)
+            dw = self.width()
+            ref_h = self._reference_height()
+            parent_win = self.parent().window() if self.parent() else None
+            if parent_win is not None and parent_win.isVisible():
+                pg = parent_win.frameGeometry()
+                cx = pg.center().x()
+                cy = pg.center().y()
+            else:
+                from PySide6.QtGui import QGuiApplication
+                screen = QGuiApplication.primaryScreen().availableGeometry()
+                cx = screen.center().x()
+                cy = screen.center().y()
+            # Верх диалога — как если бы он был максимальной высоты.
+            top_y = cy - ref_h // 2
+            self.move(cx - dw // 2, top_y)
+        except Exception:
+            pass
+
+    def accept(self):
+        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        fade.setDuration(200)
+        fade.setStartValue(self._opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(ApiKeyManagerDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        # Крестик закрытия = accept; reject ведёт себя так же (изменения сохраняются)
+        self.accept()
+
+    def _card_widgets(self):
+        cards = []
+        for i in range(self.cards_layout.count()):
+            w = self.cards_layout.itemAt(i).widget()
+            if isinstance(w, KeyCard):
+                cards.append(w)
+        return cards
+
+    def _rebuild_cards(self):
+        # удалить старые карточки
+        for w in self._card_widgets():
+            w.setParent(None)
+            w.deleteLater()
+        # вставить актуальные (перед финальным stretch)
+        insert_at = 0
+        for key in self.keys:
+            card = KeyCard(key)
+            card.toggled.connect(self._on_card_toggle)
+            card.delete_requested.connect(self._on_card_delete)
+            card.select_requested.connect(self._on_card_select)
+            card.set_selected(key.get("id") == self.selected_id)
+            self.cards_layout.insertWidget(insert_at, card)
+            insert_at += 1
+        n = len(self.keys)
+        self.empty_lbl.setVisible(n == 0)
+        self.scroll.setVisible(n > 0)
+        vis = max(1, min(self.MAX_VISIBLE, n))
+        self.scroll.setFixedHeight(vis * self.CARD_H + (vis - 1) * self.GAP + 6)
+        # После изменения количества карточек окно должно и расти, и
+        # уменьшаться. По умолчанию QDialog запоминает наибольший вычисленный
+        # sizeHint как минимум — сбрасываем ограничения и переподгоняем размер.
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        QTimer.singleShot(0, self._refit_window)
+
+    def _refit_window(self):
+        # Пересчёт высоты под текущий контент. Ширину держим = 620.
+        # Позицию окна фиксируем по ЛЕВОМУ ВЕРХНЕМУ углу — иначе Qt при
+        # уменьшении высоты «подтягивает» окно вверх, и оно скачет по экрану
+        # каждый раз, когда пользователь удаляет ключ.
+        top_left = self.pos()
+        self.layout().activate()
+        self.adjustSize()
+        self.setFixedWidth(620)
+        # Восстанавливаем позицию — если она уже была задана (после первого показа).
+        if getattr(self, "_positioned", False):
+            self.move(top_left)
+
+    def _apply_selection_to_cards(self):
+        for card in self._card_widgets():
+            card.set_selected(card.key.get("id") == self.selected_id)
+
+    def _on_card_select(self, key_id):
+        # Выбираем только зелёные ключи (жёлтые/красные — сначала подтвердить/включить).
+        key = next((k for k in self.keys if k.get("id") == key_id), None)
+        if not key or key_color_state(key) != "green":
+            return
+        if self.selected_id == key_id:
+            return
+        self.selected_id = key_id
+        self._apply_selection_to_cards()
+
+    def _on_card_toggle(self, key_id, on):
+        # мутация уже применена внутри KeyCard к тому же dict-объекту из self.keys.
+        # Если карточку выключили — сбрасываем выбор; если это была первая активация
+        # ключа и других зелёных нет — можем сразу назначить выбранным.
+        if not on and self.selected_id == key_id:
+            self.selected_id = ""
+        elif on and not self.selected_id:
+            key = next((k for k in self.keys if k.get("id") == key_id), None)
+            if key and key_color_state(key) == "green":
+                self.selected_id = key_id
+        self._apply_selection_to_cards()
+
+    def _on_card_delete(self, key_id):
+        key = next((k for k in self.keys if k.get("id") == key_id), None)
+        if not key:
+            return
+        # Стилистически как окно подтверждения для status line: компактная
+        # иконка «внимание» в цветной обводке (жёлтый), а не большой ⚠.
+        confirm = ConfirmActionDialog(
+            title=tr("Удалить этот API ключ?"),
+            message=tr("Ключ и его настройки будут удалены безвозвратно."),
+            detail=key.get("name", "Ключ"),
+            confirm_text=tr("Да, удалить"),
+            icon="!",
+            icon_color=(245, 180, 60),
+            parent=self,
+        )
+        if confirm.exec() != QDialog.Accepted:
+            return
+        self.keys = [k for k in self.keys if k.get("id") != key_id]
+        if self.selected_id == key_id:
+            self.selected_id = ""
+        self._rebuild_cards()
+
+    def add_key(self):
+        val = self.key_input.text().strip()
+        if not val:
+            self.key_input.setFocus()
+            return
+        name = self.name_input.text().strip() or (tr("Ключ") + f" {len(self.keys) + 1}")
+        new_id = _new_key_id()
+        self.keys.append({
+            "id": new_id,
+            "name": name,
+            "value": val,
+            "enabled": True,
+            "activated_at": time.time(),
+        })
+        # Первый заведённый ключ автоматически становится выбранным
+        if not self.selected_id:
+            self.selected_id = new_id
+        self.name_input.clear()
+        self.key_input.clear()
+        self._rebuild_cards()
+        # прокрутить вниз к новому ключу
+        QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(
+            self.scroll.verticalScrollBar().maximum()))
+
+    def _refresh_states(self):
+        for card in self._card_widgets():
+            card.refresh_state()
+
+    def get_result(self):
+        return [dict(k) for k in self.keys], self.selected_id
 
 
 # ============================================================
@@ -6586,7 +7780,7 @@ class DownloadUpdateDialog(QDialog):
         ic.addStretch()
 
         # Заголовок
-        self.title_label = QLabel("Скачивание обновления")
+        self.title_label = QLabel(tr("Скачивание обновления"))
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setStyleSheet("""
             QLabel {
@@ -6627,32 +7821,11 @@ class DownloadUpdateDialog(QDialog):
         """)
         self.message_label.hide()
 
-        # Горизонтальный layout для кнопок после скачивания
-        self.success_buttons_layout = QHBoxLayout()
-        self.success_buttons_layout.setSpacing(12)
-
-        self.open_folder_btn = GreenButton("Открыть папку")
-        self.open_folder_btn.setMinimumHeight(35)
-        self.open_folder_btn.clicked.connect(self._open_folder)
-
-        self.delete_old_btn = RedButton("Удалить старую")
-        self.delete_old_btn.setMinimumHeight(35)
-        self.delete_old_btn.clicked.connect(self._delete_old_and_open)
-
-        self.success_buttons_layout.addWidget(self.open_folder_btn)
-        self.success_buttons_layout.addWidget(self.delete_old_btn)
-
-        # Контейнер для кнопок успеха
-        self.success_buttons_widget = QWidget()
-        self.success_buttons_widget.setLayout(self.success_buttons_layout)
-        self.success_buttons_widget.hide()
-
         cl.addLayout(ic)
         cl.addWidget(self.title_label)
         cl.addWidget(self.version_label)
         cl.addWidget(self.progress_bar)
         cl.addWidget(self.message_label)
-        cl.addWidget(self.success_buttons_widget)
 
         self.container.setLayout(cl)
         main_layout.addWidget(self.container)
@@ -6760,7 +7933,7 @@ class DownloadUpdateDialog(QDialog):
     def _on_download_finished(self, success, message):
         if success:
             self.download_success = True
-            self.title_label.setText("Обновление скачано!")
+            self.title_label.setText(tr("Обновление скачано!"))
             self.icon_label.setText("✓")
             self.icon_label.setStyleSheet("""
                 QLabel {
@@ -6786,17 +7959,15 @@ class DownloadUpdateDialog(QDialog):
                 }
             """)
 
-            # Кнопки выбора больше не нужны — финал авто-завершается:
-            # старый .exe удаляется, открывается папка с новым файлом.
-            self.message_label.setText("Завершаем обновление…")
+            # Финал полностью автоматический: старый .exe удаляется, новый запускается.
+            self.message_label.setText(tr("Завершаем обновление…"))
             self.message_label.show()
-            self.success_buttons_widget.hide()
 
             # Небольшая задержка, чтобы пользователь успел увидеть «Обновление скачано!»
             from PySide6.QtCore import QTimer
             QTimer.singleShot(1200, self._delete_old_and_open)
         else:
-            self.title_label.setText("Ошибка скачивания")
+            self.title_label.setText(tr("Ошибка скачивания"))
             self.icon_label.setText("✗")
             self.icon_label.setStyleSheet("""
                 QLabel {
@@ -6821,13 +7992,8 @@ class DownloadUpdateDialog(QDialog):
                     border: none;
                 }
             """)
-            self.message_label.setText(f"Ошибка: {message}")
+            self.message_label.setText(f"{tr('Ошибка')}: {message}")
             self.message_label.show()
-
-    def _open_folder(self):
-        """Просто открывает папку с новой версией"""
-        subprocess.Popen(f'explorer /select,"{self.downloaded_path}"')
-        self.accept()
 
     def _delete_old_and_open(self):
         """Завершает старый процесс, удаляет его .exe в фоне и запускает новую версию.
@@ -7153,11 +8319,11 @@ class ClaudeManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Claude Code Manager")
-        self.setFixedWidth(700)
+        self.setFixedWidth(740)
         # Стартовая высота — зависит от сохранённого режима
         _is_fm = self.settings.get("use_custom_token", False) if False else False
         # Будет переустановлено в toggle_custom_token_fields()
-        self.resize(700, 905)
+        self.resize(740, 905)
 
         # Устанавливаем иконку - ищем в разных местах
         icon_paths = [
@@ -7172,6 +8338,9 @@ class ClaudeManager(QMainWindow):
                 break
 
         self.settings = load_settings()
+        # На каждом старте принудительно открываем вкладку BaseURL
+        # (независимо от того, какая была выбрана в прошлый раз).
+        self.settings["use_custom_token"] = True
         self.omniroute_process = None
 
         # Подключаем сигналы к слотам
@@ -7247,16 +8416,20 @@ class ClaudeManager(QMainWindow):
         # когда стартовый страж ещё не закончил мержить settings.json.
         self._claude_files_lock = threading.Lock()
 
-        # Тихо подстраховываемся: дописываем env.DISABLE_UPDATES=1 в
-        # ~/.claude/settings.json, если его там нет. Без этого Claude Code
-        # рано или поздно самообновится и сломает FreeModel/Omniroute.
-        threading.Thread(target=self._ensure_disable_updates_in_settings, daemon=True).start()
+        # Стражи safe-режима (пин версии + запрет автообновления) запускаем
+        # только если пользователь не включил официальные обновления —
+        # иначе они тут же откатят DISABLE_UPDATES/autoUpdates обратно.
+        if not self.settings.get("auto_update_enabled", False):
+            # Тихо подстраховываемся: дописываем env.DISABLE_UPDATES=1 в
+            # ~/.claude/settings.json, если его там нет. Без этого Claude Code
+            # рано или поздно самообновится и сломает FreeModel/Omniroute.
+            threading.Thread(target=self._ensure_disable_updates_in_settings, daemon=True).start()
 
-        # Дублирующая подстраховка: дописываем autoUpdates=false в ~/.claude.json,
-        # если его там нет. Этот ключ официально не задокументирован и часто
-        # игнорируется CLI, но если вдруг его уважает — нам ничего не стоит
-        # его поставить. Основное выключение всё равно идёт через DISABLE_UPDATES.
-        threading.Thread(target=self._ensure_auto_updates_false_in_claude_json, daemon=True).start()
+            # Дублирующая подстраховка: дописываем autoUpdates=false в ~/.claude.json,
+            # если его там нет. Этот ключ официально не задокументирован и часто
+            # игнорируется CLI, но если вдруг его уважает — нам ничего не стоит
+            # его поставить. Основное выключение всё равно идёт через DISABLE_UPDATES.
+            threading.Thread(target=self._ensure_auto_updates_false_in_claude_json, daemon=True).start()
 
         main_layout.addLayout(title_layout)
 
@@ -7273,7 +8446,7 @@ class ClaudeManager(QMainWindow):
         install_row = QHBoxLayout()
         install_row.addStretch()
 
-        self.btn_install_claude = StyledButton(tr("Установить Claude Code") + f" v{REQUIRED_CLAUDE_VERSION}")
+        self.btn_install_claude = StyledButton(tr("Установить Claude Code"))
         self.btn_install_claude.setFixedHeight(34)
         self.btn_install_claude.clicked.connect(self._install_claude_code)
         install_row.addWidget(self.btn_install_claude)
@@ -7283,6 +8456,17 @@ class ClaudeManager(QMainWindow):
         self.btn_uninstall_claude.set_hover_color(235, 90, 90)  # красный hover
         self.btn_uninstall_claude.clicked.connect(self._uninstall_claude_code)
         install_row.addWidget(self.btn_uninstall_claude)
+
+        # Добавить в PATH — прописывает папку с claude в PATH пользователя,
+        # если она там ещё не значится. Актуально только для auto-update режима
+        # (install.ps1 кладёт бинарь в ~/.local/bin — эта папка обычно не в PATH).
+        # В безопасном режиме ставим через npm, %APPDATA%\npm уже в PATH.
+        self.btn_add_to_path = StyledButton(tr("Добавить в PATH"))
+        self.btn_add_to_path.setFixedHeight(34)
+        self.btn_add_to_path.set_hover_color(120, 180, 230)
+        self.btn_add_to_path.setEnabled(self.settings.get("auto_update_enabled", False))
+        self.btn_add_to_path.clicked.connect(self._on_add_to_path_clicked)
+        install_row.addWidget(self.btn_add_to_path)
 
         self.btn_install_statusline = StyledButton(tr("Status line"))
         self.btn_install_statusline.setFixedHeight(34)
@@ -7305,14 +8489,14 @@ class ClaudeManager(QMainWindow):
         # Индикатор обновления (абсолютная позиция в правом верхнем углу)
         self.update_indicator = UpdateIndicator(self)
         self.update_indicator.clicked.connect(self._on_update_indicator_clicked)
-        self.update_indicator.move(self.width() - 45, 10)  # 10px от верха, 45px от правого края
+        self.update_indicator.move(self.width() - 78 - 8 - 45 + 4, 10)  # к левому краю ползунка языка
         self.update_indicator.raise_()
 
         # Переключатель языка интерфейса EN / RU — абсолютная позиция в правом
         # верхнем углу, чуть левее индикатора обновлений. Цвет пилюли меняется
         # плавно: EN — зелёный (#34d399, цвет «freemodel»), RU — голубоватый.
         self.language_toggle = LanguageToggle(LANG.lang if LANG else "ru", self)
-        self.language_toggle.move(self.width() - 45 - 96 - 10, 16)
+        self.language_toggle.move(self.width() - 78 - 8, 12)
         self.language_toggle.raise_()
         self.language_toggle.toggled.connect(self._on_language_toggled)
         if LANG is not None:
@@ -7431,6 +8615,18 @@ class ClaudeManager(QMainWindow):
         claude_header_inner.addWidget(self.claude_install_status_label)
 
         claude_header_inner.addStretch()
+
+        # Тумблер: официальные авто-обновления Claude Code через install.ps1
+        # вместо пина на REQUIRED_CLAUDE_VERSION. Живёт справа внутри chip.
+        autoupdate_lbl = QLabel(tr("Авто-обновление"))
+        autoupdate_lbl.setFont(QFont("Segoe UI", 9))
+        autoupdate_lbl.setStyleSheet("color: rgb(180, 180, 180); background: transparent; border: none;")
+        self._track_tr(autoupdate_lbl, "Авто-обновление")
+        claude_header_inner.addWidget(autoupdate_lbl)
+        self.autoupdate_toggle = ToggleSwitch(checked=self.settings.get("auto_update_enabled", False))
+        self.autoupdate_toggle.toggled.connect(self._on_auto_update_toggled)
+        claude_header_inner.addWidget(self.autoupdate_toggle)
+
         claude_layout.addWidget(claude_header_chip)
 
         # Выбор модели — обёрнут в контейнер чтобы можно было скрыть целиком
@@ -7612,56 +8808,36 @@ class ClaudeManager(QMainWindow):
         self._track_tr(key_lbl, "API ключ:")
         key_row.addWidget(key_lbl)
 
+        # Поле ключа теперь только ОТОБРАЖАЕТ активный (первый зелёный) ключ —
+        # read-only. Добавление/выбор/включение ключей происходит исключительно
+        # в окне «Управление».
         self.fm_key_input = QLineEdit()
-        self.fm_key_input.setPlaceholderText("fe_oa_xxxxx...")
+        self.fm_key_input.setPlaceholderText(tr("Ключи не добавлены — откройте «Управление»"))
         self.fm_key_input.setText(self.settings.get("custom_api_key", ""))
         self.fm_key_input.setEchoMode(QLineEdit.Password)
         self.fm_key_input.setFont(QFont("Segoe UI", 9))
-        _has_fm_key = bool(self.settings.get("custom_api_key", ""))
-        if _has_fm_key:
-            self.fm_key_input.setReadOnly(True)
-            self.fm_key_input.setStyleSheet("""
-                QLineEdit {
-                    background-color: rgba(20, 20, 25, 200);
-                    color: rgb(200, 200, 200);
-                    border: 1px solid rgb(60, 60, 65);
-                    border-radius: 4px;
-                    padding: 8px;
-                }
-            """)
-        else:
-            self.fm_key_input.setStyleSheet("""
-                QLineEdit {
-                    background-color: rgba(30, 30, 35, 200);
-                    color: rgb(200, 200, 200);
-                    border: 1px solid rgb(60, 60, 65);
-                    border-radius: 4px;
-                    padding: 8px;
-                }
-            """)
+        self.fm_key_input.setReadOnly(True)
+        self.fm_key_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
         key_row.addWidget(self.fm_key_input, 1)
 
         self.fm_btn_toggle_key = EyeToggleButton()
         self.fm_btn_toggle_key.clicked.connect(self._fm_toggle_key)
         key_row.addWidget(self.fm_btn_toggle_key)
 
-        self.fm_btn_save_key = StyledButton(tr("Сохранить"))
-        self.fm_btn_save_key.setMinimumHeight(0)
-        self.fm_btn_save_key.setFixedHeight(36)
-        self.fm_btn_save_key.setFixedWidth(110)
-        self.fm_btn_save_key.clicked.connect(self._fm_save_key)
-        if _has_fm_key:
-            self.fm_btn_save_key.hide()
-        key_row.addWidget(self.fm_btn_save_key)
-
-        self.fm_btn_edit_key = StyledButton(tr("Изменить"))
-        self.fm_btn_edit_key.setMinimumHeight(0)
-        self.fm_btn_edit_key.setFixedHeight(36)
-        self.fm_btn_edit_key.setFixedWidth(110)
-        self.fm_btn_edit_key.clicked.connect(self._fm_edit_key)
-        if not _has_fm_key:
-            self.fm_btn_edit_key.hide()
-        key_row.addWidget(self.fm_btn_edit_key)
+        self.fm_btn_manage_keys = StyledButton(tr("Управление"))
+        self.fm_btn_manage_keys.setMinimumHeight(0)
+        self.fm_btn_manage_keys.setFixedHeight(36)
+        self.fm_btn_manage_keys.setFixedWidth(130)
+        self.fm_btn_manage_keys.clicked.connect(self._fm_manage_keys)
+        key_row.addWidget(self.fm_btn_manage_keys)
         freemodel_layout.addLayout(key_row)
 
         # Model: label + combo
@@ -7726,6 +8902,35 @@ class ClaudeManager(QMainWindow):
         self._fm_prev_model = saved_m if saved_m in fm_models else "Opus 4.8"
         self.fm_model_combo.currentTextChanged.connect(self._fm_model_changed)
         model_row.addWidget(self.fm_model_combo, 1)
+
+        # 1M-контекст: маленький toggle-оверлей внутри правой части комбобокса модели
+        # (стилистика — карбоновая копия LanguageToggle). Активная сторона:
+        # 200K (синий) → дефолт; 1M (зелёный) → id получает суффикс [1M].
+        self.ctx_toggle = ContextToggle(
+            one_m=self.settings.get("use_1m_context", False),
+            parent=self.fm_model_combo
+        )
+        self.ctx_toggle.toggled.connect(self._on_1m_context_toggled)
+        self.ctx_toggle.raise_()
+
+        # Сероватая полоска-разделитель между текстом модели и тумблером —
+        # + служит «щитом» hover'а: пока курсор над ней или над тумблером,
+        # рамка combobox'а не подсвечивается.
+        self.ctx_separator = _CtxSeparator(parent=self.fm_model_combo)
+
+        # Прозрачный «щит» на всю правую полосу combobox'а — блокирует
+        # клики по фону и Enter в зазорах вокруг тумблера, чтобы рамка
+        # не подсвечивалась и picker не открывался.
+        self.ctx_shield = _CtxShield(parent=self.fm_model_combo)
+        self.ctx_shield.lower()  # под toggle/separator в стеке дочерних
+        self.ctx_separator.raise_()
+        self.ctx_toggle.raise_()
+
+        self.fm_model_combo.installEventFilter(self)
+        self.ctx_toggle.installEventFilter(self)
+        self.ctx_separator.installEventFilter(self)
+        self.ctx_shield.installEventFilter(self)
+        QTimer.singleShot(0, self._reposition_ctx_toggle)
 
         # Effort selector для FreeModel (без отдельного лейбла — сам комбобокс показывает уровень)
         self.fm_effort_combo = PickerComboBox()
@@ -8315,6 +9520,8 @@ class ClaudeManager(QMainWindow):
             # Static labels created один раз в _build_ui — нужно вручную
             if hasattr(self, "btn_uninstall_claude"):
                 self.btn_uninstall_claude.setText(tr("Удалить Claude Code"))
+            if hasattr(self, "btn_add_to_path"):
+                self.btn_add_to_path.setText(tr("Добавить в PATH"))
             if hasattr(self, "btn_install_statusline"):
                 self.btn_install_statusline.setText(tr("Status line"))
             if hasattr(self, "btn_fix_claude"):
@@ -8339,6 +9546,17 @@ class ClaudeManager(QMainWindow):
                 self.fm_btn_save_key.setText(tr("Сохранить"))
             if hasattr(self, "fm_btn_edit_key"):
                 self.fm_btn_edit_key.setText(tr("Изменить"))
+            if hasattr(self, "fm_btn_manage_keys"):
+                self.fm_btn_manage_keys.setText(tr("Управление"))
+            # Плейсхолдер поля активного ключа на главном экране (виден, когда ключей нет)
+            if hasattr(self, "fm_key_input"):
+                self.fm_key_input.setPlaceholderText(tr("Ключи не добавлены — откройте «Управление»"))
+            # Заголовки picker-диалогов (модель / Base URL): _pick_title кэшируется в
+            # combobox'е, а не тянется через tr() при каждом открытии — переустанавливаем вручную.
+            if hasattr(self, "fm_model_combo"):
+                self.fm_model_combo._pick_title = tr("Выбор модели")
+            if hasattr(self, "fm_url_combo"):
+                self.fm_url_combo._pick_title = tr("Выбор Base URL")
             if hasattr(self, "btn_configure_custom"):
                 self.btn_configure_custom.setText(tr("Настроить"))
             if hasattr(self, "token_label"):
@@ -8476,6 +9694,85 @@ class ClaudeManager(QMainWindow):
                 self.fm_effort_combo.setTextColor(self._fm_effort_colors[effort])
                 self.fm_effort_combo.setAccentColor(self._fm_effort_colors[effort])
 
+    def _on_1m_context_toggled(self, checked):
+        """Переключает 1M-контекст. При включении модели с поддержкой получат
+        суффикс [1M] в ID; ~/.claude/settings.json перезаписывается сразу,
+        чтобы Claude Code подхватил новый id при следующем запуске."""
+        self.settings["use_1m_context"] = checked
+        save_settings(self.settings)
+        try:
+            current_model = self.fm_model_combo.currentText() if hasattr(self, "fm_model_combo") else self.settings.get("custom_model", "")
+            if current_model:
+                self._write_claude_model_setting(current_model)
+        except Exception:
+            pass
+        self.log(
+            tr("1M-контекст включён") if checked else tr("1M-контекст выключен"),
+            "info"
+        )
+
+    def _reposition_ctx_toggle(self):
+        """Прижимает 1M-тумблер к правому краю комбобокса модели, ставит
+        разделитель слева от него и растягивает прозрачный «щит» на всю
+        правую полосу combobox'а (от палочки до правого края, всю высоту)."""
+        if not (hasattr(self, "ctx_toggle") and hasattr(self, "fm_model_combo")):
+            return
+        combo = self.fm_model_combo
+        tw, th = self.ctx_toggle.width(), self.ctx_toggle.height()
+        x = max(0, combo.width() - tw - 8)
+        y = max(0, (combo.height() - th) // 2)
+        self.ctx_toggle.move(x, y)
+        sep = getattr(self, "ctx_separator", None)
+        sep_x = x
+        if sep is not None:
+            sw, sh = sep.width(), sep.height()
+            sy = max(0, (combo.height() - sh) // 2)
+            sep_x = max(0, x - sw - 2)
+            sep.move(sep_x, sy)
+        shield = getattr(self, "ctx_shield", None)
+        if shield is not None:
+            # Щит: от левого края палочки до правого края combobox'а, на всю высоту
+            shield.setGeometry(sep_x, 0, max(0, combo.width() - sep_x), combo.height())
+
+    def _cursor_over_ctx_shield(self):
+        """Курсор сейчас над «щитом» (тумблер / палочка / прозрачный щит)?"""
+        combo = getattr(self, "fm_model_combo", None)
+        if combo is None:
+            return False
+        from PySide6.QtGui import QCursor
+        pos = combo.mapFromGlobal(QCursor.pos())
+        for shield in (
+            getattr(self, "ctx_toggle", None),
+            getattr(self, "ctx_separator", None),
+            getattr(self, "ctx_shield", None),
+        ):
+            if shield is not None and shield.geometry().contains(pos):
+                return True
+        return False
+
+    def eventFilter(self, obj, event):
+        combo = getattr(self, "fm_model_combo", None)
+        if combo is not None:
+            if obj is combo and event.type() == QEvent.Resize:
+                self._reposition_ctx_toggle()
+            elif obj in (
+                getattr(self, "ctx_toggle", None),
+                getattr(self, "ctx_separator", None),
+                getattr(self, "ctx_shield", None),
+            ):
+                et = event.type()
+                if et == QEvent.Enter:
+                    # Курсор зашёл на щит — гасим hover-подсветку combobox'а.
+                    combo._is_hovered = False
+                elif et == QEvent.Leave:
+                    # Курсор ушёл со щита. Если он остался внутри combobox'а
+                    # (и не над другим щитом) — вернём подсветку.
+                    from PySide6.QtGui import QCursor
+                    pos = combo.mapFromGlobal(QCursor.pos())
+                    if combo.rect().contains(pos) and not self._cursor_over_ctx_shield():
+                        combo._is_hovered = True
+        return super().eventFilter(obj, event)
+
     def _fm_toggle_key(self):
         """Показать/скрыть API ключ"""
         if self.fm_key_input.echoMode() == QLineEdit.Password:
@@ -8485,52 +9782,37 @@ class ClaudeManager(QMainWindow):
             self.fm_key_input.setEchoMode(QLineEdit.Password)
             self.fm_btn_toggle_key.setRevealed(False)
 
-    def _fm_save_key(self):
-        """Сохраняет API ключ FreeModel и показывает инструкцию"""
-        api_key = self.fm_key_input.text().strip()
-        if not api_key:
-            self.log("API ключ не может быть пустым", "warning")
-            return
-        self.settings["custom_api_key"] = api_key
-        self.settings["custom_base_url"] = self.fm_url_combo.currentText()
-        self.settings["custom_model"] = self.fm_model_combo.currentText()
+    def _fm_manage_keys(self):
+        """Открывает окно управления API-ключами (единственное место, где
+        можно добавлять/включать/выбирать ключи)."""
+        dlg = ApiKeyManagerDialog(
+            self.settings.get("api_keys", []),
+            selected_id=self.settings.get("selected_key_id", ""),
+            parent=self,
+        )
+        dlg.exec()
+        keys, selected_id = dlg.get_result()
+        self.settings["api_keys"] = keys
+        self.settings["selected_key_id"] = selected_id
+        sync_custom_api_key(self.settings)
         save_settings(self.settings)
-        self.log("API ключ обновлён", "success")
-        # Блокируем редактирование, переключаем кнопки
-        self.fm_key_input.setReadOnly(True)
-        self.fm_key_input.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(20, 20, 25, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
-                padding: 8px;
-            }
-        """)
-        self.fm_btn_save_key.hide()
-        self.fm_btn_edit_key.show()
+        self._refresh_active_key_display()
+        # Активный ключ мог смениться — обновим модель в ~/.claude/settings.json
+        try:
+            current_model = self.fm_model_combo.currentText() if hasattr(self, "fm_model_combo") else self.settings.get("custom_model", "")
+            if current_model:
+                self._write_claude_model_setting(current_model)
+        except Exception:
+            pass
 
-        # После сохранения автоматически прячем значение
-        self.fm_key_input.setEchoMode(QLineEdit.Password)
+    def _refresh_active_key_display(self):
+        """Обновляет read-only поле активного ключа под текущий custom_api_key."""
+        val = self.settings.get("custom_api_key", "")
+        if hasattr(self, "fm_key_input"):
+            self.fm_key_input.setEchoMode(QLineEdit.Password)
+            self.fm_key_input.setText(val)
         if hasattr(self, "fm_btn_toggle_key") and hasattr(self.fm_btn_toggle_key, "setRevealed"):
             self.fm_btn_toggle_key.setRevealed(False)
-
-    def _fm_edit_key(self):
-        """Разрешает редактирование API ключа FreeModel"""
-        self.fm_key_input.setReadOnly(False)
-        self.fm_key_input.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
-                padding: 8px;
-            }
-        """)
-        self.fm_key_input.setFocus()
-        self.fm_btn_edit_key.hide()
-        self.fm_btn_save_key.show()
-        self.log("Режим редактирования API ключа", "info")
 
     def _fm_manage_urls(self):
         """Открывает окно управления Base URL"""
@@ -8669,12 +9951,26 @@ class ClaudeManager(QMainWindow):
         "Opus 4.6": "claude-opus-4-6",
     }
 
+    # Модели, поддерживающие расширенный 1M-контекст — им дописываем суффикс [1M],
+    # если пользователь включил соответствующий тумблер.
+    MODELS_WITH_1M_CONTEXT = {
+        "Opus 4.8", "Opus 4.8 (default)",
+        "Opus 4.7", "Opus 4.6",
+        "Sonnet 5", "Sonnet 4.6",
+        "Fable 5",
+    }
+
     # Модели, для которых НЕ передавать --model (только env), чтобы /model показывал Default
     NO_CLI_FLAG_MODELS = set()  # Пустой — все модели форсятся через --model
 
     def _resolve_model_id(self, model_choice):
         """Возвращает реальный ID модели для CLI/env или None для дефолта."""
-        return self.MODEL_ID_MAP.get(model_choice)
+        base = self.MODEL_ID_MAP.get(model_choice)
+        if base is None:
+            return None
+        if self.settings.get("use_1m_context", False) and model_choice in self.MODELS_WITH_1M_CONTEXT:
+            return base + "[1M]"
+        return base
 
     def _write_claude_model_setting(self, model_choice):
         """Записывает выбранную модель в ~/.claude/settings.json"""
@@ -8743,16 +10039,18 @@ class ClaudeManager(QMainWindow):
 
     def launch_claude(self):
         """Запускает Claude Code с выбранной моделью"""
-        # Жёсткая проверка: установленная версия не должна быть выше REQUIRED_CLAUDE_VERSION
-        local = self._get_installed_claude_version() or getattr(self, "_claude_local_version", "")
-        if local:
-            try:
-                cmp = compare_versions(local, REQUIRED_CLAUDE_VERSION)
-            except Exception:
-                cmp = 0
-            if cmp > 0:
-                self._show_version_block_dialog(local)
-                return
+        # Жёсткая проверка: установленная версия не должна быть выше REQUIRED_CLAUDE_VERSION.
+        # Пропускаем её, если включены официальные обновления — там версия выше пина ожидаема.
+        if not self.settings.get("auto_update_enabled", False):
+            local = self._get_installed_claude_version() or getattr(self, "_claude_local_version", "")
+            if local:
+                try:
+                    cmp = compare_versions(local, REQUIRED_CLAUDE_VERSION)
+                except Exception:
+                    cmp = 0
+                if cmp > 0:
+                    self._show_version_block_dialog(local)
+                    return
 
         model = self.model_combo.currentText()
 
@@ -8798,11 +10096,13 @@ class ClaudeManager(QMainWindow):
         effort_flag = f" --effort {effort}"
 
         if use_custom:
-            # Кастомные настройки (BaseURL)
+            # Кастомные настройки (BaseURL). Пересчитываем активный ключ на
+            # случай, если зелёный ключ «пожелтел» за время работы приложения.
+            sync_custom_api_key(self.settings)
             custom_api_key = self.settings.get("custom_api_key", "")
 
             if not custom_api_key:
-                self.log("Кастомный API ключ не установлен", "error")
+                self.log("Нет активного API ключа — включите ключ в окне «Управление»", "error")
                 return
 
             custom_model = self.settings.get("custom_model", "")
@@ -9247,6 +10547,122 @@ class ClaudeManager(QMainWindow):
             except Exception:
                 pass
 
+    def _on_auto_update_toggled(self, checked):
+        """Переключает режим обновления Claude Code: пин + блокировки (OFF,
+        безопасный режим по умолчанию) ↔ официальный install.ps1 без
+        ограничений (ON)."""
+        if checked:
+            dlg = ConfirmActionDialog(
+                title=tr("Поддержка новых версий Claude Code"),
+                message=tr(
+                    "Включится официальный установщик "
+                    "(irm https://claude.ai/install.ps1 | iex). Claude Code будет "
+                    "обновляться сам до последней версии.\n\n"
+                    "Сейчас всё работает и на последней версии. Если что-то "
+                    "вдруг перестанет работать — просто выключи этот переключатель, "
+                    "и приложение вернёт проверенную версию, на которой всё "
+                    "гарантированно работает."
+                ),
+                detail="irm https://claude.ai/install.ps1 | iex",
+                confirm_text=tr("Включить"),
+                icon="↑",
+                icon_color=(80, 200, 110),
+                parent=self
+            )
+            if dlg.exec() != QDialog.Accepted:
+                self.autoupdate_toggle.setChecked(False)
+                self.log(tr("Поддержка новых версий: включение отменено"), "info")
+                return
+
+            self.settings["auto_update_enabled"] = True
+            save_settings(self.settings)
+            self._remove_safe_update_pins()
+            self.log(tr("Поддержка новых версий Claude Code включена"), "success")
+        else:
+            dlg = ConfirmActionDialog(
+                title=tr("Переход в безопасный режим"),
+                message=tr(
+                    "Приложение перестанет обновлять Claude Code и зафиксируется "
+                    f"на проверенной версии v{REQUIRED_CLAUDE_VERSION} — именно на ней "
+                    "гарантированно работают FreeModel / Omniroute / любые сторонние "
+                    "Base URL и API-ключи.\n\n"
+                    "Встроенный автообновлятор Claude Code будет выключен "
+                    "(DISABLE_UPDATES=1, autoUpdates=false), чтобы CLI сам не "
+                    "подтянул новую версию за спиной. Если сейчас установлена "
+                    "версия новее — запуск будет заблокирован, пока не откатишь "
+                    "её кнопкой «Откатить Claude Code».\n\n"
+                    "Включай этот режим только если сам этого хочешь или если "
+                    "на новой версии реально появились проблемы."
+                ),
+                detail="",
+                confirm_text=tr("Перейти в безопасный режим"),
+                icon="🛡",
+                icon_color=(235, 150, 90),
+                parent=self
+            )
+            if dlg.exec() != QDialog.Accepted:
+                self.autoupdate_toggle.setChecked(True)
+                self.log(tr("Безопасный режим: переход отменён"), "info")
+                return
+
+            self.settings["auto_update_enabled"] = False
+            save_settings(self.settings)
+            self._ensure_disable_updates_in_settings()
+            self._ensure_auto_updates_false_in_claude_json()
+            self.log(tr("Поддержка новых версий Claude Code выключена — вернулись к безопасному режиму"), "info")
+
+        # Свежий фон-запрос версии: в auto-update режиме тянем актуальный
+        # latest из npm registry, в safe — снапаем на REQUIRED_CLAUDE_VERSION.
+        # Без этого лейбл «Доступно обновление / Установлена» показывал бы
+        # старое значение до перезапуска приложения.
+        self._claude_latest_version = ""
+        try:
+            threading.Thread(target=self._check_claude_version, daemon=True).start()
+        except Exception:
+            pass
+
+        try:
+            self._update_install_button_state()
+        except Exception:
+            pass
+
+    def _remove_safe_update_pins(self):
+        """Снимает DISABLE_UPDATES/autoUpdates=false, поставленные safe-режимом,
+        чтобы встроенный автообновлятор Claude Code реально заработал."""
+        try:
+            with self._claude_files_lock:
+                settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+                if os.path.exists(settings_path):
+                    try:
+                        with open(settings_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        if isinstance(data, dict) and isinstance(data.get("env"), dict):
+                            if "DISABLE_UPDATES" in data["env"]:
+                                del data["env"]["DISABLE_UPDATES"]
+                                if not data["env"]:
+                                    del data["env"]
+                                with open(settings_path, 'w', encoding='utf-8') as f:
+                                    json.dump(data, f, indent=2, ensure_ascii=False)
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
+                json_path = self._claude_json_path()
+                if os.path.exists(json_path):
+                    try:
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        if isinstance(data, dict) and data.get("autoUpdates") is False:
+                            del data["autoUpdates"]
+                            with open(json_path, 'w', encoding='utf-8') as f:
+                                json.dump(data, f, indent=2, ensure_ascii=False)
+                    except (json.JSONDecodeError, OSError):
+                        pass
+        except Exception as e:
+            try:
+                self.log(f"Не удалось снять safe-pin автообновления: {e}", "warning")
+            except Exception:
+                pass
+
     def _claude_json_path(self):
         """Путь к проблемному файлу — ~/.claude.json (это НЕ ~/.claude/settings.json)."""
         return os.path.join(os.path.expanduser("~"), ".claude.json")
@@ -9395,10 +10811,9 @@ class ClaudeManager(QMainWindow):
                     # в settings.json. autoUpdates тут — подстраховка/совместимость:
                     # есл   какая-то ветка кода CLI всё-таки его уважает —
                     # нам ничего не стоит её закрыть.
-                    stub = {
-                        "installMethod": "global",
-                        "autoUpdates": False,
-                    }
+                    stub = {"installMethod": "global"}
+                    if not self.settings.get("auto_update_enabled", False):
+                        stub["autoUpdates"] = False
                     stub_ok = True
                     try:
                         with open(src, 'w', encoding='utf-8') as f:
@@ -9449,11 +10864,14 @@ class ClaudeManager(QMainWindow):
                         os.makedirs(claude_dir, exist_ok=True)
                         settings_path = os.path.join(claude_dir, "settings.json")
 
-                        fresh_settings = {
-                            "env": {
-                                "DISABLE_UPDATES": "1",
-                            },
-                        }
+                        if self.settings.get("auto_update_enabled", False):
+                            fresh_settings = {}
+                        else:
+                            fresh_settings = {
+                                "env": {
+                                    "DISABLE_UPDATES": "1",
+                                },
+                            }
 
                         with open(settings_path, 'w', encoding='utf-8') as f:
                             json.dump(fresh_settings, f, indent=2, ensure_ascii=False)
@@ -9490,6 +10908,10 @@ class ClaudeManager(QMainWindow):
 
     def _install_claude_code(self):
         """Устанавливает/переустанавливает Claude Code v{REQUIRED_CLAUDE_VERSION} через npm в PowerShell"""
+        if self.settings.get("auto_update_enabled", False):
+            self._install_claude_code_official()
+            return
+
         installed = self._is_claude_installed()
         local = getattr(self, "_claude_local_version", "")
         required = REQUIRED_CLAUDE_VERSION
@@ -9518,13 +10940,8 @@ class ClaudeManager(QMainWindow):
             title = tr("Откат Claude Code до") + f" v{required}"
             message = (
                 tr("У тебя установлена") + f" v{local}. v{required} — " +
-                tr("последняя стабильная версия, "
-                   "на которой приложение проверено целиком. Более новые версии могут работать "
-                   "нестабильно или вовсе не запускаться, а начиная с v2.1.181 Anthropic "
-                   "заблокировала сторонние Base URL и API ключи — все запросы уходят только "
-                   "в официальный сервис Anthropic, и FreeModel / Omniroute / прокси не работают.\n\n"
-                   "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude "
-                   "не пострадают.")
+                tr("проверенная стабильная версия, на которой приложение работает всегда. "
+                   "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude не пострадают.")
             )
             confirm_text = tr("Откатить")
             icon = "↓"
@@ -9534,8 +10951,7 @@ class ClaudeManager(QMainWindow):
             message = (
                 tr("У тебя установлена") + f" v{local}. " +
                 tr("Будет установлена фиксированная") + f" v{required} — " +
-                tr("последняя стабильная версия, с которой это приложение работает гарантированно. "
-                   "Более новые версии могут работать нестабильно или совсем не запускаться.")
+                tr("проверенная стабильная версия, на которой приложение работает всегда.")
             )
             confirm_text = tr("Установить")
             icon = "↑"
@@ -9543,11 +10959,8 @@ class ClaudeManager(QMainWindow):
         else:
             title = tr("Установка Claude Code") + f" v{required}"
             message = (
-                tr("Будет установлена фиксированная версия") + f" v{required} " +
-                tr("через npm — "
-                   "последняя стабильная, на которой проверено это приложение. "
-                   "Более новые версии могут работать нестабильно или вовсе не запускаться, "
-                   "а версии с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.\n\n"
+                tr("Будет установлена фиксированная версия") + f" v{required} — " +
+                tr("проверенная стабильная версия, на которой приложение работает всегда.\n\n"
                    "Откроется окно PowerShell, где пойдёт установка.")
             )
             confirm_text = tr("Установить")
@@ -9670,6 +11083,113 @@ class ClaudeManager(QMainWindow):
         # Показываем окно (модально, но процесс PowerShell идёт параллельно)
         progress_dlg.exec()
 
+    def _install_claude_code_official(self):
+        """Ставит/обновляет Claude Code официальным установщиком
+        (irm https://claude.ai/install.ps1 | iex) — всегда последняя версия,
+        без пина на REQUIRED_CLAUDE_VERSION."""
+        installed = self._is_claude_installed()
+        local = getattr(self, "_claude_local_version", "")
+
+        message = tr(
+            "Скачает и поставит последнюю версию Claude Code официальным "
+            "установщиком claude.ai.\n\n"
+            "Настройки в %USERPROFILE%\\.claude не пострадают.\n\n"
+            "Откроется окно PowerShell, где пойдёт установка."
+        )
+        dlg = ConfirmActionDialog(
+            title=tr("Обновление Claude Code") if installed else tr("Установка Claude Code"),
+            message=message,
+            detail="irm https://claude.ai/install.ps1 | iex",
+            confirm_text=tr("Обновить") if installed else tr("Установить"),
+            icon="↑",
+            icon_color=(80, 200, 110),
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            self.log("Операция отменена", "info")
+            return
+
+        action_word = "обновление" if installed else "установку"
+        self.log(f"Запускаю {action_word} Claude Code через официальный установщик...", "info")
+
+        progress_dlg = ClaudeInstallProgressDialog(
+            is_update=installed,
+            old_version=local,
+            new_version=tr("последняя"),
+            parent=self,
+        )
+        self._claude_install_dlg = progress_dlg
+
+        try:
+            popen = subprocess.Popen([
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                # 1) Прибить все запущенные claude.exe — иначе файл залочен и инсталлятор падает
+                "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
+                "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 600; "
+                # 2) Официальная установка/обновление
+                "Write-Host 'Официальная установка/обновление Claude Code...' -ForegroundColor Cyan; "
+                "irm https://claude.ai/install.ps1 | iex; "
+                "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
+                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+            ])
+        except Exception as e:
+            self.log(f"Не удалось запустить установку: {e}", "error")
+            progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
+            progress_dlg.exec()
+            return
+
+        self._claude_install_ctx = {
+            "is_update": installed,
+            "old_local": local,
+            "progress_dlg": progress_dlg,
+            "popen": popen,
+        }
+
+        try:
+            self.claude_install_finished.disconnect(self._on_claude_install_done_safe)
+        except Exception:
+            pass
+        self.claude_install_finished.connect(
+            self._on_claude_install_done_safe, Qt.QueuedConnection
+        )
+
+        def _wait_and_emit():
+            try:
+                popen.wait()
+            except Exception:
+                pass
+            try:
+                rc = popen.returncode
+            except Exception:
+                rc = None
+            new_local = ""
+            try:
+                time.sleep(0.5)
+                new_local = self._get_installed_claude_version()
+            except Exception:
+                new_local = ""
+            try:
+                installed_now = self._is_claude_installed()
+            except Exception:
+                installed_now = False
+            ctx = {
+                "is_update": installed,
+                "old_local": local,
+                "new_local": new_local,
+                "installed_now": installed_now,
+                "returncode": rc,
+            }
+            try:
+                self.claude_install_finished.emit(ctx)
+            except Exception:
+                pass
+
+        threading.Thread(target=_wait_and_emit, daemon=True).start()
+
+        progress_dlg.exec()
+
     def _on_claude_install_done_safe(self, ctx):
         """Вызывается на main thread через сигнал. Все subprocess-вызовы уже сделаны в фоне."""
         if not isinstance(ctx, dict):
@@ -9738,15 +11258,12 @@ class ClaudeManager(QMainWindow):
         required = REQUIRED_CLAUDE_VERSION
         message = (
             tr("У тебя установлена Claude Code") + f" v{current_version}, " +
-            tr("а приложение работает только с") + f" v{required}.\n\n"
+            tr("а приложение сейчас в безопасном режиме и работает только с") + f" v{required}.\n\n"
             f"v{required} — " +
-            tr("последняя стабильная версия, на которой это приложение проверено целиком. "
-               "Более новые версии могут работать нестабильно или вовсе не запускаться.\n\n"
-               "Кроме того, начиная с v2.1.181 Anthropic заблокировала использование сторонних "
-               "Base URL и API ключей — запросы уходят только в официальный сервис Anthropic, "
-               "поэтому через FreeModel / Omniroute / любые прокси такая версия CLI работать не будет.\n\n") +
-            tr("Нажми «Откатить» — npm переустановит CLI на") + f" v{required}, " +
-            tr("и запуск снова заработает.")
+            tr("проверенная стабильная версия, на которой приложение работает всегда.\n\n"
+               "Нажми «Откатить» — установщик поставит проверенную версию, и запуск снова заработает.\n\n"
+               "Если откатывать версию не хочется — включи «Авто-обновление» на панели над кнопками. "
+               "В этом режиме приложение перестаёт следить за версией и запускает любую установленную.")
         )
         dlg = ConfirmActionDialog(
             title=tr("Запуск заблокирован"),
@@ -9900,10 +11417,202 @@ class ClaudeManager(QMainWindow):
                     return True
         return False
 
+    def _find_claude_bin_dir(self):
+        """Возвращает первую папку из _detect_claude_install_dirs, где реально
+        лежит claude.exe. Пустая строка, если ни в одной."""
+        for d in self._detect_claude_install_dirs():
+            for name in ("claude.exe", "claude.cmd", "claude.bat", "claude"):
+                if os.path.isfile(os.path.join(d, name)):
+                    return d
+        return ""
+
+    def _get_user_path_entries(self):
+        """Читает пользовательскую переменную PATH из реестра и возвращает
+        список её элементов (пустые отфильтрованы)."""
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ) as key:
+                try:
+                    val, _ = winreg.QueryValueEx(key, "Path")
+                except FileNotFoundError:
+                    return []
+        except Exception:
+            return []
+        return [p.strip() for p in str(val).split(";") if p.strip()]
+
+    def _on_add_to_path_clicked(self):
+        """Добавляет папку с claude в пользовательскую PATH-переменную,
+        если её там ещё нет. Показывает результат модалкой."""
+        target = self._find_claude_bin_dir()
+        if not target:
+            dlg = ConfirmActionDialog(
+                title=tr("Claude Code не найден"),
+                message=tr(
+                    "Не нашёл папку с установленной Claude Code. "
+                    "Сначала установи Claude Code кнопкой выше, потом жми «Добавить в PATH»."
+                ),
+                detail="",
+                confirm_text=tr("Понятно"),
+                icon="!",
+                icon_color=(235, 150, 90),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
+            return
+
+        entries = self._get_user_path_entries()
+        norm_target = os.path.normcase(os.path.normpath(target))
+        already_present = any(
+            os.path.normcase(os.path.normpath(p)) == norm_target for p in entries
+        )
+        if already_present:
+            dlg = ConfirmActionDialog(
+                title=tr("Уже в PATH"),
+                message=tr("Папка с Claude Code уже прописана в пользовательской PATH."),
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="✓",
+                icon_color=(80, 200, 110),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
+            return
+
+        dlg = ConfirmActionDialog(
+            title=tr("Добавить в PATH"),
+            message=tr(
+                "Добавит папку с Claude Code в пользовательскую PATH, чтобы "
+                "команду «claude» можно было запускать из любой консоли. "
+                "После этого перезапусти терминал."
+            ),
+            detail=target,
+            confirm_text=tr("Добавить"),
+            icon="↑",
+            icon_color=(120, 180, 230),
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+                try:
+                    val, val_type = winreg.QueryValueEx(key, "Path")
+                except FileNotFoundError:
+                    val, val_type = "", winreg.REG_EXPAND_SZ
+                current = str(val or "")
+                new_val = (current + (";" if current and not current.endswith(";") else "") + target)
+                winreg.SetValueEx(key, "Path", 0, val_type or winreg.REG_EXPAND_SZ, new_val)
+
+            # Broadcast WM_SETTINGCHANGE — чтобы уже запущенные оболочки заметили изменение.
+            try:
+                import ctypes
+                HWND_BROADCAST = 0xFFFF
+                WM_SETTINGCHANGE = 0x1A
+                SMTO_ABORTIFHUNG = 0x0002
+                ctypes.windll.user32.SendMessageTimeoutW(
+                    HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                    ctypes.c_wchar_p("Environment"),
+                    SMTO_ABORTIFHUNG, 5000, None
+                )
+            except Exception:
+                pass
+
+            self.log(f"Добавил в PATH: {target}", "success")
+            done = ConfirmActionDialog(
+                title=tr("Добавлено в PATH"),
+                message=tr(
+                    "Папка с Claude Code добавлена в пользовательскую PATH. "
+                    "Открой новую консоль и проверь: claude --version."
+                ),
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="✓",
+                icon_color=(80, 200, 110),
+                parent=self
+            )
+            done.cancel_btn.hide()
+            done.exec()
+        except Exception as e:
+            self.log(f"Не удалось добавить в PATH: {e}", "error")
+            err = ConfirmActionDialog(
+                title=tr("Не удалось добавить в PATH"),
+                message=tr("Что-то пошло не так при записи в реестр:") + f"\n{e}",
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="!",
+                icon_color=(235, 90, 90),
+                parent=self
+            )
+            err.cancel_btn.hide()
+            err.exec()
+
     def _update_install_button_state(self):
         """Обновляет кнопки и индикатор по состоянию (нет / нужная версия / другая версия)"""
         installed = self._is_claude_installed()
         local = getattr(self, "_claude_local_version", "")
+
+        auto_update = self.settings.get("auto_update_enabled", False)
+
+        # «Добавить в PATH» полезно только в auto-update режиме, где install.ps1
+        # кладёт бинарь в ~/.local/bin (эта папка обычно не в PATH). В безопасном
+        # режиме ставим через npm — папка %APPDATA%\npm уже в PATH.
+        if hasattr(self, "btn_add_to_path"):
+            self.btn_add_to_path.setEnabled(bool(auto_update))
+
+        if auto_update:
+            latest = getattr(self, "_claude_latest_version", "") or ""
+            update_available = False
+            if installed and local and latest:
+                try:
+                    update_available = compare_versions(latest, local) > 0
+                except Exception:
+                    update_available = False
+
+            if hasattr(self, "btn_install_claude"):
+                if not installed:
+                    self.btn_install_claude.setEnabled(True)
+                    self.btn_install_claude.setText(tr("Установить Claude Code"))
+                    self.btn_install_claude.set_hover_color(80, 200, 110)
+                elif update_available:
+                    self.btn_install_claude.setEnabled(True)
+                    self.btn_install_claude.setText(tr("Обновить Claude Code"))
+                    self.btn_install_claude.set_hover_color(245, 180, 60)
+                else:
+                    self.btn_install_claude.setEnabled(False)
+                    self.btn_install_claude.setText(tr("Установить Claude Code"))
+
+            if hasattr(self, "btn_uninstall_claude"):
+                self.btn_uninstall_claude.setEnabled(installed)
+
+            if hasattr(self, "claude_install_indicator"):
+                if not installed:
+                    self.claude_install_indicator.set_state("off")
+                elif update_available:
+                    self.claude_install_indicator.set_state("warn")
+                else:
+                    self.claude_install_indicator.set_state("on")
+
+            if hasattr(self, "claude_install_status_label"):
+                if not installed:
+                    text = tr("Не установлен")
+                    color = "rgb(255, 50, 50)"
+                elif update_available:
+                    text = tr("Доступно обновление") + (f" v{latest}" if latest else "")
+                    color = "rgb(245, 180, 60)"
+                else:
+                    text = tr("Установлена") + (f" v{local}" if local else "")
+                    color = "rgb(0, 255, 100)"
+                self.claude_install_status_label.setText(text)
+                self.claude_install_status_label.setStyleSheet(
+                    f"color: {color}; background: transparent; border: none;"
+                )
+            return
+
+        # ── Safe mode: пин на REQUIRED_CLAUDE_VERSION ──
         required = REQUIRED_CLAUDE_VERSION
 
         version_match = False
@@ -9920,22 +11629,21 @@ class ClaudeManager(QMainWindow):
         if hasattr(self, "btn_install_claude"):
             if not installed:
                 self.btn_install_claude.setEnabled(True)
-                self.btn_install_claude.setText(tr("Установить Claude Code") + f" v{required}")
+                self.btn_install_claude.setText(tr("Установить Claude Code"))
                 self.btn_install_claude.set_hover_color(80, 200, 110)
             elif version_unknown:
-                # Не знаем версию — не показываем «установлен», ждём перепроверки
                 self.btn_install_claude.setEnabled(False)
-                self.btn_install_claude.setText(tr("Проверка версии…"))
+                self.btn_install_claude.setText(tr("Установить Claude Code"))
             elif version_match:
                 self.btn_install_claude.setEnabled(False)
-                self.btn_install_claude.setText(f"Claude Code v{required} " + tr("установлен"))
+                self.btn_install_claude.setText(tr("Установить Claude Code"))
             elif version_higher:
                 self.btn_install_claude.setEnabled(True)
-                self.btn_install_claude.setText(tr("Откатить до") + f" v{required}")
+                self.btn_install_claude.setText(tr("Откатить Claude Code"))
                 self.btn_install_claude.set_hover_color(235, 150, 90)
             else:
                 self.btn_install_claude.setEnabled(True)
-                self.btn_install_claude.setText(tr("Установить") + f" v{required}")
+                self.btn_install_claude.setText(tr("Обновить Claude Code"))
                 self.btn_install_claude.set_hover_color(245, 180, 60)
 
         if hasattr(self, "btn_uninstall_claude"):
@@ -9945,7 +11653,6 @@ class ClaudeManager(QMainWindow):
             if not installed:
                 self.claude_install_indicator.set_state("off")
             elif version_unknown:
-                # Нейтральное «проверяю» — не зелёный, не красный
                 self.claude_install_indicator.set_state("warn")
             elif version_match:
                 self.claude_install_indicator.set_state("on")
@@ -9964,20 +11671,20 @@ class ClaudeManager(QMainWindow):
                     "color: rgb(180, 180, 190); background: transparent; border: none;"
                 )
             elif version_match:
-                self.claude_install_status_label.setText(tr("Установлен") + f" v{local}")
+                self.claude_install_status_label.setText(tr("Установлена") + f" v{local}")
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(0, 255, 100); background: transparent; border: none;"
                 )
             elif version_higher:
                 self.claude_install_status_label.setText(
-                    tr("Установлен") + f" v{local} — " + tr("нужна") + f" v{required} (" + tr("запуск заблокирован") + ")"
+                    tr("Установлена") + f" v{local} — " + tr("запуск заблокирован")
                 )
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(235, 150, 90); background: transparent; border: none;"
                 )
             else:
                 self.claude_install_status_label.setText(
-                    tr("Установлен") + f" v{local} → " + tr("нужна") + f" v{required}"
+                    tr("Доступно обновление") + f" v{required}"
                 )
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(245, 180, 60); background: transparent; border: none;"
@@ -10063,8 +11770,12 @@ class ClaudeManager(QMainWindow):
                 self._claude_binary_signature = self._compute_claude_binary_signature()
             except Exception:
                 pass
+            if self.settings.get("auto_update_enabled", False):
+                latest = check_claude_code_latest_version() or local
+            else:
+                latest = REQUIRED_CLAUDE_VERSION
             try:
-                self.claude_version_checked.emit(local, REQUIRED_CLAUDE_VERSION, "")
+                self.claude_version_checked.emit(local, latest, "")
             except Exception:
                 pass
         finally:
@@ -10086,6 +11797,8 @@ class ClaudeManager(QMainWindow):
         """Если установленная версия Claude Code меньше REQUIRED_CLAUDE_VERSION,
         показывает окно с рекомендацией обновиться. Срабатывает один раз за
         сессию (флаг _outdated_warning_shown)."""
+        if self.settings.get("auto_update_enabled", False):
+            return
         if getattr(self, "_outdated_warning_shown", False):
             return
         local = getattr(self, "_claude_local_version", "") or ""
@@ -10105,18 +11818,14 @@ class ClaudeManager(QMainWindow):
             "warning"
         )
         dlg = ConfirmActionDialog(
-            title=tr("Устаревшая   ерсия Claude Code"),
+            title=tr("Устаревшая версия Claude Code"),
             message=(
-                tr("У тебя установле  а Claude Code") + f" v{local} — " +
+                tr("У тебя установлена Claude Code") + f" v{local} — " +
                 tr("это устаревшая версия.") + "\n\n" +
                 tr("Проверенная и стабильная версия, на которой это приложение работает гарантированно, — ") +
                 f"v{required}. " +
-                tr("На более старых версиях возможны "
-                   "несовместимости (изменения в формате settings.json, путях, флагах CLI), "
-                   "из-за которых запуск через Omniroute / FreeModel может вести себя нестабильно.\n\n") +
                 tr("Рекомендуем обновить до") + f" v{required} — " +
-                tr("npm переустановит пакет, "
-                   "настройки в %USERPROFILE%\\.claude не пострадают.")
+                tr("установщик поставит нужную версию, настройки в %USERPROFILE%\\.claude не пострадают.")
             ),
             detail=f"npm install -g @anthropic-ai/claude-code@{required}",
             confirm_text=tr("Обновить до") + f" v{required}",
