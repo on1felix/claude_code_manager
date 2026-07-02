@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.6.7"  # Для обновлений
+APP_VERSION = "5.6.8"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -1116,11 +1116,11 @@ class StatusIndicator(QWidget):
 
         # Цвет точки и свечения по состоянию
         if self._state == "on":
-            glow = (0, 255, 100, int(60 * pulse))
-            brightness = int(180 + 75 * pulse)
-            core = (0, brightness, int(brightness * 0.4))
+            glow = (52, 211, 153, int(70 * pulse))
+            t = 0.85 + 0.15 * pulse
+            core = (int(52 * t), int(211 * t), int(153 * t))
         elif self._state == "fm_ok":
-            # Зелёный точно как текст «freemodel» (#34d399) — для бейджа freemodel.dev
+            # Зелёный как текст «freemodel» (#34d399) — для бейджа freemodel.dev
             glow = (52, 211, 153, int(70 * pulse))
             t = 0.85 + 0.15 * pulse
             core = (int(52 * t), int(211 * t), int(153 * t))
@@ -1153,7 +1153,7 @@ class StatusIndicator(QWidget):
 
 class FreemodelBrand(QWidget):
     """Логотип «freemodel.dev» + индикатор-точка справа.
-    «freemodel» — зелёный (#34d399, как на сайте fm.bluealitas.com),
+    «freemodel» — зелёный (#34d399, унифицированный цвет приложения),
     «.dev» — мягкий белый (#d1d5db). Цвет точки управляется через
     set_status(overall) по значениям API /api/status.
     Клик по бейджу эмитит сигнал `clicked` — главное окно открывает
@@ -3005,16 +3005,16 @@ class UpdateIndicator(QWidget):
         super().mouseReleaseEvent(event)
 
         if self._is_active:
-            # Зеле  ое свечение с плавной пульсацией (уменьшил радиус)
+            # Зелёное свечение с плавной пульсацией (уменьшил радиус)
             glow_radius = 5.0 + 2.5 * pulse
-            glow_alpha = int(60 * pulse)
-            painter.setBrush(QColor(0, 255, 100, glow_alpha))
+            glow_alpha = int(70 * pulse)
+            painter.setBrush(QColor(52, 211, 153, glow_alpha))
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(center, glow_radius, glow_radius)
 
             # Основная точка с плавной пульсацией яркости
-            brightness = int(180 + 75 * pulse)
-            painter.setBrush(QColor(0, brightness, int(brightness * 0.4)))
+            t = 0.85 + 0.15 * pulse
+            painter.setBrush(QColor(int(52 * t), int(211 * t), int(153 * t)))
             painter.drawEllipse(center, 4.5, 4.5)
         else:
             # Красная точка с плавной пульсацией
@@ -3135,7 +3135,7 @@ class GreenButton(QPushButton):
 
     def _update_style(self):
         base_r, base_g, base_b = 60, 60, 65
-        hover_r, hover_g, hover_b = 50, 180, 100
+        hover_r, hover_g, hover_b = 52, 211, 153  # новый FreeModel зелёный
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -4888,15 +4888,15 @@ class LanguageToggle(QWidget):
     """Компактный переключатель языка интерфейса EN / RU.
 
     Стилистика: слегка скруглённый прямоугольник (radius ~6, не «таблетка»).
-    EN активен → подсветка зелёная (#34d399, цвет «freemodel» с сайта).
+    EN активен → подсветка зелёная (#34d399, унифицированный зелёный цвет).
     RU активен → подсветка холодная голубоватая (#6aa9ff).
     Плавная анимация цвета пилюли и яркости лейблов между состояниями.
     """
     toggled = Signal(str)  # 'ru' | 'en'
 
-    # Цвета берутся из брендинга freemodel.dev (#34d399) и подбираются
+    # Цвета берутся из унифицированной палитры приложения (#34d399) и подбираются
     # к нему по контрасту для RU.
-    _EN_COL = (52, 211, 153)   # #34d399
+    _EN_COL = (52, 211, 153)   # новый зелёный
     _RU_COL = (106, 169, 255)  # #6aa9ff
 
     def __init__(self, lang="ru", parent=None):
@@ -5088,12 +5088,12 @@ class ContextToggle(QWidget):
     неактивной стороны в цвет соответствующей опции.
 
     200K активен → холодная голубоватая (#6aa9ff, как RU в LanguageToggle).
-    1M активен → зелёная (#34d399, как EN — цвет «freemodel» с сайта).
+    1M активен → зелёная (#34d399, как EN — унифицированный зелёный).
     """
     toggled = Signal(bool)  # True = 1M, False = 200K
 
     _200K_COL = (106, 169, 255)  # #6aa9ff (как RU)
-    _1M_COL = (52, 211, 153)     # #34d399 (как EN)
+    _1M_COL = (52, 211, 153)     # новый зелёный (как EN)
 
     def __init__(self, one_m=False, parent=None):
         super().__init__(parent)
@@ -5307,7 +5307,7 @@ class KeyToggle(QWidget):
     toggled = Signal(bool)  # True = ON/enabled
 
     _OFF_COL = (224, 90, 90)   # красный
-    _ON_COL = (52, 211, 153)   # #34d399 зелёный
+    _ON_COL = (52, 211, 153)   # новый зелёный
 
     def __init__(self, on=False, parent=None):
         super().__init__(parent)
@@ -6808,7 +6808,7 @@ class CubeGridSpinner(QWidget):
                0.0, 0.1, 0.2]
     _PERIOD = 1.3
 
-    def __init__(self, color=(120, 200, 130), size=72, parent=None):
+    def __init__(self, color=(52, 211, 153), size=72, parent=None):
         super().__init__(parent)
         if isinstance(color, QColor):
             self._color = color
@@ -6890,7 +6890,7 @@ class ClaudeInstallProgressDialog(QDialog):
             self._title_text = "Обновление Claude Code"
             self._action_word = "обновление"
         else:
-            self._accent = (120, 200, 130)  # зелёный
+            self._accent = (52, 211, 153)  # зелёный
             self._title_text = "Установка Claude Code"
             self._action_word = "установка"
 
@@ -6924,9 +6924,12 @@ class ClaudeInstallProgressDialog(QDialog):
         # Версии (если есть)
         sub_text = ""
         if is_update and old_version and new_version:
-            sub_text = f"v{old_version}  →  v{new_version}"
+            # Если new_version выглядит как номер версии (начинается с цифры), добавляем "v"
+            new_fmt = f"v{new_version}" if new_version and new_version[0].isdigit() else new_version
+            old_fmt = f"v{old_version}" if old_version and old_version[0].isdigit() else old_version
+            sub_text = f"{old_fmt}  →  {new_fmt}"
         elif new_version:
-            sub_text = f"v{new_version}"
+            sub_text = f"v{new_version}" if new_version[0].isdigit() else new_version
         self.sub_lbl = QLabel(sub_text)
         self.sub_lbl.setFont(QFont("Segoe UI", 10))
         self.sub_lbl.setStyleSheet(
@@ -7020,7 +7023,8 @@ class ClaudeInstallProgressDialog(QDialog):
             ver = actual_version or self._new_version
             self.title_lbl.setText(tr("Claude Code обновлён ✓"))
             if ver:
-                self.sub_lbl.setText(tr("Версия") + f" v{ver}")
+                ver_fmt = f"v{ver}" if ver[0].isdigit() else ver
+                self.sub_lbl.setText(tr("Версия") + f" {ver_fmt}")
             else:
                 self.sub_lbl.setText("")
             self.status_lbl.setText(tr(
@@ -7031,7 +7035,8 @@ class ClaudeInstallProgressDialog(QDialog):
             ver = actual_version or self._new_version
             self.title_lbl.setText(tr("Claude Code установлен ✓"))
             if ver:
-                self.sub_lbl.setText(tr("Версия") + f" v{ver}")
+                ver_fmt = f"v{ver}" if ver[0].isdigit() else ver
+                self.sub_lbl.setText(tr("Версия") + f" {ver_fmt}")
             else:
                 self.sub_lbl.setText("")
             self.status_lbl.setText(tr(
@@ -7330,7 +7335,7 @@ class StatusLineProgressDialog(QDialog):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
 
-        accent = (120, 200, 130)  # зелёный
+        accent = (52, 211, 153)  # зелёный
         r, g, b = accent
 
         main_layout = QVBoxLayout()
@@ -7375,7 +7380,7 @@ class StatusLineProgressDialog(QDialog):
         self.title_lbl.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.title_lbl)
 
-        self.progress_bar = AnimatedProgressBar("#78C882")
+        self.progress_bar = AnimatedProgressBar("#34d399")
         layout.addWidget(self.progress_bar)
 
         self.status_lbl = QLabel(tr("Подготовка…"))
@@ -7937,7 +7942,7 @@ class DownloadUpdateDialog(QDialog):
             self.icon_label.setText("✓")
             self.icon_label.setStyleSheet("""
                 QLabel {
-                    color: #64DC82;
+                    color: #34d399;
                     font-size: 28px;
                     font-weight: bold;
                     background: rgba(100, 220, 130, 0.15);
@@ -7951,7 +7956,7 @@ class DownloadUpdateDialog(QDialog):
             """)
             self.title_label.setStyleSheet("""
                 QLabel {
-                    color: #64DC82;
+                    color: #34d399;
                     font-size: 16px;
                     font-weight: bold;
                     background: transparent;
@@ -8494,7 +8499,7 @@ class ClaudeManager(QMainWindow):
 
         # Переключатель языка интерфейса EN / RU — абсолютная позиция в правом
         # верхнем углу, чуть левее индикатора обновлений. Цвет пилюли меняется
-        # плавно: EN — зелёный (#34d399, цвет «freemodel»), RU — голубоватый.
+        # плавно: EN — зелёный (#34d399, унифицированный), RU — голубоватый.
         self.language_toggle = LanguageToggle(LANG.lang if LANG else "ru", self)
         self.language_toggle.move(self.width() - 78 - 8, 12)
         self.language_toggle.raise_()
@@ -9229,7 +9234,7 @@ class ClaudeManager(QMainWindow):
         timestamp = time.strftime("%H:%M:%S")
 
         if level == "success":
-            color = "#00ff64"
+            color = "#34d399"  # FreeModel зелёный (52, 211, 153)
         elif level == "error":
             color = "#ff3232"
         elif level == "warning":
@@ -9310,7 +9315,7 @@ class ClaudeManager(QMainWindow):
 
         if is_running:
             self.status_label.setText(tr("Подключен"))
-            self.status_label.setStyleSheet("color: rgb(0, 255, 100);")
+            self.status_label.setStyleSheet("color: rgb(52, 211, 153);")
             self.btn_start_omniroute.setEnabled(False)
             self.btn_stop_omniroute.setEnabled(True)
             self.btn_claude.setEnabled(True)
@@ -10566,7 +10571,7 @@ class ClaudeManager(QMainWindow):
                 detail="irm https://claude.ai/install.ps1 | iex",
                 confirm_text=tr("Включить"),
                 icon="↑",
-                icon_color=(80, 200, 110),
+                icon_color=(52, 211, 153),
                 parent=self
             )
             if dlg.exec() != QDialog.Accepted:
@@ -10965,7 +10970,7 @@ class ClaudeManager(QMainWindow):
             )
             confirm_text = tr("Установить")
             icon = "↓"
-            icon_color = (120, 200, 130)
+            icon_color = (52, 211, 153)
 
         dlg = ConfirmActionDialog(
             title=title,
@@ -11090,6 +11095,9 @@ class ClaudeManager(QMainWindow):
         installed = self._is_claude_installed()
         local = getattr(self, "_claude_local_version", "")
 
+        # Получаем последнюю доступную версию из npm registry
+        latest_available = check_claude_code_latest_version() or tr("последняя")
+
         message = tr(
             "Скачает и поставит последнюю версию Claude Code официальным "
             "установщиком claude.ai.\n\n"
@@ -11102,7 +11110,7 @@ class ClaudeManager(QMainWindow):
             detail="irm https://claude.ai/install.ps1 | iex",
             confirm_text=tr("Обновить") if installed else tr("Установить"),
             icon="↑",
-            icon_color=(80, 200, 110),
+            icon_color=(52, 211, 153),
             parent=self
         )
         if dlg.exec() != QDialog.Accepted:
@@ -11115,7 +11123,7 @@ class ClaudeManager(QMainWindow):
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
             old_version=local,
-            new_version=tr("последняя"),
+            new_version=latest_available,
             parent=self,
         )
         self._claude_install_dlg = progress_dlg
@@ -11473,7 +11481,7 @@ class ClaudeManager(QMainWindow):
                 detail=target,
                 confirm_text=tr("Ок"),
                 icon="✓",
-                icon_color=(80, 200, 110),
+                icon_color=(52, 211, 153),
                 parent=self
             )
             dlg.cancel_btn.hide()
@@ -11531,7 +11539,7 @@ class ClaudeManager(QMainWindow):
                 detail=target,
                 confirm_text=tr("Ок"),
                 icon="✓",
-                icon_color=(80, 200, 110),
+                icon_color=(52, 211, 153),
                 parent=self
             )
             done.cancel_btn.hide()
@@ -11576,7 +11584,7 @@ class ClaudeManager(QMainWindow):
                 if not installed:
                     self.btn_install_claude.setEnabled(True)
                     self.btn_install_claude.setText(tr("Установить Claude Code"))
-                    self.btn_install_claude.set_hover_color(80, 200, 110)
+                    self.btn_install_claude.set_hover_color(52, 211, 153)
                 elif update_available:
                     self.btn_install_claude.setEnabled(True)
                     self.btn_install_claude.setText(tr("Обновить Claude Code"))
@@ -11605,7 +11613,7 @@ class ClaudeManager(QMainWindow):
                     color = "rgb(245, 180, 60)"
                 else:
                     text = tr("Установлена") + (f" v{local}" if local else "")
-                    color = "rgb(0, 255, 100)"
+                    color = "rgb(52, 211, 153)"  # новый зелёный
                 self.claude_install_status_label.setText(text)
                 self.claude_install_status_label.setStyleSheet(
                     f"color: {color}; background: transparent; border: none;"
@@ -11630,7 +11638,7 @@ class ClaudeManager(QMainWindow):
             if not installed:
                 self.btn_install_claude.setEnabled(True)
                 self.btn_install_claude.setText(tr("Установить Claude Code"))
-                self.btn_install_claude.set_hover_color(80, 200, 110)
+                self.btn_install_claude.set_hover_color(52, 211, 153)
             elif version_unknown:
                 self.btn_install_claude.setEnabled(False)
                 self.btn_install_claude.setText(tr("Установить Claude Code"))
@@ -11673,7 +11681,7 @@ class ClaudeManager(QMainWindow):
             elif version_match:
                 self.claude_install_status_label.setText(tr("Установлена") + f" v{local}")
                 self.claude_install_status_label.setStyleSheet(
-                    "color: rgb(0, 255, 100); background: transparent; border: none;"
+                    "color: rgb(52, 211, 153); background: transparent; border: none;"
                 )
             elif version_higher:
                 self.claude_install_status_label.setText(
@@ -11874,7 +11882,7 @@ class ClaudeManager(QMainWindow):
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
                 # 2) Основная попытка удаления npm-версии
-                "Write-Host '  даление Claude Code (npm)...' -ForegroundColor Cyan; "
+                "Write-Host 'Удаление Claude Code (npm)...' -ForegroundColor Cyan;"
                 "npm uninstall -g @anthropic-ai/claude-code; "
                 # 3) Если файл всё ещё залочен и остался — повторная попытка после паузы
                 "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@anthropic-ai\\claude-code'; "
