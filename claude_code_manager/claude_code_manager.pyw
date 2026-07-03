@@ -14,7 +14,7 @@
 AUTHOR_NAME = "on1felix"
 AUTHOR_DISCORD = "on1felix"
 AUTHOR_GITHUB = "https://github.com/on1felix/claude_code_manager"
-import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil
+import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil, re
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.6.9"  # Для обновлений
+APP_VERSION = "5.7"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -284,32 +284,71 @@ def save_settings(settings):
 # УПРАВЛЕНИЕ API-КЛЮЧАМИ (пул именованных ключей)
 # ============================================================
 # Модель: settings["api_keys"] = [
-#   {"id", "name", "value", "enabled": bool, "activated_at": epoch-seconds}
+#   {
+#     "id", "name", "value",
+#     "enabled": bool,               # True = ключ активен (зелёный)
+#     "activated_at": epoch-seconds, # когда включили (для истории)
+#     "limit_type": "" | "5h" | "7d",# тип лимита (только когда enabled=False)
+#     "resets_at":  0 | epoch-seconds, # когда лимит закончится и ключ автовключится
+#   }
 # ]
 # Цвет рамки карточки:
-#   red    — enabled=False (ключ выключен пользователем)
-#   green  — enabled=True и с активации прошло < 5ч (активен/подтверждён)
-#   yellow — enabled=True и прошло >= 5ч (нужно подтвердить работоспособность)
-# При запуске Claude берётся первый ЗЕЛЁНЫЙ ключ; его значение зеркалируется
-# в settings["custom_api_key"] для обратной совместимости со старым кодом.
+#   green  — enabled=True (ключ активен)
+#   yellow — enabled=False, limit_type='5h' (короткий 5-часовой лимит)
+#   red    — enabled=False, limit_type='7d' (длинный 7-дневный лимит)
+# При достижении resets_at ключ автоматически включается (enabled=True),
+# limit_type/resets_at очищаются. При запуске Claude берётся первый ЗЕЛЁНЫЙ
+# ключ; его значение зеркалируется в settings["custom_api_key"] для
+# обратной совместимости со старым кодом.
 
-KEY_REACTIVATE_SECONDS = 5 * 3600  # 5 часов до «пожелтения»
+KEY_LIMIT_5H_SECONDS = 5 * 3600
+KEY_LIMIT_7D_SECONDS = 7 * 24 * 3600
 
 def _new_key_id():
     return f"k{int(time.time() * 1000)}{random.randint(1000, 9999)}"
 
+def key_expired(key):
+    """True, если у выключенного ключа истёк таймер лимита и его пора автовключить."""
+    if key.get("enabled", False):
+        return False
+    resets_at = key.get("resets_at", 0) or 0
+    return bool(resets_at) and time.time() >= resets_at
+
+def reset_key_limit(key):
+    """Сбросить лимит и вернуть ключ в активное состояние.
+    Возвращает True, если что-то реально поменяли."""
+    changed = False
+    if not key.get("enabled", False):
+        key["enabled"] = True
+        key["activated_at"] = time.time()
+        changed = True
+    if key.get("limit_type"):
+        key["limit_type"] = ""
+        changed = True
+    if key.get("resets_at"):
+        key["resets_at"] = 0
+        changed = True
+    return changed
+
 def key_color_state(key):
     """green / red / yellow — визуальное состояние ключа.
-    - ON  (enabled=True)  → всегда зелёный.
-    - OFF (enabled=False) → красный сразу после выключения;
-      через 5 часов после выключения → жёлтый (напоминание/подтверждение).
+    - enabled=True                     → green (активен).
+    - enabled=False, limit_type='5h'   → yellow (5-часовой лимит).
+    - enabled=False, limit_type='7d'   → red (7-дневный лимит).
+    - enabled=False без корректного типа → red (fallback, старые записи).
+    Если resets_at уже наступил, считаем ключ включённым (green) — авто-сброс.
     """
     if key.get("enabled", False):
         return "green"
-    disabled = key.get("disabled_at", 0) or 0
-    if disabled and (time.time() - disabled) >= KEY_REACTIVATE_SECONDS:
+    # Если таймер лимита уже истёк — визуально ключ уже активен.
+    # (Реальное обновление enabled/limit_type делает refresh_state в UI-потоке
+    #  или reset_key_limit при загрузке.)
+    if key_expired(key):
+        return "green"
+    lt = key.get("limit_type", "")
+    if lt == "5h":
         return "yellow"
-    return "red"
+    return "red"  # '7d' или неизвестный → красный
 
 def first_active_key(settings):
     """Активный ключ, который реально пойдёт в ANTHROPIC_API_KEY.
@@ -365,12 +404,30 @@ def migrate_api_keys(settings):
         val = (k.get("value") or "").strip()
         if not val:
             continue
+        enabled = bool(k.get("enabled", True))
+        # limit_type: только для выключенных ключей; допустимые значения '5h'|'7d'.
+        limit_type = k.get("limit_type", "") if not enabled else ""
+        if limit_type not in ("5h", "7d"):
+            limit_type = "" if enabled else limit_type  # старые записи без типа → пусто
+        resets_at = k.get("resets_at", 0) or 0
+        try:
+            resets_at = float(resets_at)
+        except (TypeError, ValueError):
+            resets_at = 0
+        # Автосброс: если таймер лимита уже истёк, включаем ключ прямо в миграции —
+        # чтобы фактическое состояние соответствовало визуальному после долгой паузы.
+        if not enabled and resets_at and time.time() >= resets_at:
+            enabled = True
+            limit_type = ""
+            resets_at = 0
         norm.append({
             "id": k.get("id") or _new_key_id(),
             "name": (k.get("name") or "Ключ").strip() or "Ключ",
             "value": val,
-            "enabled": bool(k.get("enabled", True)),
+            "enabled": enabled,
             "activated_at": k.get("activated_at", 0) or 0,
+            "limit_type": limit_type if not enabled else "",
+            "resets_at": resets_at if not enabled else 0,
         })
     settings["api_keys"] = norm
     sync_custom_api_key(settings)
@@ -442,7 +499,7 @@ TRANSLATIONS = {
     "Добавьте или удалите URL из списка": "Add or remove URL from the list",
     "Добавить новый URL:": "Add new URL:",
     "Управление API ключами": "Manage API keys",
-    "Зелёный — активен, красный — выключен, жёлтый — подтвердите ключ (прошло 5 ч)": "Green — active, red — disabled, yellow — confirm the key (5 h passed)",
+    "Зелёный — активен. Жёлтый — 5-часовой лимит. Красный — 7-дневный лимит.": "Green — active. Yellow — 5-hour limit. Red — 7-day limit.",
     "Ключей пока нет — добавьте первый ниже": "No keys yet — add the first one below",
     "Добавить новый ключ:": "Add new key:",
     "Название": "Name",
@@ -453,6 +510,50 @@ TRANSLATIONS = {
     "активен": "active",
     "подтвердите": "confirm",
     "выключен": "disabled",
+    # ── Ultracode-совместимость: варнинг при downgrade
+    "не поддерживает ultracode — effort понижен до max":
+        "does not support ultracode — effort lowered to max",
+    "не поддерживает ultracode — понижаю до max":
+        "does not support ultracode — lowering to max",
+    # ── ModelDialog: подписи моделей (короткие описания)
+    "быстрый и дешёвый — для простых задач": "fast and cheap — for simple tasks",
+    "новый Sonnet — быстрее и умнее 4.6": "new Sonnet — faster and smarter than 4.6",
+    "мощный Opus — уверенно решает большинство задач": "powerful Opus — handles most tasks confidently",
+    "усиленный Opus 4.7 — сложные многошаговые задачи": "amplified Opus 4.7 — complex multi-step tasks",
+    "флагманский Opus 4.8 — максимум качества": "flagship Opus 4.8 — maximum quality",
+    "экспериментальная Fable 5 — необычные вопросы": "experimental Fable 5 — unusual questions",
+    # ── EffortDialog: заголовок и подписи уровней
+    "Reasoning Effort": "Reasoning Effort",
+    "минимум размышлений — быстро и дёшево": "minimal reasoning — fast and cheap",
+    "сбалансированный режим по умолчанию": "balanced default mode",
+    "усиленное рассуждение для сложных задач": "amplified reasoning for hard problems",
+    "экстремальный уровень — редкие тяжёлые случаи": "extreme reasoning — rare heavy cases",
+    "максимум размышлений — потолок обычного режима": "maximum reasoning — ceiling of normal mode",
+    "максимум мощности + многоагентная оркестрация": "maximum power + multi-agent orchestration",
+    "Reasoning effort изменён на": "Reasoning effort changed to",
+    # ── диалог выбора типа лимита при выключении ключа
+    "Выберите тип лимита": "Choose limit type",
+    "На какой срок отключить ключ?": "For how long to disable the key?",
+    "5-часовой лимит": "5-hour limit",
+    "7-дневный лимит": "7-day limit",
+    "макс. 5 часов": "max 5 hours",
+    "макс. 7 дней": "max 7 days",
+    # ── диалог ввода длительности
+    "Через сколько сбросится лимит?": "When should the limit reset?",
+    "Часы": "Hours",
+    "Минуты": "Minutes",
+    "Дни": "Days",
+    "Подтвердить": "Confirm",
+    "Максимум 5 часов": "Maximum 5 hours",
+    "Максимум 7 дней": "Maximum 7 days",
+    "Укажите время больше нуля": "Set a value greater than zero",
+    # ── обратный отсчёт на карточке ключа
+    "Сброс через": "Resets in",
+    "готов к сбросу": "ready to reset",
+    "д": "d",
+    "ч": "h",
+    "м": "m",
+    "с": "s",
     "Ключи не добавлены — откройте «Управление»": "No keys added — open “Manage”",
     "Нет активного API ключа — включите ключ в окне «Управление»": "No active API key — enable one in the “Manage” window",
     "Базовый URL нельзя удалить": "Default URL can't be removed",
@@ -888,14 +989,14 @@ TRANSLATIONS = {
 
     # ── Auto-update toggle confirm dialog
     "Включится официальный установщик "
-    "(irm https://claude.ai/install.ps1 | iex). Claude Code будет "
+    "(npm install -g @anthropic-ai/claude-code). Claude Code будет "
     "обновляться сам до последней версии.\n\n"
     "Сейчас всё работает и на последней версии. Если что-то "
     "вдруг перестанет работать — просто выключи этот переключатель, "
     "и приложение вернёт проверенную версию, на которой всё "
     "гарантированно работает.":
         "The official installer will kick in "
-        "(irm https://claude.ai/install.ps1 | iex). Claude Code will "
+        "(npm install -g @anthropic-ai/claude-code). Claude Code will "
         "keep itself updated to the latest version.\n\n"
         "Right now everything works on the latest version too. If something "
         "suddenly breaks — just turn this switch off and the app will bring back "
@@ -903,12 +1004,12 @@ TRANSLATIONS = {
     "Включить": "Enable",
 
     # ── Install Claude Code (official variant title/text)
-    "Скачает и поставит последнюю версию Claude Code официальным "
-    "установщиком claude.ai.\n\n"
+    "Скачает и поставит последнюю версию Claude Code через npm "
+    "(@anthropic-ai/claude-code).\n\n"
     "Настройки в %USERPROFILE%\\.claude не пострадают.\n\n"
     "Откроется окно PowerShell, где пойдёт установка.":
-        "Downloads and installs the latest Claude Code via the official "
-        "claude.ai installer.\n\n"
+        "Downloads and installs the latest Claude Code via npm "
+        "(@anthropic-ai/claude-code).\n\n"
         "Settings in %USERPROFILE%\\.claude are not affected.\n\n"
         "A PowerShell window will open and the install will start.",
     "Обновление Claude Code": "Update Claude Code",
@@ -3875,6 +3976,157 @@ class PickerComboBox(StyledComboBox):
             self.setCurrentText(value)
 
 
+class EffortPickerComboBox(PickerComboBox):
+    """PickerComboBox с подменённым popup: вместо PickerDialog со списком
+    карточек открывается компактный EffortDialog с ползунком.
+    Текст текущего значения рисуется вручную — центр, жирный, ВЕРХНИЙ регистр
+    (как метки в EffortSlider), чтобы состояние комбо визуально совпадало с
+    активной ячейкой ползунка."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Явно храним QColor текста — чтобы не парсить его каждый paintEvent.
+        # Обновляется через setTextColor().
+        self._text_qcolor = QColor(200, 200, 200)
+        # Комбо на главной странице — display-only. Effort меняется теперь
+        # внутри ModelDialog через встроенный EffortSlider, поэтому клик по
+        # самому комбо ничего не открывает: убираем указатель, отключаем
+        # клавиатурный фокус.
+        self.setCursor(Qt.ArrowCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+
+    def setTextColor(self, color):
+        # Синхронизируем свой QColor и позволяем базе применить CSS
+        # (нужно только для цвета placeholder-текста стрелки drop-down).
+        try:
+            if isinstance(color, QColor):
+                self._text_qcolor = QColor(color)
+            elif isinstance(color, tuple) and len(color) >= 3:
+                self._text_qcolor = QColor(int(color[0]), int(color[1]), int(color[2]))
+            elif isinstance(color, str):
+                m = re.search(r"(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", color)
+                if m:
+                    self._text_qcolor = QColor(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            pass
+        super().setTextColor(color)
+
+    def paintEvent(self, event):
+        # Сначала рисуем стандартный «фон + рамка» через стиль, но БЕЗ текста
+        # (currentText = "") — потом рисуем свой центрированный жирный UPPERCASE.
+        from PySide6.QtWidgets import QStyleOptionComboBox, QStylePainter, QStyle
+        painter = QStylePainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        opt.currentText = ""
+        opt.currentIcon = QIcon()
+        painter.drawComplexControl(QStyle.CC_ComboBox, opt)
+
+        # Наш текст: жирный, UPPERCASE, по центру
+        text = (self.currentText() or "").upper()
+        if not text:
+            return
+        f = QFont(self.font())
+        f.setBold(True)
+        painter.setFont(f)
+        painter.setPen(QPen(self._text_qcolor))
+        # Оставляем небольшой отступ справа под треугольник drop-down,
+        # чтобы длинное "ULTRACODE" не наезжало на стрелку.
+        rect = self.rect().adjusted(6, 0, -14, 0)
+        painter.drawText(rect, Qt.AlignCenter, text)
+
+    def showPopup(self):
+        # Отдельного popup больше нет: effort меняется через EffortSlider
+        # внутри ModelDialog. Оставляем метод как no-op, чтобы стандартный
+        # QComboBox-механизм не пытался открыть системный список.
+        return
+
+    def mousePressEvent(self, event):
+        # Клик по комбо ничего не делает — комбо теперь display-only.
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
+    def keyPressEvent(self, event):
+        # Space/Enter на native QComboBox открывают popup — нам это не нужно.
+        event.accept()
+
+    def enterEvent(self, event):
+        # Комбо display-only — hover-подсветка рамки не нужна. Явно держим
+        # _is_hovered=False, чтобы StyledComboBox._animate_hover не оживил
+        # рамку до яркого цвета акцента.
+        self._is_hovered = False
+        # super() базового QWidget всё равно нужен для системных сигналов
+        # (курсор и т.п.), но НЕ StyledComboBox.enterEvent, который взводит флаг.
+        QComboBox.enterEvent(self, event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        QComboBox.leaveEvent(self, event)
+
+
+class ModelPickerComboBox(PickerComboBox):
+    """PickerComboBox для FreeModel-модели: при клике открывает ModelDialog
+    вместо стандартного списка карточек. Текст в комбо просто жирный —
+    без принудительного UPPERCASE (модели уже читаются в 'Opus 4.8' виде,
+    ломать capitalisation не нужно)."""
+
+    # Отдельный сигнал: model + effort. Родитель (ClaudeCodeManager) слушает
+    # его и вызывает и _fm_model_changed, и _on_effort_changed. Стандартный
+    # currentTextChanged на комбо продолжает работать для модели.
+    modelEffortPicked = Signal(str, str)
+
+    def showPopup(self):
+        if self._picker_dlg is not None:
+            return
+        cur = self.currentText()
+        if cur not in MODEL_ORDER:
+            cur = "Opus 4.8"
+        # Пробрасываем текущий effort из settings в ModelDialog
+        current_effort = "high"
+        try:
+            parent_win = self.window()
+            if parent_win is not None and hasattr(parent_win, "settings"):
+                eff = parent_win.settings.get("reasoning_effort", "high")
+                if eff in EFFORT_LEVELS:
+                    current_effort = eff
+        except Exception:
+            pass
+        dlg = ModelDialog(current_model=cur, parent=self.window(), current_effort=current_effort)
+        dlg.applied.connect(self._on_model_effort_picked)
+        dlg.destroyed.connect(self._on_picker_destroyed)
+        self._picker_dlg = dlg
+
+        def _show_and_position():
+            dlg.show()
+            dlg.adjustSize()
+            dw, dh = dlg.width(), dlg.height()
+            parent_win = self.window()
+            try:
+                if parent_win is not None:
+                    pg = parent_win.frameGeometry()
+                    center = pg.center()
+                    dlg.move(center.x() - dw // 2, center.y() - dh // 2)
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _show_and_position)
+
+    def _on_model_effort_picked(self, model, effort):
+        # Сначала выставляем сам текст комбо (currentTextChanged триггерит
+        # _fm_model_changed → _on_effort_changed через downgrade-логику), а
+        # потом отдельно пробрасываем effort, чтобы владелец приложения
+        # сохранил его и обновил EffortPickerComboBox.
+        if model and model != self.currentText():
+            self.setCurrentText(model)
+        try:
+            self.modelEffortPicked.emit(model, effort)
+        except Exception:
+            pass
+
+
 # ============================================================
 # МОДЕЛЬ ДЛЯ КОМБОБОКСА С КАСТОМНЫМИ ЦВЕТАМИ
 # ============================================================
@@ -5299,6 +5551,928 @@ class _CtxShield(QWidget):
 
 
 # ============================================================
+# EFFORT SLIDER — широкий ползунок выбора reasoning-effort
+# ============================================================
+# Идеология: расширенная копия LanguageToggle с 5 позициями.
+# Ползунок плавно скользит между ячейками, цвет пилюли плавно лерпится
+# между цветами уровней. Ultracode подсвечивается фиолетовым свечением.
+
+EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultracode"]
+
+EFFORT_COLORS = {
+    "low":       (120, 220, 130),  # зелёный
+    "medium":    (180, 210, 130),  # оливково-зелёный
+    "high":      (235, 180, 110),  # оранжевый
+    "xhigh":     (235, 120, 100),  # красновато-оранжевый
+    "max":       (220, 70, 85),    # насыщенно-красный — потолок «чистого» reasoning
+    "ultracode": (170, 110, 255),  # фиолетовый — max + оркестрация
+}
+
+EFFORT_LABELS = {
+    "low":       "LOW",
+    "medium":    "MEDIUM",
+    "high":      "HIGH",
+    "xhigh":     "XHIGH",
+    "max":       "MAX",
+    "ultracode": "ULTRACODE",
+}
+
+
+class EffortSlider(QWidget):
+    """Широкий 5-позиционный ползунок выбора reasoning-effort.
+    Пилюля плавно скользит между позициями, цвет плавно интерполируется
+    между цветами соседних уровней. Клик по любой ячейке = переход на неё."""
+
+    changed = Signal(str)  # эмит с новым уровнем
+
+    def __init__(self, level="high", parent=None, disabled_levels=None):
+        super().__init__(parent)
+        self.setFixedSize(468, 34)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        if level not in EFFORT_LEVELS:
+            level = "high"
+        self._level = level
+        # progress ∈ [0 .. len-1] — реальная непрерывная позиция пилюли
+        self._target = float(EFFORT_LEVELS.index(level))
+        self._progress = self._target
+        # hover: подсветка неактивной ячейки при наведении (по индексу)
+        self._hover_idx = -1
+        self._hover_alpha = {i: 0.0 for i in range(len(EFFORT_LEVELS))}
+        self._hover_target = {i: 0.0 for i in range(len(EFFORT_LEVELS))}
+        # Заблокированные уровни (например, ultracode при 4.6-tier модели) —
+        # клик по такой ячейке не переключает выбор, текст рисуется тусклым.
+        self._disabled = set(disabled_levels or ())
+        # пульс фиолетового свечения для ultracode
+        self._pulse = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def set_level(self, level, animate=True):
+        if level not in EFFORT_LEVELS:
+            return
+        if level in self._disabled:
+            return
+        if level == self._level:
+            return
+        self._level = level
+        self._target = float(EFFORT_LEVELS.index(level))
+        if not animate:
+            self._progress = self._target
+        self.update()
+
+    def set_disabled_levels(self, disabled_levels):
+        """Обновляет набор запрещённых уровней на лету. Если сам текущий
+        уровень попал в запрет — сдвигаем ползунок на ближайший разрешённый
+        слева, чтобы Ultracode плавно поехал на MAX при выборе 4.6-модели."""
+        new_disabled = set(disabled_levels or ())
+        if new_disabled == self._disabled:
+            return
+        self._disabled = new_disabled
+        if self._level in self._disabled:
+            i = EFFORT_LEVELS.index(self._level)
+            fallback = None
+            for j in range(i - 1, -1, -1):
+                candidate = EFFORT_LEVELS[j]
+                if candidate not in self._disabled:
+                    fallback = candidate
+                    break
+            if fallback is None:
+                for j in range(i + 1, len(EFFORT_LEVELS)):
+                    candidate = EFFORT_LEVELS[j]
+                    if candidate not in self._disabled:
+                        fallback = candidate
+                        break
+            if fallback is not None:
+                self._level = fallback
+                self._target = float(EFFORT_LEVELS.index(fallback))
+                self.changed.emit(fallback)
+        self.update()
+
+    def level(self):
+        return self._level
+
+    def _cell_width(self):
+        return self.width() / len(EFFORT_LEVELS)
+
+    def _idx_from_x(self, x):
+        cw = self._cell_width()
+        idx = int(x // cw)
+        return max(0, min(len(EFFORT_LEVELS) - 1, idx))
+
+    def _lerp_color(self, prog):
+        """Плавная интерполяция цвета пилюли на основе непрерывной позиции."""
+        n = len(EFFORT_LEVELS)
+        prog = max(0.0, min(n - 1, prog))
+        i = int(prog)
+        f = prog - i
+        if i >= n - 1:
+            return EFFORT_COLORS[EFFORT_LEVELS[-1]]
+        c0 = EFFORT_COLORS[EFFORT_LEVELS[i]]
+        c1 = EFFORT_COLORS[EFFORT_LEVELS[i + 1]]
+        return (
+            int(c0[0] + (c1[0] - c0[0]) * f),
+            int(c0[1] + (c1[1] - c0[1]) * f),
+            int(c0[2] + (c1[2] - c0[2]) * f),
+        )
+
+    def _tick(self):
+        changed = False
+        d = self._target - self._progress
+        if abs(d) > 0.004:
+            self._progress += d * 0.18
+            changed = True
+        elif self._progress != self._target:
+            self._progress = self._target
+            changed = True
+        for i in range(len(EFFORT_LEVELS)):
+            cur = self._hover_alpha[i]
+            tgt = self._hover_target[i]
+            d = tgt - cur
+            if abs(d) > 0.003:
+                self._hover_alpha[i] = cur + d * 0.09
+                changed = True
+            elif cur != tgt:
+                self._hover_alpha[i] = tgt
+                changed = True
+        # пульс фиолетового ultracode — вечная синусоида
+        self._pulse = (self._pulse + 0.045) % (math.pi * 2)
+        if self._level == "ultracode" or abs(self._progress - (len(EFFORT_LEVELS) - 1)) < 0.5:
+            changed = True
+        if changed:
+            self.update()
+
+    def mousePressEvent(self, event):
+        idx = self._idx_from_x(event.pos().x())
+        new_level = EFFORT_LEVELS[idx]
+        if new_level in self._disabled:
+            return
+        if new_level != self._level:
+            self._level = new_level
+            self._target = float(idx)
+            self.changed.emit(new_level)
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        idx = self._idx_from_x(event.pos().x())
+        # Подсвечиваем ТОЛЬКО ячейку под курсором, если она не текущая
+        # и не заблокирована.
+        cur_idx = EFFORT_LEVELS.index(self._level)
+        for i in range(len(EFFORT_LEVELS)):
+            disabled_here = EFFORT_LEVELS[i] in self._disabled
+            self._hover_target[i] = (1.0 if (i == idx and i != cur_idx and not disabled_here) else 0.0)
+        self._hover_idx = idx
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        for i in range(len(EFFORT_LEVELS)):
+            self._hover_target[i] = 0.0
+        self._hover_idx = -1
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        n = len(EFFORT_LEVELS)
+        cw = w / n
+
+        track_r = 8.0
+        pill_r = 6.5
+
+        # Трек
+        p.setBrush(QColor(28, 28, 33))
+        p.setPen(QPen(QColor(60, 60, 65), 1.4))
+        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
+
+        # Тонкие разделители между ячейками
+        p.setPen(QPen(QColor(52, 52, 58), 1.0))
+        for i in range(1, n):
+            x = i * cw
+            p.drawLine(QPointF(x, 4), QPointF(x, h - 4))
+
+        # Позиция и цвет пилюли
+        r, g, b = self._lerp_color(self._progress)
+        pad = 3.0
+        pill_w = cw - pad * 1.4
+        pill_x = self._progress * cw + (cw - pill_w) / 2.0
+
+        # Мягкое свечение по периметру пилюли (внутри клипа трека).
+        # Для ultracode свечение усилено пульсом.
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
+        p.save()
+        p.setClipPath(clip)
+        is_ultra = self._level == "ultracode" or (self._progress > n - 1.5)
+        pulse_amp = (0.5 + 0.5 * math.sin(self._pulse)) if is_ultra else 0.0
+        glow_boost = 1.0 + 0.8 * pulse_amp
+        for i in range(1, 4):
+            base_alpha = 48 * (1 - (i - 1) / 3.2) * glow_boost
+            alpha = int(max(0, min(200, base_alpha)))
+            p.setPen(QPen(QColor(r, g, b, alpha), 1))
+            p.setBrush(Qt.NoBrush)
+            ex = i * 1.4
+            p.drawRoundedRect(
+                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
+                pill_r + ex, pill_r + ex
+            )
+        p.restore()
+
+        # Сама пилюля — вертикальный градиент
+        grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
+        grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
+        grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
+        p.setBrush(QBrush(grad))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
+
+        # Тексты уровней
+        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        for i, lvl in enumerate(EFFORT_LEVELS):
+            cx = i * cw
+            rect = QRectF(cx, 0, cw, h)
+            is_disabled = lvl in self._disabled
+            # Активная ячейка (на которую смотрит пилюля) — тёмный текст на цветном фоне
+            dist = abs(self._progress - i)
+            if dist < 0.5:
+                # Насколько «под пилюлей» — от 1.0 в центре до 0 на границе
+                cover = 1.0 - dist * 2.0
+                # тёмный текст на цветном фоне для контраста
+                dark = QColor(20, 22, 28)
+                # неактивная база — серый
+                shade = int(140 + 20 * (1.0 - dist))
+                pale = QColor(shade, shade, shade + 4)
+                pen = QColor(
+                    int(pale.red()   + (dark.red()   - pale.red())   * cover),
+                    int(pale.green() + (dark.green() - pale.green()) * cover),
+                    int(pale.blue()  + (dark.blue()  - pale.blue())  * cover),
+                )
+            else:
+                # Неактивная — серый с плавной hover-подсветкой в цвет уровня
+                lc = EFFORT_COLORS[lvl]
+                shade = 145
+                base = QColor(shade, shade, shade + 4)
+                hover = self._hover_alpha.get(i, 0.0)
+                pen = QColor(
+                    int(base.red()   + (lc[0] - base.red())   * hover),
+                    int(base.green() + (lc[1] - base.green()) * hover),
+                    int(base.blue()  + (lc[2] - base.blue())  * hover),
+                )
+            # Заблокированные ячейки — заметно тусклее (перекрашиваем поверх)
+            if is_disabled:
+                pen = QColor(80, 80, 86)
+            p.setPen(pen)
+            p.drawText(rect, Qt.AlignCenter, EFFORT_LABELS[lvl])
+
+        p.end()
+
+
+class EffortDialog(QDialog):
+    """Широкое окно выбора reasoning-effort. Ползунок EffortSlider,
+    крупный текст текущего уровня, короткое описание. Никаких кнопок:
+    закрытие крестиком (или Esc) — применение уровня, который стоит
+    в ползунке в этот момент."""
+
+    applied = Signal(str)  # эмит с финальным уровнем при закрытии
+
+    LEVEL_DESCRIPTIONS = {
+        "low":       "минимум размышлений — быстро и дёшево",
+        "medium":    "сбалансированный режим по умолчанию",
+        "high":      "усиленное рассуждение для сложных задач",
+        "xhigh":     "экстремальный уровень — редкие тяжёлые случаи",
+        "max":       "максимум размышлений — потолок обычного режима",
+        "ultracode": "максимум мощности + многоагентная оркестрация",
+    }
+    LEVEL_DESCRIPTIONS_EN = {
+        "low":       "minimal reasoning — fast and cheap",
+        "medium":    "balanced default mode",
+        "high":      "amplified reasoning for hard problems",
+        "xhigh":     "extreme reasoning — rare heavy cases",
+        "max":       "maximum reasoning — ceiling of normal mode",
+        "ultracode": "maximum power + multi-agent orchestration",
+    }
+
+    def __init__(self, current_level="high", parent=None, current_model=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        # Обязательно: без WA_DeleteOnClose сигнал destroyed не эмитится и
+        # EffortPickerComboBox._picker_dlg остаётся non-None → повторный клик
+        # по комбо ничего не делает до перезапуска приложения.
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setModal(True)
+        # Если текущая модель — Opus 4.6 или Sonnet 4.6, ultracode отключен
+        # (эти модели не поддерживают многоагентную оркестрацию).
+        self._disabled_levels = set()
+        if current_model in MODELS_WITHOUT_ULTRACODE:
+            self._disabled_levels.add("ultracode")
+        if current_level not in EFFORT_LEVELS:
+            current_level = "high"
+        # Если выбранный уровень заблокирован для этой модели — стартуем с max
+        if current_level in self._disabled_levels:
+            current_level = "max"
+        self._level = current_level
+        self._initial_level = current_level
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 14)
+
+        container = DottedFrame()
+        container.setObjectName("effortDialogContainer")
+        container.setStyleSheet("""
+            QFrame#effortDialogContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        outer.addWidget(container)
+
+        shadow = QGraphicsDropShadowEffect(container)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 6)
+        container.setGraphicsEffect(shadow)
+
+        inner = QVBoxLayout(container)
+        inner.setContentsMargins(18, 12, 18, 16)
+        inner.setSpacing(10)
+
+        # Заголовок + крестик
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        title = QLabel(tr("Reasoning Effort"))
+        title.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        title.setStyleSheet("color: rgb(200, 200, 210); background: transparent; border: none;")
+        head.addWidget(title)
+        head.addStretch()
+        self.close_btn = _CloseButton(parent=container)
+        self.close_btn.setFixedSize(24, 24)
+        self.close_btn.clicked.connect(self.close)
+        head.addWidget(self.close_btn)
+        inner.addLayout(head)
+
+        # Ползунок
+        row = QHBoxLayout()
+        row.addStretch()
+        self.slider = EffortSlider(level=current_level, disabled_levels=self._disabled_levels)
+        self.slider.changed.connect(self._on_slider_changed)
+        row.addWidget(self.slider)
+        row.addStretch()
+        inner.addLayout(row)
+
+        # Описание уровня — цвет = цвет уровня
+        self.desc_lbl = QLabel(self._desc_text(current_level))
+        self.desc_lbl.setFont(QFont("Segoe UI", 9))
+        self.desc_lbl.setAlignment(Qt.AlignCenter)
+        self._apply_desc_color(current_level)
+        self.desc_lbl.setWordWrap(True)
+        inner.addWidget(self.desc_lbl)
+
+        self.setFixedWidth(560)
+        self.adjustSize()
+
+        # Плавное появление
+        self.setWindowOpacity(0.0)
+        self._fade_in = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_in.setDuration(220)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        self._closing = False
+
+    def _desc_text(self, level):
+        # LANG хранит текущий язык в атрибуте .lang (не .get()) — раньше здесь
+        # был неверный LANG.get(), который валился в except и всегда отдавал RU.
+        try:
+            if LANG is not None and LANG.lang == "en":
+                return self.LEVEL_DESCRIPTIONS_EN.get(level, "")
+        except Exception:
+            pass
+        return self.LEVEL_DESCRIPTIONS.get(level, "")
+
+    def _apply_desc_color(self, level):
+        r, g, b = EFFORT_COLORS.get(level, (200, 200, 200))
+        self.desc_lbl.setStyleSheet(
+            f"color: rgb({r},{g},{b}); background: transparent; border: none;"
+        )
+
+    def _on_slider_changed(self, level):
+        self._level = level
+        self.desc_lbl.setText(self._desc_text(level))
+        self._apply_desc_color(level)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_in.start()
+
+    def closeEvent(self, event):
+        if self._closing:
+            super().closeEvent(event)
+            return
+        self._closing = True
+        event.ignore()
+        # Применяем выбор ТОЛЬКО если он изменился — чтобы Esc/крестик без
+        # перемещения ползунка не гнал лишний save.
+        if self._level != self._initial_level:
+            try:
+                self.applied.emit(self._level)
+            except Exception:
+                pass
+        fade = QPropertyAnimation(self, b"windowOpacity", self)
+        fade.setDuration(200)
+        fade.setStartValue(self.windowOpacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(self.close)
+        fade.start()
+        self._fade_out = fade
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        # Стрелки влево/вправо для клавиатурной навигации, пропуская
+        # заблокированные уровни (ultracode при 4.6-tier модели).
+        if event.key() in (Qt.Key_Left, Qt.Key_Right):
+            step = -1 if event.key() == Qt.Key_Left else 1
+            i = EFFORT_LEVELS.index(self._level) + step
+            while 0 <= i < len(EFFORT_LEVELS):
+                candidate = EFFORT_LEVELS[i]
+                if candidate not in self._disabled_levels:
+                    self._on_slider_changed(candidate)
+                    self.slider.set_level(candidate)
+                    return
+                i += step
+            return
+        super().keyPressEvent(event)
+
+
+# ============================================================
+# MODEL SLIDER — такой же ползунок, но для выбора модели
+# ============================================================
+# Порядок фиксированный: от «дешёвых» Sonnet до «Fable 5» — совпадает с
+# цветовой градацией зелёный → красный. Ползунок 1-в-1 копирует EffortSlider,
+# только позиций 6 и вместо пульсирующего свечения — фиолетовое подсвечение
+# на Fable 5 (флагманский платный уровень).
+
+MODEL_ORDER = ["Sonnet 4.6", "Sonnet 5", "Opus 4.6", "Opus 4.7", "Opus 4.8", "Fable 5"]
+
+MODEL_COLORS_MAP = {
+    "Sonnet 4.6": (130, 220, 130),   # насыщенно-зелёный
+    "Sonnet 5":   (180, 235, 150),   # светло-зелёный (чуть желтее 4.6)
+    "Opus 4.6":   (230, 220, 130),
+    "Opus 4.7":   (235, 180, 110),
+    "Opus 4.8":   (235, 150, 130),
+    "Fable 5":    (235,  90,  90),
+}
+
+MODEL_LABELS_SHORT = {
+    "Sonnet 4.6": "Sonnet 4.6",
+    "Sonnet 5":   "Sonnet 5",
+    "Opus 4.6":   "Opus 4.6",
+    "Opus 4.7":   "Opus 4.7",
+    "Opus 4.8":   "Opus 4.8",
+    "Fable 5":    "Fable 5",
+}
+
+# Модели, у которых нет поддержки ultracode (устаревшие 4.6-tier).
+# Если пользователь выбирает Opus 4.6 или Sonnet 4.6 — ultracode принудительно
+# понижается до max. И наоборот: в EffortDialog при этих моделях ячейка
+# ULTRACODE помечается disabled.
+MODELS_WITHOUT_ULTRACODE = {"Sonnet 4.6", "Opus 4.6"}
+
+
+class ModelSlider(QWidget):
+    """6-позиционный ползунок выбора модели. Копия EffortSlider,
+    подстроенная под MODEL_ORDER/MODEL_COLORS_MAP."""
+
+    changed = Signal(str)  # эмит с новым именем модели
+
+    def __init__(self, model="Opus 4.8", parent=None):
+        super().__init__(parent)
+        self.setFixedSize(468, 34)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        if model not in MODEL_ORDER:
+            model = "Opus 4.8"
+        self._model = model
+        self._target = float(MODEL_ORDER.index(model))
+        self._progress = self._target
+        self._hover_idx = -1
+        self._hover_alpha = {i: 0.0 for i in range(len(MODEL_ORDER))}
+        self._hover_target = {i: 0.0 for i in range(len(MODEL_ORDER))}
+        # Пульс для Fable 5 — красноватое свечение, как ultracode у effort
+        self._pulse = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def set_model(self, model, animate=True):
+        if model not in MODEL_ORDER:
+            return
+        if model == self._model:
+            return
+        self._model = model
+        self._target = float(MODEL_ORDER.index(model))
+        if not animate:
+            self._progress = self._target
+        self.update()
+
+    def model(self):
+        return self._model
+
+    def _cell_width(self):
+        return self.width() / len(MODEL_ORDER)
+
+    def _idx_from_x(self, x):
+        cw = self._cell_width()
+        idx = int(x // cw)
+        return max(0, min(len(MODEL_ORDER) - 1, idx))
+
+    def _lerp_color(self, prog):
+        n = len(MODEL_ORDER)
+        prog = max(0.0, min(n - 1, prog))
+        i = int(prog)
+        f = prog - i
+        if i >= n - 1:
+            return MODEL_COLORS_MAP[MODEL_ORDER[-1]]
+        c0 = MODEL_COLORS_MAP[MODEL_ORDER[i]]
+        c1 = MODEL_COLORS_MAP[MODEL_ORDER[i + 1]]
+        return (
+            int(c0[0] + (c1[0] - c0[0]) * f),
+            int(c0[1] + (c1[1] - c0[1]) * f),
+            int(c0[2] + (c1[2] - c0[2]) * f),
+        )
+
+    def _tick(self):
+        changed = False
+        d = self._target - self._progress
+        if abs(d) > 0.004:
+            self._progress += d * 0.18
+            changed = True
+        elif self._progress != self._target:
+            self._progress = self._target
+            changed = True
+        for i in range(len(MODEL_ORDER)):
+            cur = self._hover_alpha[i]
+            tgt = self._hover_target[i]
+            d = tgt - cur
+            if abs(d) > 0.003:
+                self._hover_alpha[i] = cur + d * 0.09
+                changed = True
+            elif cur != tgt:
+                self._hover_alpha[i] = tgt
+                changed = True
+        self._pulse = (self._pulse + 0.045) % (math.pi * 2)
+        if self._model == "Fable 5" or abs(self._progress - (len(MODEL_ORDER) - 1)) < 0.5:
+            changed = True
+        if changed:
+            self.update()
+
+    def mousePressEvent(self, event):
+        idx = self._idx_from_x(event.pos().x())
+        new_model = MODEL_ORDER[idx]
+        if new_model != self._model:
+            self._model = new_model
+            self._target = float(idx)
+            self.changed.emit(new_model)
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        idx = self._idx_from_x(event.pos().x())
+        cur_idx = MODEL_ORDER.index(self._model)
+        for i in range(len(MODEL_ORDER)):
+            self._hover_target[i] = (1.0 if (i == idx and i != cur_idx) else 0.0)
+        self._hover_idx = idx
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        for i in range(len(MODEL_ORDER)):
+            self._hover_target[i] = 0.0
+        self._hover_idx = -1
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        n = len(MODEL_ORDER)
+        cw = w / n
+
+        track_r = 8.0
+        pill_r = 6.5
+
+        p.setBrush(QColor(28, 28, 33))
+        p.setPen(QPen(QColor(60, 60, 65), 1.4))
+        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
+
+        p.setPen(QPen(QColor(52, 52, 58), 1.0))
+        for i in range(1, n):
+            x = i * cw
+            p.drawLine(QPointF(x, 4), QPointF(x, h - 4))
+
+        r, g, b = self._lerp_color(self._progress)
+        pad = 3.0
+        pill_w = cw - pad * 1.4
+        pill_x = self._progress * cw + (cw - pill_w) / 2.0
+
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
+        p.save()
+        p.setClipPath(clip)
+        is_fable = self._model == "Fable 5" or (self._progress > n - 1.5)
+        pulse_amp = (0.5 + 0.5 * math.sin(self._pulse)) if is_fable else 0.0
+        glow_boost = 1.0 + 0.8 * pulse_amp
+        for i in range(1, 4):
+            base_alpha = 48 * (1 - (i - 1) / 3.2) * glow_boost
+            alpha = int(max(0, min(200, base_alpha)))
+            p.setPen(QPen(QColor(r, g, b, alpha), 1))
+            p.setBrush(Qt.NoBrush)
+            ex = i * 1.4
+            p.drawRoundedRect(
+                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
+                pill_r + ex, pill_r + ex
+            )
+        p.restore()
+
+        grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
+        grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
+        grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
+        p.setBrush(QBrush(grad))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
+
+        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        for i, name in enumerate(MODEL_ORDER):
+            cx = i * cw
+            rect = QRectF(cx, 0, cw, h)
+            dist = abs(self._progress - i)
+            if dist < 0.5:
+                cover = 1.0 - dist * 2.0
+                dark = QColor(20, 22, 28)
+                shade = int(140 + 20 * (1.0 - dist))
+                pale = QColor(shade, shade, shade + 4)
+                pen = QColor(
+                    int(pale.red()   + (dark.red()   - pale.red())   * cover),
+                    int(pale.green() + (dark.green() - pale.green()) * cover),
+                    int(pale.blue()  + (dark.blue()  - pale.blue())  * cover),
+                )
+            else:
+                lc = MODEL_COLORS_MAP[name]
+                shade = 145
+                base = QColor(shade, shade, shade + 4)
+                hover = self._hover_alpha.get(i, 0.0)
+                pen = QColor(
+                    int(base.red()   + (lc[0] - base.red())   * hover),
+                    int(base.green() + (lc[1] - base.green()) * hover),
+                    int(base.blue()  + (lc[2] - base.blue())  * hover),
+                )
+            p.setPen(pen)
+            p.drawText(rect, Qt.AlignCenter, MODEL_LABELS_SHORT[name])
+
+        p.end()
+
+
+class ModelDialog(QDialog):
+    """Компактное окно выбора модели FreeModel в стиле EffortDialog.
+    Ползунок ModelSlider + короткое описание модели (цветное) под ним.
+    Никаких кнопок — крестик/Esc применяет выбор."""
+
+    # Эмитим и модель, и effort — теперь ModelDialog управляет обоими.
+    applied = Signal(str, str)
+
+    LEVEL_DESCRIPTIONS = {
+        "Sonnet 4.6": "быстрый и дешёвый — для простых задач",
+        "Sonnet 5":   "новый Sonnet — быстрее и умнее 4.6",
+        "Opus 4.6":   "мощный Opus — уверенно решает большинство задач",
+        "Opus 4.7":   "усиленный Opus 4.7 — сложные многошаговые задачи",
+        "Opus 4.8":   "флагманский Opus 4.8 — максимум качества",
+        "Fable 5":    "экспериментальная Fable 5 — необычные вопросы",
+    }
+    LEVEL_DESCRIPTIONS_EN = {
+        "Sonnet 4.6": "fast and cheap — for simple tasks",
+        "Sonnet 5":   "new Sonnet — faster and smarter than 4.6",
+        "Opus 4.6":   "powerful Opus — handles most tasks confidently",
+        "Opus 4.7":   "amplified Opus 4.7 — complex multi-step tasks",
+        "Opus 4.8":   "flagship Opus 4.8 — maximum quality",
+        "Fable 5":    "experimental Fable 5 — unusual questions",
+    }
+
+    def __init__(self, current_model="Opus 4.8", parent=None, current_effort="high"):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        # Обязательно: аналогично EffortDialog — иначе повторное открытие
+        # блокируется, потому что destroyed не эмитится.
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setModal(True)
+        if current_model not in MODEL_ORDER:
+            current_model = "Opus 4.8"
+        if current_effort not in EFFORT_LEVELS:
+            current_effort = "high"
+        # Начальные disabled для effort — сразу учитывают текущую модель.
+        initial_disabled = set()
+        if current_model in MODELS_WITHOUT_ULTRACODE:
+            initial_disabled.add("ultracode")
+        # Если стартовый effort несовместим с моделью — тихо чиним до max,
+        # чтобы диалог открылся в консистентном состоянии.
+        if current_effort in initial_disabled:
+            current_effort = "max"
+        self._model = current_model
+        self._initial_model = current_model
+        self._effort = current_effort
+        self._initial_effort = current_effort
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 14)
+
+        container = DottedFrame()
+        container.setObjectName("modelDialogContainer")
+        container.setStyleSheet("""
+            QFrame#modelDialogContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        outer.addWidget(container)
+
+        shadow = QGraphicsDropShadowEffect(container)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 6)
+        container.setGraphicsEffect(shadow)
+
+        inner = QVBoxLayout(container)
+        inner.setContentsMargins(18, 12, 18, 16)
+        inner.setSpacing(10)
+
+        # Заголовок + крестик. Слева — фиксированный отступ шириной с крестик,
+        # плюс stretch, и такой же stretch справа — так заголовок оказывается
+        # ровно по центру, а крестик остаётся в правом углу.
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addSpacing(24)
+        head.addStretch()
+        title = QLabel(tr("Выбор модели"))
+        title.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        title.setStyleSheet("color: rgb(200, 200, 210); background: transparent; border: none;")
+        title.setAlignment(Qt.AlignCenter)
+        head.addWidget(title)
+        head.addStretch()
+        self.close_btn = _CloseButton(parent=container)
+        self.close_btn.setFixedSize(24, 24)
+        self.close_btn.clicked.connect(self.close)
+        head.addWidget(self.close_btn)
+        inner.addLayout(head)
+
+        # Ползунок модели
+        row = QHBoxLayout()
+        row.addStretch()
+        self.slider = ModelSlider(model=current_model)
+        self.slider.changed.connect(self._on_slider_changed)
+        row.addWidget(self.slider)
+        row.addStretch()
+        inner.addLayout(row)
+
+        # Описание модели — цвет = цвет модели
+        self.desc_lbl = QLabel(self._desc_text(current_model))
+        self.desc_lbl.setFont(QFont("Segoe UI", 9))
+        self.desc_lbl.setAlignment(Qt.AlignCenter)
+        self._apply_desc_color(current_model)
+        self.desc_lbl.setWordWrap(True)
+        inner.addWidget(self.desc_lbl)
+
+        # Разделитель "Reasoning Effort" под описанием модели
+        sep_lbl = QLabel(tr("Reasoning Effort"))
+        sep_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        sep_lbl.setAlignment(Qt.AlignCenter)
+        sep_lbl.setStyleSheet("color: rgb(180, 180, 190); background: transparent; border: none; margin-top: 6px;")
+        inner.addWidget(sep_lbl)
+
+        # Второй ползунок — effort. Тот же самый EffortSlider, что и в
+        # старом EffortDialog. disabled_levels берётся из модели.
+        eff_row = QHBoxLayout()
+        eff_row.addStretch()
+        self.effort_slider = EffortSlider(level=current_effort, disabled_levels=initial_disabled)
+        self.effort_slider.changed.connect(self._on_effort_slider_changed)
+        eff_row.addWidget(self.effort_slider)
+        eff_row.addStretch()
+        inner.addLayout(eff_row)
+
+        # Описание effort'а — цвет = цвет уровня
+        self.effort_desc_lbl = QLabel(self._effort_desc_text(current_effort))
+        self.effort_desc_lbl.setFont(QFont("Segoe UI", 9))
+        self.effort_desc_lbl.setAlignment(Qt.AlignCenter)
+        self._apply_effort_desc_color(current_effort)
+        self.effort_desc_lbl.setWordWrap(True)
+        inner.addWidget(self.effort_desc_lbl)
+
+        self.setFixedWidth(560)
+        self.adjustSize()
+
+        self.setWindowOpacity(0.0)
+        self._fade_in = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_in.setDuration(220)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        self._closing = False
+
+    def _desc_text(self, model):
+        try:
+            if LANG is not None and LANG.lang == "en":
+                return self.LEVEL_DESCRIPTIONS_EN.get(model, "")
+        except Exception:
+            pass
+        return self.LEVEL_DESCRIPTIONS.get(model, "")
+
+    def _apply_desc_color(self, model):
+        r, g, b = MODEL_COLORS_MAP.get(model, (200, 200, 200))
+        self.desc_lbl.setStyleSheet(
+            f"color: rgb({r},{g},{b}); background: transparent; border: none;"
+        )
+
+    def _effort_desc_text(self, level):
+        try:
+            if LANG is not None and LANG.lang == "en":
+                return EffortDialog.LEVEL_DESCRIPTIONS_EN.get(level, "")
+        except Exception:
+            pass
+        return EffortDialog.LEVEL_DESCRIPTIONS.get(level, "")
+
+    def _apply_effort_desc_color(self, level):
+        r, g, b = EFFORT_COLORS.get(level, (200, 200, 200))
+        self.effort_desc_lbl.setStyleSheet(
+            f"color: rgb({r},{g},{b}); background: transparent; border: none;"
+        )
+
+    def _on_slider_changed(self, model):
+        self._model = model
+        self.desc_lbl.setText(self._desc_text(model))
+        self._apply_desc_color(model)
+        # Синхронизируем disabled-набор ползунка effort — при 4.6-модели
+        # ultracode запрещён. set_disabled_levels сам сдвинет ползунок с
+        # ultracode на max, если тот выбран (плавная анимация).
+        new_disabled = set()
+        if model in MODELS_WITHOUT_ULTRACODE:
+            new_disabled.add("ultracode")
+        self.effort_slider.set_disabled_levels(new_disabled)
+
+    def _on_effort_slider_changed(self, level):
+        self._effort = level
+        self.effort_desc_lbl.setText(self._effort_desc_text(level))
+        self._apply_effort_desc_color(level)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_in.start()
+
+    def closeEvent(self, event):
+        if self._closing:
+            super().closeEvent(event)
+            return
+        self._closing = True
+        event.ignore()
+        # applied эмитим ВСЕГДА, если что-то изменилось — модель или effort.
+        if self._model != self._initial_model or self._effort != self._initial_effort:
+            try:
+                self.applied.emit(self._model, self._effort)
+            except Exception:
+                pass
+        fade = QPropertyAnimation(self, b"windowOpacity", self)
+        fade.setDuration(200)
+        fade.setStartValue(self.windowOpacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(self.close)
+        fade.start()
+        self._fade_out = fade
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        if event.key() == Qt.Key_Left:
+            i = MODEL_ORDER.index(self._model)
+            if i > 0:
+                new_m = MODEL_ORDER[i - 1]
+                self._on_slider_changed(new_m)
+                self.slider.set_model(new_m)
+            return
+        if event.key() == Qt.Key_Right:
+            i = MODEL_ORDER.index(self._model)
+            if i < len(MODEL_ORDER) - 1:
+                new_m = MODEL_ORDER[i + 1]
+                self._on_slider_changed(new_m)
+                self.slider.set_model(new_m)
+            return
+        super().keyPressEvent(event)
+
+
+# ============================================================
 # УПРАВЛЕНИЕ API-КЛЮЧАМИ — виджеты
 # ============================================================
 
@@ -5470,9 +6644,10 @@ class KeyCard(QFrame):
     """Строка одного API-ключа: тумблер OFF/ON, имя, маскированное значение,
     статус, глаз, крестик удаления. Рамка плавно перекрашивается под состояние
     (зелёный/красный/жёлтый) и мягко «загорается» при смене."""
-    toggled = Signal(str, bool)      # (key_id, on)
+    toggled = Signal(str, bool)      # (key_id, on) — состояние изменилось
     delete_requested = Signal(str)   # key_id
     select_requested = Signal(str)   # key_id — клик по телу карточки
+    changed = Signal(str)            # key_id — dict ключа мутирован (для мгновенного save_settings)
 
     _COLORS = {
         "green":  (52, 211, 153),
@@ -5548,16 +6723,47 @@ class KeyCard(QFrame):
         return v[:6] + "•" * 8
 
     def _on_toggle(self, on):
+        """Тумблер эмитит это ПОСЛЕ того, как переключил свой визуальный
+        _on внутрь себя (проверив, что состояние действительно меняется).
+        Наша задача — либо принять изменение (и мутировать key), либо
+        откатить визуал тумблера (при отмене диалога)."""
         if on:
-            self.key["enabled"] = True
-            self.key["activated_at"] = time.time()
-            self.key["disabled_at"] = 0  # ключ включён — сбрасываем таймер выключения
-        else:
-            self.key["enabled"] = False
-            self.key["disabled_at"] = time.time()  # старт 5ч-таймера до пожелтения
+            # OFF → ON вручную. Сброс лимита, ключ активен.
+            reset_key_limit(self.key)
+            self._retarget()
+            self._update_status_text()
+            self.toggled.emit(self.key.get("id", ""), True)
+            self.changed.emit(self.key.get("id", ""))
+            return
+
+        # ON → OFF: два диалога подряд.
+        limit_type, seconds = self._prompt_limit()
+        if limit_type is None:
+            # Отмена на любом шаге — возвращаем тумблер визуально на ON.
+            self.toggle.blockSignals(True)
+            self.toggle.set_on(True, animate=True)
+            self.toggle.blockSignals(False)
+            return
+
+        self.key["enabled"] = False
+        self.key["limit_type"] = limit_type
+        self.key["resets_at"] = time.time() + seconds
+        self.key["disabled_at"] = time.time()  # для истории
         self._retarget()
         self._update_status_text()
-        self.toggled.emit(self.key.get("id", ""), on)
+        self.toggled.emit(self.key.get("id", ""), False)
+        self.changed.emit(self.key.get("id", ""))
+
+    def _prompt_limit(self):
+        """Возвращает (limit_type, seconds) или (None, None) при отмене."""
+        parent_win = self.window()
+        type_dlg = KeyLimitTypeDialog(parent=parent_win)
+        if type_dlg.exec() != QDialog.Accepted or not type_dlg.result_type:
+            return (None, None)
+        dur_dlg = KeyLimitDurationDialog(type_dlg.result_type, parent=parent_win)
+        if dur_dlg.exec() != QDialog.Accepted or not dur_dlg.result_seconds:
+            return (None, None)
+        return (type_dlg.result_type, int(dur_dlg.result_seconds))
 
     def _retarget(self):
         state = key_color_state(self.key)
@@ -5567,12 +6773,25 @@ class KeyCard(QFrame):
         self.update()
 
     def refresh_state(self):
-        """Вызывается по таймеру окна: если зелёный «пожелтел» (прошло 5ч) —
-        плавно перекрашиваем без клика пользователя."""
+        """Вызывается по таймеру окна раз в секунду:
+        • обновляет текст обратного отсчёта;
+        • при истечении resets_at авто-включает ключ (эмитит toggled + changed);
+        • перекрашивает рамку при смене цветового состояния."""
+        auto_reactivated = False
+        if key_expired(self.key):
+            # Таймер лимита истёк — авто-сброс. reset_key_limit сам обновит поля.
+            reset_key_limit(self.key)
+            self.toggle.blockSignals(True)
+            self.toggle.set_on(True, animate=True)
+            self.toggle.blockSignals(False)
+            auto_reactivated = True
         state = key_color_state(self.key)
         if state != self._last_state:
             self._retarget()
-            self._update_status_text()
+        self._update_status_text()
+        if auto_reactivated:
+            self.toggled.emit(self.key.get("id", ""), True)
+            self.changed.emit(self.key.get("id", ""))
 
     def _toggle_reveal(self):
         self._revealed = not self._revealed
@@ -5598,10 +6817,42 @@ class KeyCard(QFrame):
 
     def _update_status_text(self):
         state = key_color_state(self.key)
-        txt = {"green": tr("активен"), "yellow": tr("подтвердите"), "red": tr("выключен")}[state]
+        if state == "green":
+            txt = tr("активен")
+        else:
+            # Показываем обратный отсчёт до сброса.
+            resets_at = self.key.get("resets_at", 0) or 0
+            remain = int(max(0, resets_at - time.time())) if resets_at else 0
+            if remain <= 0:
+                txt = tr("готов к сбросу")
+            else:
+                txt = tr("Сброс через") + " " + self._format_remaining(remain)
         r, g, b = self._COLORS[state]
         self.status_lbl.setText(txt)
         self.status_lbl.setStyleSheet(f"color: rgb({r},{g},{b}); background: transparent; border: none;")
+
+    @staticmethod
+    def _format_remaining(seconds):
+        """Красивый обратный отсчёт: 6д 12ч 05м, 3ч 12м 05с, 12м 05с, 05с."""
+        seconds = max(0, int(seconds))
+        d, r = divmod(seconds, 86400)
+        h, r = divmod(r, 3600)
+        m, s = divmod(r, 60)
+        parts = []
+        if d > 0:
+            parts.append(f"{d}{tr('д')}")
+            parts.append(f"{h}{tr('ч')}")
+            parts.append(f"{m:02d}{tr('м')}")
+        elif h > 0:
+            parts.append(f"{h}{tr('ч')}")
+            parts.append(f"{m:02d}{tr('м')}")
+            parts.append(f"{s:02d}{tr('с')}")
+        elif m > 0:
+            parts.append(f"{m}{tr('м')}")
+            parts.append(f"{s:02d}{tr('с')}")
+        else:
+            parts.append(f"{s}{tr('с')}")
+        return " ".join(parts)
 
     def set_selected(self, selected):
         selected = bool(selected)
@@ -5678,6 +6929,434 @@ class KeyCard(QFrame):
         p.end()
 
 
+# ============================================================
+# ДИАЛОГИ УСТАНОВКИ ЛИМИТА У КЛЮЧА
+# ============================================================
+
+class _LimitTypeCard(QPushButton):
+    """Большая карточка-кнопка в диалоге выбора типа лимита.
+    Стилизована под весь остальной UI: тёмный фон, цветная рамка,
+    плавное свечение по наведению."""
+    def __init__(self, title, subtitle, color_rgb, parent=None):
+        super().__init__(parent)
+        self._title = title
+        self._subtitle = subtitle
+        self._col = color_rgb
+        self._hover = 0.0
+        self._hover_target = 0.0
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(96)
+        self.setMinimumWidth(180)
+        self.setStyleSheet("QPushButton{background: transparent; border: none;}")
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def enterEvent(self, e):
+        self._hover_target = 1.0
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover_target = 0.0
+        super().leaveEvent(e)
+
+    def _tick(self):
+        d = self._hover_target - self._hover
+        if abs(d) > 0.005:
+            self._hover += d * 0.15
+            self.update()
+        elif self._hover != self._hover_target:
+            self._hover = self._hover_target
+            self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r, g, b = self._col
+        rect = QRectF(1.5, 1.5, w - 3, h - 3)
+
+        # фон
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(26, 26, 31, 235))
+        p.drawRoundedRect(rect, 12, 12)
+        # цветная подсветка
+        tint = int(24 + 40 * self._hover)
+        p.setBrush(QColor(r, g, b, tint))
+        p.drawRoundedRect(rect, 12, 12)
+        # рамка
+        boost = int(30 * self._hover)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(min(255, r + boost), min(255, g + boost), min(255, b + boost)),
+                     1.7 + 1.5 * self._hover))
+        p.drawRoundedRect(rect, 12, 12)
+
+        # заголовок
+        p.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        p.setPen(QColor(230, 230, 235))
+        p.drawText(QRectF(0, 20, w, 26), Qt.AlignCenter, self._title)
+        # подзаголовок
+        p.setFont(QFont("Segoe UI", 9))
+        p.setPen(QColor(150, 150, 155))
+        p.drawText(QRectF(0, 54, w, 22), Qt.AlignCenter, self._subtitle)
+        p.end()
+
+
+class KeyLimitTypeDialog(QDialog):
+    """Первый шаг выключения ключа: пользователь выбирает тип лимита —
+    5-часовой (жёлтый) или 7-дневный (красный). Отмена = не выключать ключ."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self.result_type = None
+
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(26, 22, 26, 22)
+        lay.setSpacing(14)
+
+        title = QLabel(tr("Выберите тип лимита"))
+        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #DDDDDD; background: transparent; border: none;")
+        lay.addWidget(title)
+
+        subtitle = QLabel(tr("На какой срок отключить ключ?"))
+        subtitle.setFont(QFont("Segoe UI", 10))
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #B5B5B5; background: transparent; border: none;")
+        subtitle.setWordWrap(True)
+        lay.addWidget(subtitle)
+
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(12)
+        self.btn_5h = _LimitTypeCard(tr("5-часовой лимит"), tr("макс. 5 часов"),
+                                     (235, 200, 90))
+        self.btn_5h.clicked.connect(lambda: self._pick("5h"))
+        cards_row.addWidget(self.btn_5h)
+        self.btn_7d = _LimitTypeCard(tr("7-дневный лимит"), tr("макс. 7 дней"),
+                                     (224, 90, 90))
+        self.btn_7d.clicked.connect(lambda: self._pick("7d"))
+        cards_row.addWidget(self.btn_7d)
+        lay.addLayout(cards_row)
+
+        cancel_row = QHBoxLayout()
+        cancel_row.addStretch()
+        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn.setMinimumHeight(38)
+        self.cancel_btn.setMinimumWidth(140)
+        self.cancel_btn.clicked.connect(self.reject)
+        cancel_row.addWidget(self.cancel_btn)
+        cancel_row.addStretch()
+        lay.addLayout(cancel_row)
+
+        main.addWidget(container)
+        self.setLayout(main)
+        self.setMinimumWidth(440)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(200)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _pick(self, t):
+        self.result_type = t
+        self.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def _fade_out_and(self, done):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(180)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(done)
+        fade.start()
+        self._fade = fade
+
+    def accept(self):
+        self._fade_out_and(lambda: super(KeyLimitTypeDialog, self).accept())
+
+    def reject(self):
+        self._fade_out_and(lambda: super(KeyLimitTypeDialog, self).reject())
+
+
+class _NumberSpinner(QWidget):
+    """Компактный вертикально-стилизованный числовой спиннер: слева
+    квадратная кнопка «−», по центру крупное число, справа кнопка «+».
+    Все клампы и валидация — внутри. По изменению эмитит valueChanged(int)."""
+    valueChanged = Signal(int)
+
+    def __init__(self, minimum=0, maximum=59, initial=0, parent=None):
+        super().__init__(parent)
+        self._min = minimum
+        self._max = maximum
+        self._value = max(minimum, min(maximum, initial))
+        self.setFixedSize(120, 56)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        self.btn_dec = QPushButton("−")
+        self.btn_dec.setFixedSize(30, 44)
+        self.btn_dec.setCursor(Qt.PointingHandCursor)
+        self.btn_dec.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        self.btn_dec.setStyleSheet(self._btn_css())
+        self.btn_dec.clicked.connect(lambda: self.set_value(self._value - 1))
+        lay.addWidget(self.btn_dec)
+
+        self.num_lbl = QLabel(str(self._value))
+        self.num_lbl.setAlignment(Qt.AlignCenter)
+        self.num_lbl.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        self.num_lbl.setStyleSheet(
+            "color: rgb(230, 230, 235); background: rgb(26, 26, 31);"
+            "border: 1.5px solid rgb(70, 70, 80); border-radius: 8px;")
+        self.num_lbl.setFixedSize(48, 44)
+        lay.addWidget(self.num_lbl)
+
+        self.btn_inc = QPushButton("+")
+        self.btn_inc.setFixedSize(30, 44)
+        self.btn_inc.setCursor(Qt.PointingHandCursor)
+        self.btn_inc.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        self.btn_inc.setStyleSheet(self._btn_css())
+        self.btn_inc.clicked.connect(lambda: self.set_value(self._value + 1))
+        lay.addWidget(self.btn_inc)
+
+    @staticmethod
+    def _btn_css():
+        return (
+            "QPushButton{color: rgb(210,210,215); background: rgb(30,30,35);"
+            "border: 1.5px solid rgb(70,70,80); border-radius: 8px;}"
+            "QPushButton:hover{background: rgb(46,46,55); border-color: rgb(120,120,130);}"
+            "QPushButton:pressed{background: rgb(22,22,26);}"
+        )
+
+    def value(self):
+        return self._value
+
+    def set_range(self, minimum, maximum):
+        self._min, self._max = minimum, maximum
+        self.set_value(self._value)
+
+    def set_value(self, v):
+        v = max(self._min, min(self._max, int(v)))
+        if v == self._value:
+            self.num_lbl.setText(str(v))
+            return
+        self._value = v
+        self.num_lbl.setText(str(v))
+        self.valueChanged.emit(v)
+
+
+class KeyLimitDurationDialog(QDialog):
+    """Второй шаг выключения: ввод точной длительности лимита.
+    limit_type='5h' → часы (0-5) + минуты (0-59), суммарно ≤ 5 ч.
+    limit_type='7d' → дни (0-7) + часы (0-23) + минуты (0-59), суммарно ≤ 7 дн.
+    Возвращает result_seconds > 0 при подтверждении, иначе result_seconds=None."""
+    def __init__(self, limit_type, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self.limit_type = limit_type
+        self.result_seconds = None
+
+        if limit_type == "5h":
+            self._max_seconds = KEY_LIMIT_5H_SECONDS
+            title_txt = tr("5-часовой лимит")
+            hint_txt = tr("Максимум 5 часов")
+            color = (235, 200, 90)
+        else:
+            self._max_seconds = KEY_LIMIT_7D_SECONDS
+            title_txt = tr("7-дневный лимит")
+            hint_txt = tr("Максимум 7 дней")
+            color = (224, 90, 90)
+
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(26, 22, 26, 22)
+        lay.setSpacing(12)
+
+        title = QLabel(title_txt)
+        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(
+            f"color: rgb({color[0]},{color[1]},{color[2]}); background: transparent; border: none;")
+        lay.addWidget(title)
+
+        subtitle = QLabel(tr("Через сколько сбросится лимит?"))
+        subtitle.setFont(QFont("Segoe UI", 10))
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #B5B5B5; background: transparent; border: none;")
+        subtitle.setWordWrap(True)
+        lay.addWidget(subtitle)
+
+        # Спиннеры
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        row.setContentsMargins(0, 4, 0, 4)
+        row.addStretch()
+
+        def _column(caption, spinner):
+            col = QVBoxLayout()
+            col.setSpacing(4)
+            col.setAlignment(Qt.AlignCenter)
+            cap = QLabel(caption)
+            cap.setFont(QFont("Segoe UI", 9))
+            cap.setAlignment(Qt.AlignCenter)
+            cap.setStyleSheet("color: rgb(150,150,155); background: transparent; border: none;")
+            col.addWidget(cap)
+            wrap = QHBoxLayout()
+            wrap.addStretch()
+            wrap.addWidget(spinner)
+            wrap.addStretch()
+            col.addLayout(wrap)
+            return col
+
+        if limit_type == "5h":
+            self.sp_days = None
+            self.sp_hours = _NumberSpinner(0, 5, 0)
+            self.sp_minutes = _NumberSpinner(0, 59, 30)  # разумный дефолт
+            row.addLayout(_column(tr("Часы"), self.sp_hours))
+            row.addLayout(_column(tr("Минуты"), self.sp_minutes))
+        else:
+            self.sp_days = _NumberSpinner(0, 7, 1)
+            self.sp_hours = _NumberSpinner(0, 23, 0)
+            self.sp_minutes = _NumberSpinner(0, 59, 0)
+            row.addLayout(_column(tr("Дни"), self.sp_days))
+            row.addLayout(_column(tr("Часы"), self.sp_hours))
+            row.addLayout(_column(tr("Минуты"), self.sp_minutes))
+        row.addStretch()
+        lay.addLayout(row)
+
+        # обвязка клампа — при любом изменении пересчитать и, если сумма > max, обрезать
+        self.sp_hours.valueChanged.connect(self._clamp_total)
+        self.sp_minutes.valueChanged.connect(self._clamp_total)
+        if self.sp_days is not None:
+            self.sp_days.valueChanged.connect(self._clamp_total)
+
+        hint = QLabel(hint_txt)
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet(
+            f"color: rgba({color[0]}, {color[1]}, {color[2]}, 220);"
+            f"background: rgba({color[0]}, {color[1]}, {color[2]}, 28);"
+            f"border: 1px solid rgba({color[0]}, {color[1]}, {color[2]}, 90);"
+            "border-radius: 6px; padding: 4px 12px;")
+        lay.addWidget(hint)
+
+        self.err_lbl = QLabel("")
+        self.err_lbl.setFont(QFont("Segoe UI", 9))
+        self.err_lbl.setAlignment(Qt.AlignCenter)
+        self.err_lbl.setStyleSheet("color: rgb(224, 90, 90); background: transparent; border: none;")
+        lay.addWidget(self.err_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn.setMinimumHeight(40)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.cancel_btn)
+        self.confirm_btn = GreenButton(tr("Подтвердить"))
+        self.confirm_btn.setMinimumHeight(40)
+        self.confirm_btn.clicked.connect(self._on_confirm)
+        btn_row.addWidget(self.confirm_btn)
+        lay.addLayout(btn_row)
+
+        main.addWidget(container)
+        self.setLayout(main)
+        self.setMinimumWidth(440)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(200)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _total_seconds(self):
+        d = self.sp_days.value() if self.sp_days is not None else 0
+        h = self.sp_hours.value()
+        m = self.sp_minutes.value()
+        return d * 86400 + h * 3600 + m * 60
+
+    def _clamp_total(self):
+        total = self._total_seconds()
+        if total <= self._max_seconds:
+            self.err_lbl.setText("")
+            return
+        # Обрезаем «лишние» единицы: сначала минуты, потом часы, потом дни.
+        for sp in (self.sp_minutes, self.sp_hours, self.sp_days):
+            if sp is None:
+                continue
+            while sp.value() > 0 and self._total_seconds() > self._max_seconds:
+                sp.blockSignals(True)
+                sp.set_value(sp.value() - 1)
+                sp.blockSignals(False)
+        self.err_lbl.setText("")
+
+    def _on_confirm(self):
+        total = self._total_seconds()
+        if total <= 0:
+            self.err_lbl.setText(tr("Укажите время больше нуля"))
+            return
+        if total > self._max_seconds:
+            # На всякий случай — clamp защитит, но подстрахуемся
+            total = self._max_seconds
+        self.result_seconds = total
+        self.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def _fade_out_and(self, done):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(180)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(done)
+        fade.start()
+        self._fade = fade
+
+    def accept(self):
+        self._fade_out_and(lambda: super(KeyLimitDurationDialog, self).accept())
+
+    def reject(self):
+        self._fade_out_and(lambda: super(KeyLimitDurationDialog, self).reject())
+
+
 class ApiKeyManagerDialog(QDialog):
     """Широкое окно управления API-ключами: список карточек (до 6 видимых,
     дальше скролл), создание нового ключа с именем. Единственное место, где
@@ -5685,6 +7364,10 @@ class ApiKeyManagerDialog(QDialog):
     CARD_H = 58
     GAP = 8
     MAX_VISIBLE = 4
+
+    # Эмитим при любой мутации ключа (тумблер, авто-сброс таймера) — главное
+    # окно ловит и сразу пишет settings.json, чтобы состояние переживало крэш.
+    state_changed = Signal()
 
     def __init__(self, keys, selected_id="", parent=None):
         super().__init__(parent)
@@ -5732,7 +7415,7 @@ class ApiKeyManagerDialog(QDialog):
         title_row.addWidget(self.btn_close)
         layout.addLayout(title_row)
 
-        info = QLabel(tr("Зелёный — активен, красный — выключен, жёлтый — подтвердите ключ (прошло 5 ч)"))
+        info = QLabel(tr("Зелёный — активен. Жёлтый — 5-часовой лимит. Красный — 7-дневный лимит."))
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
         info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
@@ -5811,10 +7494,12 @@ class ApiKeyManagerDialog(QDialog):
 
         self._rebuild_cards()
 
-        # Живой пересчёт жёлтого статуса, пока окно открыто
+        # Живой пересчёт: обратный отсчёт до сброса лимита + авто-включение
+        # ключа по истечении таймера. Тикаем раз в секунду, чтобы отсчёт
+        # выглядел плавным.
         self._state_timer = QTimer(self)
         self._state_timer.timeout.connect(self._refresh_states)
-        self._state_timer.start(15000)
+        self._state_timer.start(1000)
 
         # Плавное появление
         self._opacity_effect = QGraphicsOpacityEffect(self)
@@ -5900,6 +7585,7 @@ class ApiKeyManagerDialog(QDialog):
         for key in self.keys:
             card = KeyCard(key)
             card.toggled.connect(self._on_card_toggle)
+            card.changed.connect(self._on_card_changed)
             card.delete_requested.connect(self._on_card_delete)
             card.select_requested.connect(self._on_card_select)
             card.set_selected(key.get("id") == self.selected_id)
@@ -5955,6 +7641,12 @@ class ApiKeyManagerDialog(QDialog):
             if key and key_color_state(key) == "green":
                 self.selected_id = key_id
         self._apply_selection_to_cards()
+
+    def _on_card_changed(self, key_id):
+        """Ключ мутирован (пользователь переключил тумблер или таймер лимита истёк).
+        Прокидываем наверх — главное окно тут же вызовет save_settings, чтобы
+        состояние переживало закрытие приложения даже без явного 'ОК'."""
+        self.state_changed.emit()
 
     def _on_card_delete(self, key_id):
         key = next((k for k in self.keys if k.get("id") == key_id), None)
@@ -8870,16 +10562,20 @@ class ClaudeManager(QMainWindow):
         model_lbl.setFixedWidth(90)
         model_row.addWidget(model_lbl)
 
-        self.fm_model_combo = PickerComboBox()
-        self.fm_model_combo.setFont(QFont("Segoe UI", 9))
-        self.fm_model_combo.setMaxVisibleItems(4)
+        # Кастомный picker: клик по комбо открывает ModelDialog с ползунком
+        # (стиль совпадает с EffortDialog). На главном окне сам комбобокс
+        # остаётся визуально прежним, только шрифт делаем жирнее — по просьбе
+        # пользователя, чтобы название модели читалось увереннее.
+        self.fm_model_combo = ModelPickerComboBox()
+        self.fm_model_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.fm_model_combo.setMaxVisibleItems(len(MODEL_ORDER))
         fm_models = ["Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6"]
         self.fm_model_combo.addItems(fm_models)
         # Цвета для каждой модели (от зелёного к красному — по «дороговизне»)
         model_colors = {
             "Sonnet 4":     QColor(120, 220, 120),  # зелёный
-            "Sonnet 4.6":   QColor(190, 240, 160),  # светло-зелёный (чуть зеленее)
-            "Sonnet 5":     QColor(180, 235, 150),  # светло-зелёный (старый цвет 4.6)
+            "Sonnet 4.6":   QColor(130, 220, 130),  # насыщенно-зелёный
+            "Sonnet 5":     QColor(180, 235, 150),  # светло-зелёный (чуть желтее 4.6)
             "Opus 4.6":     QColor(230, 220, 130),  # слегка жёлтый
             "Opus 4.7":     QColor(235, 180, 110),  # жёлтый с переходом в красноватый
             "Opus 4.8":     QColor(235, 150, 130),  # слабо красноватый
@@ -8919,6 +10615,11 @@ class ClaudeManager(QMainWindow):
         # Запомнить исходную модель для отката при отмене предупреждения
         self._fm_prev_model = saved_m if saved_m in fm_models else "Opus 4.8"
         self.fm_model_combo.currentTextChanged.connect(self._fm_model_changed)
+        # ModelDialog теперь эмитит и модель, и effort одним сигналом
+        try:
+            self.fm_model_combo.modelEffortPicked.connect(self._on_model_effort_picked)
+        except Exception:
+            pass
         model_row.addWidget(self.fm_model_combo, 1)
 
         # 1M-контекст: маленький toggle-оверлей внутри правой части комбобокса модели
@@ -8950,24 +10651,23 @@ class ClaudeManager(QMainWindow):
         self.ctx_shield.installEventFilter(self)
         QTimer.singleShot(0, self._reposition_ctx_toggle)
 
-        # Effort selector для FreeModel (без отдельного лейбла — сам комбобокс показывает уровень)
-        self.fm_effort_combo = PickerComboBox()
-        self.fm_effort_combo.setFont(QFont("Segoe UI", 9))
-        fm_efforts = ["low", "medium", "high", "xhigh", "max"]
+        # Effort — тот же кликабельный комбобокс что и раньше, но при клике
+        # открывается компактный EffortDialog с ползунком (вместо PickerDialog
+        # со списком карточек).
+        self.fm_effort_combo = EffortPickerComboBox()
+        self.fm_effort_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        # Минимальная ширина под самое длинное значение "ULTRACODE"
+        # (жирным + запас на стрелку drop-down), чтобы текст не резался.
+        self.fm_effort_combo.setMinimumWidth(120)
+        fm_efforts = list(EFFORT_LEVELS)  # low / medium / high / xhigh / max / ultracode
         self.fm_effort_combo.addItems(fm_efforts)
         saved_fm_effort = self.settings.get("reasoning_effort", "high")
         if saved_fm_effort in fm_efforts:
             self.fm_effort_combo.setCurrentText(saved_fm_effort)
         else:
             self.fm_effort_combo.setCurrentText("high")
-        self.fm_effort_combo.setMaxVisibleItems(5)
-        fm_effort_colors = {
-            "low": QColor(120, 220, 120),
-            "medium": QColor(180, 210, 130),
-            "high": QColor(235, 180, 110),
-            "xhigh": QColor(235, 150, 130),
-            "max": QColor(235, 90, 90),
-        }
+        self.fm_effort_combo.setMaxVisibleItems(len(fm_efforts))
+        fm_effort_colors = {k: QColor(*v) for k, v in EFFORT_COLORS.items()}
         self._fm_effort_colors = fm_effort_colors
         self.fm_effort_combo.set_picker(
             colors=fm_effort_colors,
@@ -9136,7 +10836,13 @@ class ClaudeManager(QMainWindow):
         console_frame.setMaximumHeight(212)
         main_layout.addWidget(console_frame)
 
-        main_layout.addSpacing(10)
+        # Именно addStretch(1), а не addSpacing(10). Пружина между консолью
+        # и футером поглощает разницу высот при переключении Omniroute↔BaseURL:
+        # когда секции сверху скрываются, освободившееся место уходит СЮДА, а
+        # не размазывается между stretch-факторами верхних виджетов — иначе те
+        # видимо «прыгают» на промежуточные позиции. В эталонной версии окна
+        # именно так и сделано.
+        main_layout.addStretch(1)
 
         # Футер
         footer = QLabel(
@@ -9690,6 +11396,25 @@ class ClaudeManager(QMainWindow):
         if new_model:
             self.settings["custom_model"] = new_model
             save_settings(self.settings)
+            # Опус 4.6 и Sonnet 4.6 не поддерживают ultracode — если сейчас
+            # выставлен ultracode, тихо понижаем до max и обновляем combo effort.
+            if (new_model in MODELS_WITHOUT_ULTRACODE
+                    and self.settings.get("reasoning_effort") == "ultracode"):
+                self.settings["reasoning_effort"] = "max"
+                save_settings(self.settings)
+                self.log(
+                    f"{new_model} {tr('не поддерживает ultracode — effort понижен до max')}",
+                    "warning"
+                )
+                # Триггерим обновление combo effort, чтобы цвет/текст сменились
+                if hasattr(self, "fm_effort_combo"):
+                    self.fm_effort_combo.blockSignals(True)
+                    self.fm_effort_combo.setCurrentText("max")
+                    self.fm_effort_combo.blockSignals(False)
+                    if hasattr(self, "_fm_effort_colors") and "max" in self._fm_effort_colors:
+                        self.fm_effort_combo.setTextColor(self._fm_effort_colors["max"])
+                        self.fm_effort_combo.setAccentColor(self._fm_effort_colors["max"])
+                self._write_claude_effort_setting("max")
         if hasattr(self, "fm_model_combo"):
             # Обновить цвет отображаемого текста и рамки под выбранную модель
             if hasattr(self, "_fm_model_colors") and new_model in self._fm_model_colors:
@@ -9699,16 +11424,43 @@ class ClaudeManager(QMainWindow):
         if new_model:
             self._fm_prev_model = new_model
 
+    def _on_model_effort_picked(self, model, effort):
+        """ModelDialog закрылся — применяем и модель, и effort. Модель уже
+        применена через currentTextChanged → _fm_model_changed (та сама
+        может понизить ultracode до max при 4.6-tier). Здесь применяем
+        только effort, чтобы затронуть fm_effort_combo и ~/.claude/settings.json."""
+        if effort not in EFFORT_LEVELS:
+            return
+        # Защитный downgrade: если модель не поддерживает ultracode, а слайдер
+        # почему-то отдал ultracode — сбиваем на max. В нормальном сценарии
+        # ModelDialog уже сам синхронизирует это при движении модели.
+        if effort == "ultracode" and model in MODELS_WITHOUT_ULTRACODE:
+            effort = "max"
+        # Если текущее значение уже равно этому — ничего не делаем, чтобы не
+        # спамить лог "Reasoning effort изменён на".
+        if self.settings.get("reasoning_effort") == effort:
+            return
+        self._on_effort_changed(effort)
+
     def _on_effort_changed(self, effort):
-        """Сохраняет выбранный reasoning effort, пишет в ~/.claude/settings.json и обновляет цвет рамки"""
+        """Сохраняет выбранный reasoning effort, пишет в ~/.claude/settings.json
+        и обновляет цвет рамки/текста кликабельного комбобокса."""
+        if effort not in EFFORT_LEVELS:
+            return
         self.settings["reasoning_effort"] = effort
         save_settings(self.settings)
         # Сразу прописываем в настройки самого Claude Code (поле effortLevel)
         self._write_claude_effort_setting(effort)
-        self.log(f"Reasoning effort изменён на: {effort}", "info")
+        self.log(f"{tr('Reasoning effort изменён на')}: {effort}", "info")
 
         if hasattr(self, "fm_effort_combo") and hasattr(self, "_fm_effort_colors"):
             if effort in self._fm_effort_colors:
+                # setCurrentText нужен, чтобы сам combobox отображал новый уровень
+                # (EffortDialog эмитит applied → сюда, но не трогает текст комбо).
+                if self.fm_effort_combo.currentText() != effort:
+                    self.fm_effort_combo.blockSignals(True)
+                    self.fm_effort_combo.setCurrentText(effort)
+                    self.fm_effort_combo.blockSignals(False)
                 self.fm_effort_combo.setTextColor(self._fm_effort_colors[effort])
                 self.fm_effort_combo.setAccentColor(self._fm_effort_colors[effort])
 
@@ -9808,6 +11560,10 @@ class ClaudeManager(QMainWindow):
             selected_id=self.settings.get("selected_key_id", ""),
             parent=self,
         )
+        # Пока диалог открыт, любая мутация ключа (клик тумблера, авто-сброс
+        # таймера лимита) должна тут же сохраняться на диск — чтобы состояние
+        # переживало неожиданное закрытие приложения.
+        dlg.state_changed.connect(lambda: self._persist_key_state(dlg))
         dlg.exec()
         keys, selected_id = dlg.get_result()
         self.settings["api_keys"] = keys
@@ -9822,6 +11578,20 @@ class ClaudeManager(QMainWindow):
                 self._write_claude_model_setting(current_model)
         except Exception:
             pass
+
+    def _persist_key_state(self, dlg):
+        """Слот сигнала ApiKeyManagerDialog.state_changed: подхватывает
+        текущее состояние ключей из открытого диалога и пишет settings.json,
+        не дожидаясь закрытия окна."""
+        try:
+            keys, selected_id = dlg.get_result()
+            self.settings["api_keys"] = keys
+            self.settings["selected_key_id"] = selected_id
+            sync_custom_api_key(self.settings)
+            save_settings(self.settings)
+            self._refresh_active_key_display()
+        except Exception as e:
+            print(f"[_persist_key_state] Не удалось сохранить: {e}")
 
     def _refresh_active_key_display(self):
         """Обновляет read-only поле активного ключа под текущий custom_api_key."""
@@ -10035,7 +11805,29 @@ class ClaudeManager(QMainWindow):
             pass
 
     def _write_claude_effort_setting(self, effort):
-        """Записывает reasoning effort в ~/.claude/settings.json (поле effortLevel)"""
+        """Записывает reasoning effort в ~/.claude/settings.json.
+        Claude Code CLI знает только low/medium/high/xhigh/max. Для ultracode
+        УДАЛЯЕМ effortLevel из settings.json и ставим ultracode=true — иначе
+        effortLevel=max перебьёт ultracode-режим в текущей сессии."""
+        if effort == "ultracode":
+            try:
+                claude_dir = os.path.join(os.path.expanduser("~"), ".claude")
+                os.makedirs(claude_dir, exist_ok=True)
+                claude_settings_path = os.path.join(claude_dir, "settings.json")
+                claude_settings = {}
+                if os.path.exists(claude_settings_path):
+                    with open(claude_settings_path, 'r', encoding='utf-8') as f:
+                        try:
+                            claude_settings = json.load(f)
+                        except json.JSONDecodeError:
+                            claude_settings = {}
+                claude_settings.pop("effortLevel", None)
+                claude_settings["ultracode"] = True
+                with open(claude_settings_path, 'w', encoding='utf-8') as f:
+                    json.dump(claude_settings, f, indent=2)
+            except Exception as e:
+                self.log(f"Не удалось записать effort в настройки Claude: {e}", "warning")
+            return
         if effort not in ("low", "medium", "high", "xhigh", "max"):
             return
         try:
@@ -10050,6 +11842,7 @@ class ClaudeManager(QMainWindow):
                     except json.JSONDecodeError:
                         claude_settings = {}
             claude_settings["effortLevel"] = effort
+            claude_settings.pop("ultracode", None)
             with open(claude_settings_path, 'w', encoding='utf-8') as f:
                 json.dump(claude_settings, f, indent=2)
         except Exception as e:
@@ -10103,15 +11896,34 @@ class ClaudeManager(QMainWindow):
         # Устанавливаем переменные окружения и запускаем
         env = os.environ.copy()
 
-        # Reasoning effort — пишем во все три места (CLI флаг, env var, settings.json),
-        # потому что у settings.json есть баг с потерей "max" и схема режет верхние уровни.
-        # --effort на CLI перебивает всё и работает даже при багах конфига.
-        effort = self.settings.get("reasoning_effort", "high")
-        if effort not in ("low", "medium", "high", "xhigh", "max"):
-            effort = "high"
-        env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
-        self._write_claude_effort_setting(effort)
-        effort_flag = f" --effort {effort}"
+        # Reasoning effort. Для обычных уровней (low..max) — CLI-флаг + env +
+        # settings.json.effortLevel. Для ultracode — вообще НЕ трогаем ни
+        # --effort, ни CLAUDE_CODE_EFFORT_LEVEL: Claude Code сам увидит его
+        # варнингом ("CLAUDE_CODE_EFFORT_LEVEL=max overrides effort this
+        # session — clear it and ultracode takes over"), и включит ultracode
+        # только по флагу CLAUDE_CODE_ULTRACODE=1 + settings.json.ultracode=true.
+        effort_ui = self.settings.get("reasoning_effort", "high")
+        cur_model_for_ultra = self.settings.get("custom_model") if use_custom else model
+        if effort_ui == "ultracode" and cur_model_for_ultra in MODELS_WITHOUT_ULTRACODE:
+            self.log(
+                f"{cur_model_for_ultra} {tr('не поддерживает ultracode — понижаю до max')}",
+                "warning"
+            )
+            effort_ui = "max"
+        if effort_ui == "ultracode":
+            # Явно вычищаем любые прежние значения из окружения родителя,
+            # иначе они перебьют ultracode на текущей сессии.
+            env.pop("CLAUDE_CODE_EFFORT_LEVEL", None)
+            env["CLAUDE_CODE_ULTRACODE"] = "1"
+            effort_flag = ""
+            effort = "ultracode"
+        else:
+            cli_effort = effort_ui if effort_ui in ("low", "medium", "high", "xhigh", "max") else "high"
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = cli_effort
+            env.pop("CLAUDE_CODE_ULTRACODE", None)
+            effort_flag = f" --effort {cli_effort}"
+            effort = cli_effort
+        self._write_claude_effort_setting(effort_ui)
 
         if use_custom:
             # Кастомные настройки (BaseURL). Пересчитываем активный ключ на
@@ -10567,21 +12379,20 @@ class ClaudeManager(QMainWindow):
 
     def _on_auto_update_toggled(self, checked):
         """Переключает режим обновления Claude Code: пин + блокировки (OFF,
-        безопасный режим по умолчанию) ↔ официальный install.ps1 без
-        ограничений (ON)."""
+        безопасный режим по умолчанию) ↔ официальный npm-пакет без ограничений (ON)."""
         if checked:
             dlg = ConfirmActionDialog(
                 title=tr("Поддержка новых версий Claude Code"),
                 message=tr(
                     "Включится официальный установщик "
-                    "(irm https://claude.ai/install.ps1 | iex). Claude Code будет "
+                    "(npm install -g @anthropic-ai/claude-code). Claude Code будет "
                     "обновляться сам до последней версии.\n\n"
                     "Сейчас всё работает и на последней версии. Если что-то "
                     "вдруг перестанет работать — просто выключи этот переключатель, "
                     "и приложение вернёт проверенную версию, на которой всё "
                     "гарантированно работает."
                 ),
-                detail="irm https://claude.ai/install.ps1 | iex",
+                detail="npm install -g @anthropic-ai/claude-code",
                 confirm_text=tr("Включить"),
                 icon="↑",
                 icon_color=(52, 211, 153),
@@ -11102,9 +12913,9 @@ class ClaudeManager(QMainWindow):
         progress_dlg.exec()
 
     def _install_claude_code_official(self):
-        """Ставит/обновляет Claude Code официальным установщиком
-        (irm https://claude.ai/install.ps1 | iex) — всегда последняя версия,
-        без пина на REQUIRED_CLAUDE_VERSION."""
+        """Ставит/обновляет Claude Code через npm-пакет @anthropic-ai/claude-code
+        (последняя официальная версия). Используется в режиме поддержки новых
+        версий — без пина на REQUIRED_CLAUDE_VERSION."""
         installed = self._is_claude_installed()
         local = getattr(self, "_claude_local_version", "")
 
@@ -11112,15 +12923,15 @@ class ClaudeManager(QMainWindow):
         latest_available = check_claude_code_latest_version() or tr("последняя")
 
         message = tr(
-            "Скачает и поставит последнюю версию Claude Code официальным "
-            "установщиком claude.ai.\n\n"
+            "Скачает и поставит последнюю версию Claude Code через npm "
+            "(@anthropic-ai/claude-code).\n\n"
             "Настройки в %USERPROFILE%\\.claude не пострадают.\n\n"
             "Откроется окно PowerShell, где пойдёт установка."
         )
         dlg = ConfirmActionDialog(
             title=tr("Обновление Claude Code") if installed else tr("Установка Claude Code"),
             message=message,
-            detail="irm https://claude.ai/install.ps1 | iex",
+            detail="npm install -g @anthropic-ai/claude-code",
             confirm_text=tr("Обновить") if installed else tr("Установить"),
             icon="↑",
             icon_color=(52, 211, 153),
@@ -11131,7 +12942,7 @@ class ClaudeManager(QMainWindow):
             return
 
         action_word = "обновление" if installed else "установку"
-        self.log(f"Запускаю {action_word} Claude Code через официальный установщик...", "info")
+        self.log(f"Запускаю {action_word} Claude Code через npm (@anthropic-ai/claude-code)...", "info")
 
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
@@ -11144,13 +12955,13 @@ class ClaudeManager(QMainWindow):
         try:
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                # 1) Прибить все запущенные claude.exe — иначе файл залочен и инсталлятор падает
+                # 1) Прибить все запущенные claude.exe — иначе файл залочен и npm падает
                 "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                # 2) Официальная установка/обновление
-                "Write-Host 'Официальная установка/обновление Claude Code...' -ForegroundColor Cyan; "
-                "irm https://claude.ai/install.ps1 | iex; "
+                # 2) Установка/обновление последней версии через npm
+                "Write-Host 'Установка/обновление Claude Code через npm...' -ForegroundColor Cyan; "
+                "npm install -g @anthropic-ai/claude-code@latest; "
                 "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
                 "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
