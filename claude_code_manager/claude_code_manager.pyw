@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7"  # Для обновлений
+APP_VERSION = "5.7.1"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -579,14 +579,6 @@ TRANSLATIONS = {
     # ── баннеры
     "Запуск без прав администратора": "Running without administrator rights",
     "Рекомендуется запустить\nот имени администратора": "Recommended to run\nas administrator",
-    # ── freemodel dialog
-    "freemodel.dev — статус и латентность": "freemodel.dev — status & latency",
-    "источник: freemodel-status-mirror-jzmw.vercel.app": "source: freemodel-status-mirror-jzmw.vercel.app",
-    "Нет данных по этому endpoint.": "No data for this endpoint.",
-    "Нет связи": "No connection",
-    "нет данных": "no data",
-    "upstream вернул нечитаемую ошибку (обычно ответ промежуточного прокси/шлюза)":
-        "upstream returned unreadable error (likely a proxy/gateway response)",
     # ── разное
     "Пример отображения в Claude Code": "Preview in Claude Code",
     "модель  •  контекст  •  session ID  •  git-репозиторий":
@@ -618,6 +610,20 @@ TRANSLATIONS = {
     "Версия": "Version",
     "Установить v": "Install v",
     "клик": "click",
+    # ── диалог прогресса install/update/uninstall
+    "Идёт установка…\nНе закрывайте окно PowerShell.":
+        "Installing…\nDo not close the PowerShell window.",
+    "Идёт обновление…\nНе закрывайте окно PowerShell.":
+        "Updating…\nDo not close the PowerShell window.",
+    "Идёт удаление…\nНе закрывайте окно PowerShell.":
+        "Uninstalling…\nDo not close the PowerShell window.",
+    "Claude Code установлен ✓": "Claude Code installed ✓",
+    "Claude Code обновлён ✓": "Claude Code updated ✓",
+    "Claude Code удалён ✓": "Claude Code uninstalled ✓",
+    "Удаление Claude Code": "Uninstall Claude Code",
+    "Удаление отменено": "Uninstall cancelled",
+    "Удаление не завершено": "Uninstall not completed",
+    "Удаление завершено успешно.": "Uninstall completed successfully.",
     # ── console banner
     "Приложение запущено": "Application started",
     "Порт Omniroute:": "Omniroute port:",
@@ -1224,11 +1230,6 @@ class StatusIndicator(QWidget):
             glow = (52, 211, 153, int(70 * pulse))
             t = 0.85 + 0.15 * pulse
             core = (int(52 * t), int(211 * t), int(153 * t))
-        elif self._state == "fm_ok":
-            # Зелёный как текст «freemodel» (#34d399) — для бейджа freemodel.dev
-            glow = (52, 211, 153, int(70 * pulse))
-            t = 0.85 + 0.15 * pulse
-            core = (int(52 * t), int(211 * t), int(153 * t))
         elif self._state == "warn":
             # жёлто-оранжевый
             glow = (255, 170, 30, int(70 * pulse))
@@ -1253,32 +1254,19 @@ class StatusIndicator(QWidget):
         painter.drawEllipse(center, 4.5 * scale, 4.5 * scale)
 
 # ============================================================
-# БЕЙДЖ freemodel.dev (логотип + индикатор статуса сервиса)
+# БЕЙДЖ freemodel.dev — просто надпись
 # ============================================================
 
 class FreemodelBrand(QWidget):
-    """Логотип «freemodel.dev» + индикатор-точка справа.
-    «freemodel» — зелёный (#34d399, унифицированный цвет приложения),
-    «.dev» — мягкий белый (#d1d5db). Цвет точки управляется через
-    set_status(overall) по значениям API /api/status.
-    Клик по бейджу эмитит сигнал `clicked` — главное окно открывает
-    модальный диалог со статистикой freemodel.dev в реальном времени."""
-
-    clicked = Signal()
+    """Логотип «freemodel.dev» в левом верхнем углу главного окна.
+    «freemodel» — зелёный (#34d399), «.dev» — мягкий белый (#d1d5db).
+    Индикатор статуса и клик убраны — окно статистики больше не работает."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setCursor(Qt.PointingHandCursor)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
-
-        self.dot = StatusIndicator()
-        self.dot.setFixedSize(19, 19)
-        self.dot.set_state("neutral")
-        # Прижимаем к нижней кромке, чтобы точка вставала по базовой линии текста,
-        # а не «висела» выше — иначе индикатор выглядит выше глифов.
-        layout.addWidget(self.dot, 0, Qt.AlignBottom)
 
         self.label = QLabel()
         self.label.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
@@ -1291,1736 +1279,6 @@ class FreemodelBrand(QWidget):
         layout.addWidget(self.label, 0, Qt.AlignBottom)
 
         self.adjustSize()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
-
-    def set_status(self, overall):
-        """overall: 'ok' | 'warn' | 'confirming' | 'bad' | 'down' | 'unknown' | None
-        'confirming' трактуем как warn — сайт делает то же самое."""
-        if overall == "ok":
-            # «ok» — в цвет текста freemodel (#34d399)
-            self.dot.set_state("fm_ok")
-        elif overall in ("warn", "confirming"):
-            self.dot.set_state("warn")
-        elif overall in ("bad", "down"):
-            self.dot.set_state("off")
-        else:
-            self.dot.set_state("neutral")
-
-# ============================================================
-# ПОДСКАЗКА «клик» с изогнутой стрелкой, указывает на бейдж freemodel.dev
-# ============================================================
-
-class _FmClickHint(QWidget):
-    """Короткая изогнутая серая стрелка с подписью «клик», указывает на
-    бейдж freemodel.dev. Виджет прозрачен для мыши, поэтому не перехватывает
-    клики по самому бейджу. Изгиб уходит снизу-влево и возвращается к тексту,
-    наконечник упирается под низ текста freemodel.dev."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(150, 70)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.setRenderHint(QPainter.TextAntialiasing, True)
-
-        line_color = QColor("#6a6a72")
-        text_color = QColor("#7d7d85")
-
-        # Подпись «клик» — справа-снизу, рядом с хвостом стрелки
-        font = QFont("Segoe UI", 9)
-        font.setItalic(True)
-        p.setFont(font)
-        p.setPen(text_color)
-        p.drawText(QRectF(96, 38, 60, 22), Qt.AlignLeft | Qt.AlignVCenter, tr("клик"))
-
-        # Изогнутая стрелка: начинается слева от слова «клик», уходит вниз-влево,
-        # выгибается через левую сторону и упирается наконечником вверх в бейдж.
-        pen = QPen(line_color, 1.4)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-
-        start = QPointF(92, 47)
-        c1 = QPointF(55, 62)
-        c2 = QPointF(8, 38)
-        end = QPointF(45, 8)
-
-        path = QPainterPath()
-        path.moveTo(start)
-        path.cubicTo(c1, c2, end)
-        p.drawPath(path)
-
-        # Наконечник стрелки. Касательная в конце пути ≈ направление (c2 → end).
-        dx = end.x() - c2.x()
-        dy = end.y() - c2.y()
-        angle = math.atan2(dy, dx)
-        head = 7.5
-        spread = math.pi / 7
-        a1 = QPointF(
-            end.x() - head * math.cos(angle - spread),
-            end.y() - head * math.sin(angle - spread),
-        )
-        a2 = QPointF(
-            end.x() - head * math.cos(angle + spread),
-            end.y() - head * math.sin(angle + spread),
-        )
-        p.drawLine(end, a1)
-        p.drawLine(end, a2)
-
-# ============================================================
-# ДИАЛОГ СТАТИСТИКИ freemodel.dev (открывается по клику на бейдж)
-# ============================================================
-
-# Цветовая палитра — взята 1:1 с CSS-переменных сайта fm.bluealitas.com.
-_FM_COLORS = {
-    "bg":         "#0d0d0d",
-    "bg_warm":    "#161616",
-    "bg_card":    "#1a1a1a",
-    "ink":        "#f3f4f6",
-    "ink_soft":   "#d1d5db",
-    "ink_muted":  "#9ca3af",
-    "line":       "#2a2a2a",
-    "line_soft":  "#1f1f1f",
-    "ok":         "#34d399",
-    "warn":       "#fbbf24",
-    "bad":        "#f87171",
-    "down":       "#ef4444",
-    "slow":       "#60a5fa",
-    "very_slow":  "#fbbf24",
-    # 'failed' пробы — красные. Ключа не было → бары падали в ink_muted (серый),
-    # из-за чего пользователю казалось, что красных шкал нет.
-    "failed":     "#f87171",
-}
-
-def _fm_classify_probe(probe):
-    """Категория пробы: 'failed' | 'very_slow' | 'slow' | 'ok'.
-    Пороги взяты 1:1 из JS сайта fm.bluealitas.com:
-       latency > 4000  → very_slow (жёлтый)
-       latency > 1500  → slow      (голубой)
-       иначе           → ok        (зелёный)
-       !ok             → failed    (красный)"""
-    if not probe or not probe.get("ok", False):
-        return "failed"
-    lat = probe.get("latency") or 0
-    if lat > 4000:
-        return "very_slow"
-    if lat > 1500:
-        return "slow"
-    return "ok"
-
-def _fm_fmt_eta(ms_remaining):
-    """5_271_000 ms → '1h 27m 51s' / '23m 11s' / '45s'."""
-    if ms_remaining is None or ms_remaining < 0:
-        ms_remaining = 0
-    total_s = int(ms_remaining // 1000)
-    h, rem = divmod(total_s, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m}m {s}s"
-    if m:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
-def _fm_fmt_age(ms_age):
-    """Сколько назад: '6m ago', '23s ago', '1h 12m ago'."""
-    if ms_age is None or ms_age < 0:
-        return "—"
-    total_s = int(ms_age // 1000)
-    if total_s < 60:
-        return f"{total_s}s ago"
-    h, rem = divmod(total_s, 3600)
-    m, _ = divmod(rem, 60)
-    if h:
-        return f"{h}h {m}m ago"
-    return f"{m}m ago"
-
-def _fm_fmt_ms(value):
-    """5276.123 → '5 276'. Тысячи разделены пробелом — как на сайте."""
-    if value is None:
-        return "—"
-    try:
-        return f"{int(round(float(value))):,}".replace(",", " ")
-    except Exception:
-        return "—"
-
-
-def _fm_sanitize_error(text):
-    """Иногда промежуточный прокси/шлюз отдаёт ошибки иероглифами или
-    «мусором» — битый UTF-8, бинарь от сжатого/зашифрованного ответа,
-    replacement-символы U+FFFD. В UI это просто шум — пользователь не
-    прочитает, поэтому заменяем на короткое объяснение.
-
-    Логика:
-      1) если >25% значимых символов — CJK → заменить;
-      2) если >20% значимых символов — control/replacement/непечатаемые
-         или непонятные latin/extended → заменить (мусорный бинарь)."""
-    if not text:
-        return ""
-    s = str(text).strip()
-    if not s:
-        return ""
-    cjk = 0
-    junk = 0
-    counted = 0
-    for ch in s:
-        if ch.isspace():
-            continue
-        counted += 1
-        c = ord(ch)
-        if ((0x4E00 <= c <= 0x9FFF) or  # CJK Unified Ideographs
-            (0x3400 <= c <= 0x4DBF) or  # CJK Ext A
-            (0x3040 <= c <= 0x309F) or  # Hiragana
-            (0x30A0 <= c <= 0x30FF) or  # Katakana
-            (0xAC00 <= c <= 0xD7AF)):   # Hangul
-            cjk += 1
-            continue
-        # «Хороший» диапазон: ASCII печатное, латиница с диакритикой,
-        # кириллица, основная пунктуация. Всё остальное считаем мусором.
-        is_ok = (
-            (0x20 <= c <= 0x7E) or                # ASCII printable
-            (0x00A0 <= c <= 0x024F) or            # Latin-1/Ext A/B
-            (0x0400 <= c <= 0x04FF) or            # Cyrillic
-            c in (0x2013, 0x2014, 0x2018, 0x2019,
-                  0x201C, 0x201D, 0x2022, 0x2026) # тире/кавычки/пуля/…
-        )
-        if not is_ok:
-            junk += 1
-    if counted:
-        # Окно статистики по дизайну всегда на английском (как и серверные
-        # подписи «Down», «Operational» — приходят из API). Поэтому здесь
-        # хардкодим английский текст вне зависимости от LANG.lang, чтобы
-        # русская вставка не торчала на фоне остального английского хедера.
-        if cjk / counted > 0.25 or junk / counted > 0.20:
-            return "upstream returned an unreadable error " \
-                   "(usually from an intermediate proxy/gateway)"
-    # На всякий случай отрезаем длинные «портянки» от стектрейсов.
-    return s[:160]
-
-
-class LatencyHistogram(QWidget):
-    """Гистограмма последних N проб freemodel.dev — бар на каждый probe.
-    Цвет по категории. Бары рисуются с лёгким вертикальным градиентом сверху-вниз
-    и тонкой базовой линией для визуального якоря."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        # Прозрачный фон, чтобы под виджетом просвечивала карточка-родитель —
-        # иначе Windows зальёт виджет дефолтной серой подложкой.
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setMinimumHeight(118)
-        self._samples = []
-
-    def set_samples(self, samples):
-        # Срез -96, как на сайте fm.bluealitas.com (renderProbeChart):
-        #   const recent = points.slice(-96)
-        # Раньше брали -110 — на Aggregate (там >96 проб) бары шли с лишним
-        # запасом, и визуальное распределение не совпадало с сайтом.
-        self._samples = samples[-96:]
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
-
-        # Базовая линия — едва заметная горизонталь под барами
-        baseline_y = h - 4
-        p.setPen(QPen(QColor(_FM_COLORS["line_soft"]), 1))
-        p.drawLine(0, int(baseline_y) + 1, w, int(baseline_y) + 1)
-
-        if not self._samples:
-            p.setPen(QColor(_FM_COLORS["ink_muted"]))
-            p.setFont(QFont("Segoe UI", 10))
-            p.drawText(self.rect(), Qt.AlignCenter, tr("нет данных"))
-            return
-
-        max_lat = max((s[2] for s in self._samples if s[2]), default=1.0) or 1.0
-        max_lat *= 1.05
-        gap = 2.0
-        n = len(self._samples)
-        bar_w = max(1.5, (w - gap * (n - 1)) / n)
-
-        for i, (ts, cat, lat) in enumerate(self._samples):
-            base_color = QColor(_FM_COLORS.get(cat, _FM_COLORS["ink_muted"]))
-            # Высота всех баров — пропорциональна latency, ровно как на сайте:
-            #   h_ = max(5, round((lat / max) * 78))
-            # У failed-проб latency тоже есть (время до отлупа), поэтому жёстко
-            # обрезать их до 8px — неправильно: на сайте видны разные высоты.
-            bar_h = max(3.0, (lat / max_lat) * (h - 10))
-            x = i * (bar_w + gap)
-            y = baseline_y - bar_h
-
-            # Вертикальный градиент: вверху чуть ярче, внизу чуть глуше
-            grad = QLinearGradient(0, y, 0, baseline_y)
-            top = QColor(base_color)
-            bot = QColor(base_color)
-            bot.setAlphaF(0.78)
-            grad.setColorAt(0, top)
-            grad.setColorAt(1, bot)
-            p.setBrush(QBrush(grad))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(QRectF(x, y, bar_w, bar_h), 1.4, 1.4)
-
-
-# ─── Кастомное окно (только для FreemodelStatsDialog) ─────────────
-
-
-class _FmBgGlow(QWidget):
-    """Bottom glow layer - 2-layer crossfade, exactly like the website bgA/bgB."""
-
-    _ACCENTS = {
-        'ok':         (52, 211, 153, 0.04),
-        'warn':       (251, 191, 36, 0.04),
-        'confirming': (251, 191, 36, 0.04),
-        'bad':        (239, 68, 68, 0.06),
-        'down':       (239, 68, 68, 0.06),
-        'unknown':    (156, 163, 175, 0.02),
-    }
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._col_a = QColor(0, 0, 0, 0)
-        self._col_b = QColor(0, 0, 0, 0)
-        self._alpha_a = 0.0
-        self._alpha_b = 0.0
-        self._active = 'A'
-        self._anim_a = None
-        self._anim_b = None
-
-    def set_status(self, effective):
-        r, g, b, base_a = self._ACCENTS.get(effective, self._ACCENTS['unknown'])
-        target = QColor(r, g, b)
-        target.setAlphaF(base_a)
-        if self._active == 'A':
-            self._col_b = target
-            self._anim_b = QPropertyAnimation(self, b'_alpha_b_prop', self)
-            self._anim_b.setDuration(1500)
-            self._anim_b.setStartValue(self._alpha_b)
-            self._anim_b.setEndValue(1.0)
-            self._anim_b.setEasingCurve(QEasingCurve.OutCubic)
-            self._anim_a = QPropertyAnimation(self, b'_alpha_a_prop', self)
-            self._anim_a.setDuration(1500)
-            self._anim_a.setStartValue(self._alpha_a)
-            self._anim_a.setEndValue(0.0)
-            self._anim_a.setEasingCurve(QEasingCurve.OutCubic)
-            self._anim_a.start()
-            self._anim_b.start()
-            self._active = 'B'
-        else:
-            self._col_a = target
-            self._anim_a = QPropertyAnimation(self, b'_alpha_a_prop', self)
-            self._anim_a.setDuration(1500)
-            self._anim_a.setStartValue(self._alpha_a)
-            self._anim_a.setEndValue(1.0)
-            self._anim_a.setEasingCurve(QEasingCurve.OutCubic)
-            self._anim_b = QPropertyAnimation(self, b'_alpha_b_prop', self)
-            self._anim_b.setDuration(1500)
-            self._anim_b.setStartValue(self._alpha_b)
-            self._anim_b.setEndValue(0.0)
-            self._anim_b.setEasingCurve(QEasingCurve.OutCubic)
-            self._anim_a.start()
-            self._anim_b.start()
-            self._active = 'A'
-        self.update()
-
-    def _get_a(self): return self._alpha_a
-    def _set_a(self, v): self._alpha_a = v; self.update()
-    _alpha_a_prop = Property(float, _get_a, _set_a)
-
-    def _get_b(self): return self._alpha_b
-    def _set_b(self, v): self._alpha_b = v; self.update()
-    _alpha_b_prop = Property(float, _get_b, _set_b)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
-        for col, alpha in ((self._col_a, self._alpha_a), (self._col_b, self._alpha_b)):
-            if alpha <= 0.001:
-                continue
-            grad = QLinearGradient(0, h, 0, int(h * 0.35))
-            c0 = QColor(col)
-            c0.setAlphaF(col.alphaF() * alpha)
-            c1 = QColor(col)
-            c1.setAlphaF(0.0)
-            grad.setColorAt(0, c0)
-            grad.setColorAt(1, c1)
-            p.setBrush(QBrush(grad))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(QRectF(0, 0, w, h), 16, 16)
-
-
-class _FmBgDots(QWidget):
-    """Background dot pattern - 2-layer crossfade, exactly like the website."""
-
-    _DOT_ALPHAS = {
-        'ok': 0.025, 'warn': 0.025, 'confirming': 0.025,
-        'bad': 0.03, 'down': 0.03, 'unknown': 0.015,
-    }
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._col_a = QColor(255, 255, 255, 6)
-        self._col_b = QColor(255, 255, 255, 6)
-        self._alpha_a = 0.0
-        self._alpha_b = 0.0
-        self._active = None
-        self._cur_key = None
-        self._anim_a = None
-        self._anim_b = None
-
-    def set_status(self, effective, color_hex):
-        r = int(color_hex[1:3], 16) if color_hex and len(color_hex) >= 7 else 156
-        g = int(color_hex[3:5], 16) if color_hex and len(color_hex) >= 7 else 163
-        b = int(color_hex[5:7], 16) if color_hex and len(color_hex) >= 7 else 175
-        a = self._DOT_ALPHAS.get(effective, 0.015)
-        key = (r, g, b, round(a, 4))
-        if self._cur_key == key:
-            return
-        self._cur_key = key
-        target = QColor(r, g, b)
-        target.setAlphaF(a)
-        if self._active is None:
-            self._col_a = target
-            self._anim_a = QPropertyAnimation(self, b'_alpha_a_prop', self)
-            self._anim_a.setDuration(1500)
-            self._anim_a.setStartValue(self._alpha_a)
-            self._anim_a.setEndValue(1.0)
-            self._anim_a.setEasingCurve(QEasingCurve.OutCubic)
-            self._anim_a.start()
-            self._active = 'A'
-        elif self._active == 'A':
-            self._col_b = target
-            self._anim_b = QPropertyAnimation(self, b'_alpha_b_prop', self)
-            self._anim_b.setDuration(1500)
-            self._anim_b.setStartValue(self._alpha_b)
-            self._anim_b.setEndValue(1.0)
-            self._anim_b.setEasingCurve(QEasingCurve.OutCubic)
-            self._anim_a = QPropertyAnimation(self, b'_alpha_a_prop', self)
-            self._anim_a.setDuration(1500)
-            self._anim_a.setStartValue(self._alpha_a)
-            self._anim_a.setEndValue(0.0)
-            self._anim_a.setEasingCurve(QEasingCurve.OutCubic)
-            self._anim_b.start()
-            self._anim_a.start()
-            self._active = 'B'
-        else:
-            self._col_a = target
-            self._anim_a = QPropertyAnimation(self, b'_alpha_a_prop', self)
-            self._anim_a.setDuration(1500)
-            self._anim_a.setStartValue(self._alpha_a)
-            self._anim_a.setEndValue(1.0)
-            self._anim_a.setEasingCurve(QEasingCurve.OutCubic)
-            self._anim_b = QPropertyAnimation(self, b'_alpha_b_prop', self)
-            self._anim_b.setDuration(1500)
-            self._anim_b.setStartValue(self._alpha_b)
-            self._anim_b.setEndValue(0.0)
-            self._anim_b.setEasingCurve(QEasingCurve.OutCubic)
-            self._anim_a.start()
-            self._anim_b.start()
-            self._active = 'A'
-        self.update()
-
-    def _get_a(self): return self._alpha_a
-    def _set_a(self, v): self._alpha_a = v; self.update()
-    _alpha_a_prop = Property(float, _get_a, _set_a)
-
-    def _get_b(self): return self._alpha_b
-    def _set_b(self, v): self._alpha_b = v; self.update()
-    _alpha_b_prop = Property(float, _get_b, _set_b)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
-        for col, alpha_mul in ((self._col_a, self._alpha_a), (self._col_b, self._alpha_b)):
-            if alpha_mul <= 0.001:
-                continue
-            r, g, b = col.red(), col.green(), col.blue()
-            final_a = int(col.alphaF() * alpha_mul * 255)
-            dot_color = QColor(r, g, b, final_a)
-            p.setPen(Qt.NoPen)
-            p.setBrush(dot_color)
-            step = 40
-            y = 0
-            row = 0
-            while y < h:
-                x = 0
-                col_idx = 0
-                while x < w:
-                    if row % 3 == 0 and col_idx % 4 == 0:
-                        p.drawEllipse(QPointF(x, y), 1.0, 1.0)
-                    x += step
-                    col_idx += 1
-                y += step
-                row += 1
-
-
-class _FmHeroCard(QFrame):
-    """Карточка-герой с лёгким радиальным глоу из верхнего-левого угла.
-    Глоу «дышит» — амплитуда альфа-канала колеблется по синусоиде. Скорость
-    дыхания зависит от состояния: спокойно при ok, быстрее при warn/bad/down."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._glow_color = None       # текущий (отображаемый) цвет
-        self._target_color = None     # целевой цвет (куда плавно переходим)
-        self._glow_state = "unknown"
-        self._target_state = "unknown"
-        # Целевые «пиковая альфа» и «множитель радиуса» — плавно интерполируются.
-        self._peak_alpha = 0.08
-        self._target_peak_alpha = 0.08
-        self._anim_phase = 0.0
-        # Сама карточка рисует свой фон в paintEvent; запрещаем дефолтную
-        # заливку — иначе бывает «двойной» фон и заметные швы по бордюру.
-        self.setAttribute(Qt.WA_StyledBackground, False)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        # Breathing-таймер для пульсации glow на hero-карточке
-        self._anim_timer = QTimer(self)
-        self._anim_timer.timeout.connect(self._tick)
-        self._anim_timer.start(33)
-
-    _PEAK_ALPHA_BY_STATE = {
-        "ok":         0.18,
-        "unknown":    0.08,
-        "warn":       0.26,
-        "confirming": 0.26,
-        "bad":        0.30,
-        "down":       0.34,
-    }
-
-    def set_glow(self, color_hex, state="ok"):
-        # Целевые значения — текущие плавно интерполируются к ним в _tick().
-        self._target_color = QColor(color_hex) if color_hex else None
-        self._target_state = state or "unknown"
-        self._target_peak_alpha = self._PEAK_ALPHA_BY_STATE.get(self._target_state, 0.18)
-        # Если ещё нет начального цвета — стартуем с целевого, чтобы при
-        # первом показе не было артефакта «фейда из чёрного».
-        if self._glow_color is None and self._target_color is not None:
-            self._glow_color = QColor(self._target_color)
-            self._peak_alpha = self._target_peak_alpha
-            self._glow_state = self._target_state
-        self.update()
-
-    @staticmethod
-    def _lerp(a, b, t):
-        return a + (b - a) * t
-
-    def _tick(self):
-        # Плавная интерполяция цвета к целевому (~1 сек на полный переход).
-        # 0.05 за тик 33 мс ≈ ~0.66 сек на ~95% перехода — близко к CSS-«ease 1s».
-        smooth = 0.05
-        if self._target_color is not None:
-            if self._glow_color is None:
-                self._glow_color = QColor(self._target_color)
-            else:
-                cr = int(round(self._lerp(self._glow_color.red(),   self._target_color.red(),   smooth)))
-                cg = int(round(self._lerp(self._glow_color.green(), self._target_color.green(), smooth)))
-                cb = int(round(self._lerp(self._glow_color.blue(),  self._target_color.blue(),  smooth)))
-                self._glow_color = QColor(cr, cg, cb)
-        # Плавная интерполяция peak alpha
-        self._peak_alpha = self._lerp(self._peak_alpha, self._target_peak_alpha, smooth)
-        # Скорость пульсации — берём по «целевому» состоянию: при смене статуса
-        # дыхание сразу подхватывает новый ритм, цвет догоняет плавно.
-        self._glow_state = self._target_state
-        step = {
-            "ok":         0.018,
-            "unknown":    0.012,
-            "warn":       0.040,
-            "confirming": 0.040,
-            "bad":        0.075,
-            "down":       0.090,
-        }.get(self._glow_state, 0.020)
-        self._anim_phase += step
-        if self._anim_phase > 1e6:
-            self._anim_phase = 0.0
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-
-        # Базовый фон карточки
-        p.setBrush(QColor(0x16, 0x16, 0x16, 184))
-        p.setPen(QPen(QColor(_FM_COLORS["line"]), 1))
-        p.drawRoundedRect(r, 14, 14)
-
-        if self._glow_color is None:
-            return
-
-        # Дыхание: коэффициент колеблется в [0.35 … 1.0]
-        breath = 0.35 + 0.65 * (0.5 + 0.5 * math.sin(self._anim_phase))
-        # peak_alpha — плавно интерполируется в _tick() между состояниями,
-        # чтобы переход цвет/яркость свечения был мягким, как CSS-transition.
-        peak_alpha = self._peak_alpha
-        radius_mul = 0.62 + 0.06 * (0.5 + 0.5 * math.sin(self._anim_phase + 0.7))
-        radius = max(r.width(), r.height()) * radius_mul
-
-        gr = QRadialGradient(QPointF(r.left() + r.width() * 0.20,
-                                     r.top() - r.height() * 0.18), radius)
-        c0 = QColor(self._glow_color)
-        c0.setAlphaF(peak_alpha * breath)
-        c1 = QColor(self._glow_color)
-        c1.setAlphaF(0.0)
-        gr.setColorAt(0.0, c0)
-        gr.setColorAt(1.0, c1)
-        p.setBrush(QBrush(gr))
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(r, 14, 14)
-
-
-class _FmFlatCard(QFrame):
-    """Простая карточка со скру  лё  н  м фоном и рамкой, нарисованными в
-    paintEvent (а не через QSS). Это важно: при stylesheet-фоне на обычном
-    QFrame дочерние QLabel на Windows получают «родной» серый квадрат-подложку.
-    Самоотрисовка + WA_TranslucentBackground убирает этот артефакт — так же,
-    как сделано в _FmHeroCard (у которой квадратов нет)."""
-
-    def __init__(self, bg_hex, border_hex, radius=12, parent=None):
-        super().__init__(parent)
-        self._bg = QColor(bg_hex)
-        self._bg.setAlphaF(0.72)
-        self._border = QColor(border_hex)
-        self._radius = radius
-        self.setAttribute(Qt.WA_StyledBackground, False)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setBrush(self._bg)
-        p.setPen(QPen(self._border, 1))
-        p.drawRoundedRect(r, self._radius, self._radius)
-
-
-class _FmStatTile(QFrame):
-    """Маленькая плитка статистики для блока «recent probes»: цветная акцент-
-    полоска слева, крупное значение сверху и тонкий uppercase-лейбл снизу.
-    Самоотрисовка фона/границы (как в _FmFlatCard) — без QSS-фона, иначе под
-    дочерними QLabel на Windows видна системная серая подложка."""
-
-    def __init__(self, accent_hex, parent=None):
-        super().__init__(parent)
-        self._accent = QColor(accent_hex)
-        self._bg = QColor(_FM_COLORS["bg_warm"])
-        self._bg.setAlphaF(0.72)
-        self._border = QColor(_FM_COLORS["line_soft"])
-        self.setAttribute(Qt.WA_StyledBackground, False)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setMinimumHeight(62)
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 9, 14, 10)
-        lay.setSpacing(3)
-
-        self.value_lbl = QLabel("—")
-        vf = QFont("Segoe UI", 16, QFont.DemiBold)
-        self.value_lbl.setFont(vf)
-        self.value_lbl.setTextFormat(Qt.RichText)
-        self.value_lbl.setStyleSheet(f"color: {_FM_COLORS['ink']}; background: transparent;")
-        lay.addWidget(self.value_lbl)
-
-        self.label_lbl = QLabel("—")
-        lf = QFont("Segoe UI", 8, QFont.DemiBold)
-        lf.setLetterSpacing(QFont.PercentageSpacing, 120)
-        self.label_lbl.setFont(lf)
-        self.label_lbl.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
-        lay.addWidget(self.label_lbl)
-
-    def set_data(self, value_html, label_text, value_color_hex=None):
-        self.value_lbl.setText(value_html)
-        if value_color_hex:
-            self.value_lbl.setStyleSheet(
-                f"color: {value_color_hex}; background: transparent;"
-            )
-        self.label_lbl.setText(label_text)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setBrush(self._bg)
-        p.setPen(QPen(self._border, 1))
-        p.drawRoundedRect(r, 11, 11)
-
-        # Тонкая вертикальная акцент-полоска слева
-        accent_w = 3.0
-        ar = QRectF(r.left() + 1.5, r.top() + 9, accent_w, r.height() - 18)
-        p.setBrush(self._accent)
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(ar, accent_w / 2, accent_w / 2)
-
-
-class _FmRateBar(QWidget):
-    """Тонкая горизонтальная стек-полоска, показывает доли
-    ok / slow / very_slow / failed в последних N пробах."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedHeight(6)
-        self._n_ok_clean = 0   # ok минус (slow + very_slow) — чисто зелёный сегмент
-        self._n_slow = 0
-        self._n_very_slow = 0
-        self._n_failed = 0
-        self._n_total = 0
-
-    def set_counts(self, n_ok, n_slow, n_failed, n_total, n_very_slow=0):
-        # n_ok на сайте включает все ok-пробы (любая проба с ok=True), в т.ч.
-        # slow и very_slow. Чтобы стек был читаемый, выделяем «чистый ok» =
-        # ok − (slow + very_slow). Жёлтый сегмент рисуем отдельно.
-        n_slow = max(0, n_slow)
-        n_very_slow = max(0, n_very_slow)
-        self._n_ok_clean = max(0, n_ok - n_slow - n_very_slow)
-        self._n_slow = n_slow
-        self._n_very_slow = n_very_slow
-        self._n_failed = max(0, n_failed)
-        self._n_total = max(1, n_total)
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
-        radius = h / 2.0
-
-        # Фоновая дорожка
-        p.setBrush(QColor(_FM_COLORS["line_soft"]))
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(QRectF(0, 0, w, h), radius, radius)
-
-        if self._n_total <= 0:
-            return
-
-        # Порядок: ok (зелёный) → slow (синий) → very_slow (жёлтый) → failed (красный).
-        # Соответствует возрастанию «серьёзности».
-        segments = [
-            (self._n_ok_clean,  QColor(_FM_COLORS["ok"])),
-            (self._n_slow,      QColor(_FM_COLORS["slow"])),
-            (self._n_very_slow, QColor(_FM_COLORS["very_slow"])),
-            (self._n_failed,    QColor(_FM_COLORS["failed"])),
-        ]
-        x = 0.0
-        for count, color in segments:
-            if count <= 0:
-                continue
-            seg_w = (count / self._n_total) * w
-            p.setBrush(color)
-            p.drawRoundedRect(QRectF(x, 0, seg_w + 0.5, h), radius, radius)
-            x += seg_w
-
-
-class _FmSegmentedControl(QWidget):
-    """Сегментированный переключатель для выбора scope: All / host1 / host2 / …
-    Один активный сегмент, остальные приглушены. Опции задаются динамически
-    из списка таргетов в /api/status."""
-
-    selectionChanged = Signal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self._options = []        # list of (key, label)
-        self._buttons = []        # list of (key, QPushButton)
-        self._current_key = None
-
-        self._lay = QHBoxLayout(self)
-        self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.setSpacing(6)
-        self._lay.addStretch()
-
-    def _button_style(self):
-        return (
-            "QPushButton {"
-            f" background-color: {_FM_COLORS['bg_warm']};"
-            f" color: {_FM_COLORS['ink_soft']};"
-            f" border: 1px solid {_FM_COLORS['line']};"
-            "  border-radius: 8px;"
-            "  padding: 6px 14px;"
-            "}"
-            "QPushButton:hover {"
-            f" color: {_FM_COLORS['ink']};"
-            f" border-color: {_FM_COLORS['ink_muted']};"
-            "}"
-            "QPushButton:checked {"
-            "  background-color: #052e1a;"
-            f" color: {_FM_COLORS['ok']};"
-            f" border-color: {_FM_COLORS['ok']};"
-            "}"
-        )
-
-    def set_options(self, options):
-        """options — список (key, label). Если состав ключей не изменился,
-        ничего не пересобираем (чтобы не моргала вёрстка на каждом тике)."""
-        new_keys = [o[0] for o in options]
-        old_keys = [o[0] for o in self._options]
-        if new_keys == old_keys:
-            # Обновим лейблы на всякий случай
-            for (key, btn), (_, label) in zip(self._buttons, options):
-                btn.setText(label)
-            self._options = list(options)
-            return
-
-        prev_key = self._current_key
-        # Снести старые
-        while self._lay.count():
-            item = self._lay.takeAt(0)
-            w = item.widget()
-            if w:
-                w.setParent(None)
-                w.deleteLater()
-        self._buttons = []
-        self._options = list(options)
-
-        for key, label in options:
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
-            btn.setStyleSheet(self._button_style())
-            btn.setFlat(True)
-            btn.clicked.connect(lambda _checked, k=key: self._on_clicked(k))
-            self._buttons.append((key, btn))
-            self._lay.addWidget(btn)
-        self._lay.addStretch()
-
-        # Восстановить выбор
-        if prev_key and prev_key in new_keys:
-            self._set_checked(prev_key)
-        elif new_keys:
-            self._current_key = new_keys[0]
-            self._set_checked(new_keys[0])
-
-    def _on_clicked(self, key):
-        if key == self._current_key:
-            # Кликнули по уже активному — оставляем как есть (не даём «отжать»)
-            self._set_checked(self._current_key)
-            return
-        self._current_key = key
-        self._set_checked(key)
-        self.selectionChanged.emit(key)
-
-    def _set_checked(self, key):
-        for k, btn in self._buttons:
-            btn.setChecked(k == key)
-
-    def set_current(self, key, emit=True):
-        if not any(k == key for k, _ in self._options):
-            return
-        if key == self._current_key:
-            self._set_checked(key)
-            return
-        self._current_key = key
-        self._set_checked(key)
-        if emit:
-            self.selectionChanged.emit(key)
-
-    def current_key(self):
-        return self._current_key
-
-
-class _FmUptimeChip(QFrame):
-    """Виджет-пилюля с анимированной точкой-индикатором и текстом «UPTIME N%».
-    Точка дышит за счёт собственного QTimer-а в StatusIndicator (60 FPS).
-    Состояние индикатора:
-      • ≥85%  → 'fm_ok' (зелёный как на сайте)
-      • 50-85 → 'warn'  (жёлтый)
-      • <50   → 'off'   (красный)
-      • None  → 'neutral' (серый, спокойная пульсация)
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("FmUptimeChip")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        # QSS на сам QFrame; дочерним виджетам ставим прозрачный фон.
-        self.setStyleSheet(
-            "QFrame#FmUptimeChip {"
-            f"  background: {_FM_COLORS['bg_warm']};"
-            f"  border: 1px solid {_FM_COLORS['line_soft']};"
-            "  border-radius: 10px;"
-            "}"
-            "QFrame#FmUptimeChip QLabel {"
-            "  background: transparent;"
-            "  border: 0;"
-            "}"
-        )
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(7, 2, 11, 2)
-        lay.setSpacing(6)
-
-        # Анимированная точка — переиспользуем StatusIndicator (уже
-        # умеет дышать и переключать цвет через set_state).
-        self.dot = StatusIndicator()
-        self.dot.setFixedSize(14, 14)
-        self.dot.set_state("neutral")
-        lay.addWidget(self.dot, 0, Qt.AlignVCenter)
-
-        self.lbl = QLabel(
-            f"<span style='color:{_FM_COLORS['ink_muted']};'>UPTIME —</span>"
-        )
-        self.lbl.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
-        self.lbl.setTextFormat(Qt.RichText)
-        lay.addWidget(self.lbl, 0, Qt.AlignVCenter)
-
-    def set_uptime(self, pct):
-        """pct — float 0..100 (или None если данных нет)."""
-        if pct is None or not isinstance(pct, (int, float)) or not math.isfinite(pct):
-            self.dot.set_state("neutral")
-            self.lbl.setText(
-                f"<span style='color:{_FM_COLORS['ink_muted']};'>UPTIME —</span>"
-            )
-            return
-        if pct < 50:
-            state, col = "off", _FM_COLORS["bad"]
-        elif pct < 85:
-            state, col = "warn", _FM_COLORS["warn"]
-        else:
-            state, col = "fm_ok", _FM_COLORS["ok"]
-        self.dot.set_state(state)
-        txt = "100%" if pct >= 99.95 else f"{pct:.1f}%"
-        self.lbl.setText(
-            f"<span style='color:{_FM_COLORS['ink_muted']};'>UPTIME </span>"
-            f"<span style='color:{col};'>{txt}</span>"
-        )
-
-
-class _FmFormatChip(QFrame):
-    """Виджет-пилюля «format <Provider>» — стиль как у UPTIME chip.
-    Provider: 'anthropic' (оранжевый) или 'openai' (зелёный)."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("FmFormatChip")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet(
-            "QFrame#FmFormatChip {"
-            f"  background: {_FM_COLORS['bg_warm']};"
-            f"  border: 1px solid {_FM_COLORS['line_soft']};"
-            "  border-radius: 10px;"
-            "}"
-            "QFrame#FmFormatChip QLabel {"
-            "  background: transparent;"
-            "  border: 0;"
-            "}"
-        )
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(9, 2, 4, 2)
-        lay.setSpacing(6)
-
-        self.lbl = QLabel("")
-        self.lbl.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
-        self.lbl.setTextFormat(Qt.RichText)
-        lay.addWidget(self.lbl, 0, Qt.AlignVCenter)
-
-        self.badge = QLabel("")
-        self.badge.setFont(QFont("Segoe UI", 9, QFont.Bold))
-        self.badge.setTextFormat(Qt.RichText)
-        self.badge.setAttribute(Qt.WA_StyledBackground, True)
-        lay.addWidget(self.badge, 0, Qt.AlignVCenter)
-
-    def set_format(self, fmt):
-        if fmt == "anthropic":
-            self.lbl.setText(
-                f"<span style='color:{_FM_COLORS['ink_muted']};'>format</span>"
-            )
-            self.badge.setStyleSheet(
-                "background:#3a1f0f; border:1px solid #d97706;"
-                "border-radius:6px; padding:2px 8px; color:#f59e0b;"
-            )
-            self.badge.setText("Anthropic")
-            self.setVisible(True)
-        else:
-            self.setVisible(False)
-
-
-class _FmScopeView(QWidget):
-    """Сабблок статистики для одного scope. Два режима:
-       • compact=False — полноразмерный: заголовок, 4 п  итки stat-tiles,
-         стек-полоска, гистограмма. Исп  льзуется когда выбран конкретный
-         endpoint (только 1 сабблок в карточке).
-       • compact=True — компактный: заголовок c inline-сводкой справа,
-         стек-полоска, тонкая гистограмма. Используется в режиме All,
-         где таких сабблоков 3 (агрегат + 2 endpoint'а) — иначе они бы
-         не уместились в окне без скролла."""
-
-    def __init__(self, compact=False, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self._compact = compact
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6 if compact else 10)
-
-        # Заголовок сабблока. Слева — название scope, справа — inline-сводка
-        # (только в compact-режиме). В non-compact справа всегда пусто, потому
-        # что там ниже идут полноценные плитки.
-        head_row = QHBoxLayout()
-        head_row.setSpacing(8)
-        self.title_lbl = QLabel("—")
-        title_pt = 9 if compact else 10
-        self.title_lbl.setFont(QFont("Segoe UI", title_pt, QFont.DemiBold))
-        # Тонкий виджет-пилюля вокруг названия эндпоинта — как на сайте, но мягче.
-        self.title_lbl.setStyleSheet(
-            f"color: {_FM_COLORS['ink']};"
-            f"background: {_FM_COLORS['bg_warm']};"
-            f"border: 1px solid {_FM_COLORS['line_soft']};"
-            f"border-radius: 9px; padding: 3px 10px;"
-        )
-        head_row.addWidget(self.title_lbl)
-        # Бейдж формата API (Anthropic / OpenAI) — рядом с названием эндпоинта.
-        self.format_chip = _FmFormatChip()
-        self.format_chip.setVisible(False)
-        head_row.addWidget(self.format_chip)
-        # Чип uptime — анимированная точка + проценты. Берёт uptime24
-        # из API (как на сайте), а не считает локально из последних проб.
-        self.uptime_chip = _FmUptimeChip()
-        head_row.addWidget(self.uptime_chip)
-        head_row.addStretch()
-        self.summary_lbl = QLabel("")
-        self.summary_lbl.setFont(QFont("Segoe UI", 9))
-        self.summary_lbl.setTextFormat(Qt.RichText)
-        self.summary_lbl.setStyleSheet(
-            f"color: {_FM_COLORS['ink_muted']}; background: transparent;"
-        )
-        # В полноразмерном виде сводка лишняя — те же цифры уже в stat-плитках.
-        # Скрываем её, чтобы не было визуального дубля.
-        if not compact:
-            self.summary_lbl.setVisible(False)
-        head_row.addWidget(self.summary_lbl)
-        lay.addLayout(head_row)
-
-        # Плитки — только в non-compact
-        self.stat_ok = self.stat_slow = self.stat_failed = self.stat_latest = None
-        if not compact:
-            stat_row = QHBoxLayout()
-            stat_row.setSpacing(10)
-            self.stat_ok     = _FmStatTile(_FM_COLORS["ok"])
-            self.stat_slow   = _FmStatTile(_FM_COLORS["slow"])
-            self.stat_failed = _FmStatTile(_FM_COLORS["failed"])
-            self.stat_latest = _FmStatTile(_FM_COLORS["ink_muted"])
-            for tile in (self.stat_ok, self.stat_slow, self.stat_failed, self.stat_latest):
-                stat_row.addWidget(tile, 1)
-            lay.addLayout(stat_row)
-
-        self.rate_bar = _FmRateBar()
-        lay.addSpacing(1)
-        lay.addWidget(self.rate_bar)
-
-        self.histogram = LatencyHistogram()
-        if compact:
-            self.histogram.setMinimumHeight(78)
-            self.histogram.setMaximumHeight(78)
-        lay.addWidget(self.histogram, 1)
-
-    def set_title(self, text, fmt=None):
-        self.title_lbl.setText(text)
-        self.format_chip.set_format(fmt)
-
-    def update_from_samples(self, samples_with_ok, now_ms, explicit_up=None):
-        """samples_with_ok — отсортированный по ts список (ts, cat, lat, is_ok).
-        explicit_up — uptime24 в процентах (взвешенный по samples1h из API).
-        Если передан, используется вместо локального подсчёта по recent."""
-        self.histogram.set_samples([(t, c, l) for (t, c, l, _) in samples_with_ok])
-
-        recent = samples_with_ok[-96:]
-        if not recent:
-            if self.stat_ok is not None:
-                for tile, label in (
-                    (self.stat_ok, "OK"), (self.stat_slow, "SLOW"),
-                    (self.stat_failed, "FAILED"), (self.stat_latest, "LATEST"),
-                ):
-                    tile.set_data("—", label, _FM_COLORS["ink_muted"])
-            self.rate_bar.set_counts(0, 0, 0, 0)
-            self.summary_lbl.setText(tr("нет данных"))
-            self.uptime_chip.set_uptime(explicit_up)
-            return
-
-        n_total = len(recent)
-        n_ok     = sum(1 for _, _, _, ok in recent if ok)
-        n_failed = n_total - n_ok
-        # Делим slow и very_slow — для отдельных сегментов в стек-полоске.
-        n_slow_only  = sum(1 for _, c, _, _ in recent if c == "slow")
-        n_very_slow  = sum(1 for _, c, _, _ in recent if c == "very_slow")
-        n_slow       = n_slow_only + n_very_slow  # для плиток/сводки оставляем общий
-        latest_ts = recent[-1][0]
-        latest_age = now_ms - latest_ts if latest_ts else None
-        ok_pct = (n_ok * 100.0 / n_total) if n_total else 0.0
-
-        ink_soft = _FM_COLORS["ink_soft"]
-        ok_color = _FM_COLORS["ok"]
-        if ok_pct < 50:
-            ok_color = _FM_COLORS["bad"]
-        elif ok_pct < 85:
-            ok_color = _FM_COLORS["warn"]
-
-        # Uptime-чип берёт значение из uptime24 (если есть), иначе fallback
-        # на локально посчитанный процент по recent. Это сразу даёт «правдо-
-        # подобные» проценты как на сайте — 4.0% / 60.5% и т.д.
-        self.uptime_chip.set_uptime(
-            explicit_up if explicit_up is not None else ok_pct
-        )
-
-        if self.stat_ok is not None:
-            self.stat_ok.set_data(
-                f"{n_ok}<span style='color:{ink_soft}; font-size:12pt;'>/{n_total}</span>",
-                f"OK  •  {ok_pct:.0f}%",
-                ok_color,
-            )
-            self.stat_slow.set_data(
-                f"{n_slow}", "SLOW",
-                _FM_COLORS["slow"] if n_slow else _FM_COLORS["ink_muted"],
-            )
-            self.stat_failed.set_data(
-                f"{n_failed}", "FAILED",
-                _FM_COLORS["failed"] if n_failed else _FM_COLORS["ink_muted"],
-            )
-            self.stat_latest.set_data(
-                _fm_fmt_age(latest_age), "LATEST PROBE", _FM_COLORS["ink"],
-            )
-        self.rate_bar.set_counts(n_ok, n_slow_only, n_failed, n_total,
-                                 n_very_slow=n_very_slow)
-
-        # Inline-сводка для compact: «87/96 ok · 12 slow · 9 failed · 6m ago»
-        slow_part = (f"  •  <span style='color:{_FM_COLORS['slow']};'>{n_slow}</span> slow"
-                     if n_slow else "")
-        failed_part = (f"  •  <span style='color:{_FM_COLORS['failed']};'>{n_failed}</span> failed"
-                       if n_failed else "")
-        self.summary_lbl.setText(
-            f"<span style='color:{ok_color};'>{n_ok}</span>/"
-            f"<span style='color:{ink_soft};'>{n_total}</span> ok"
-            f"{slow_part}{failed_part}"
-            f"  •  latest {_fm_fmt_age(latest_age)}"
-        )
-
-
-class _FmTitleBarButton(QPushButton):
-    """Кнопка в шапке окна — минимизация/закрытие. Рисует крестик/минус QPainter'ом
-    с мягким hover-фоном."""
-
-    def __init__(self, kind="close", parent=None):
-        super().__init__(parent)
-        self._kind = kind  # 'close' | 'min' | 'max' | 'restore'
-        self.setFixedSize(38, 28)
-        self.setCursor(Qt.PointingHandCursor)
-        self._hover = False
-        # Кнопка — кастомная отрисовка только глифа и hover-фона. Дефолтную
-        # native-подложку отключаем, иначе по углам видны «коробки».
-        self.setFlat(True)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
-
-    def enterEvent(self, e):
-        self._hover = True
-        self.update()
-        super().enterEvent(e)
-
-    def leaveEvent(self, e):
-        self._hover = False
-        self.update()
-        super().leaveEvent(e)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        r = self.rect().adjusted(2, 2, -2, -2)
-
-        if self._hover:
-            if self._kind == "close":
-                bg = QColor("#e74c3c")
-                bg.setAlphaF(0.18)
-            else:
-                bg = QColor("#ffffff")
-                bg.setAlphaF(0.06)
-            p.setBrush(bg)
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(r, 6, 6)
-
-        cx, cy = self.width() / 2, self.height() / 2
-        pen_color = QColor(_FM_COLORS["ink"]) if self._hover else QColor(_FM_COLORS["ink_muted"])
-        pen = QPen(pen_color, 1.4)
-        pen.setCapStyle(Qt.RoundCap)
-        p.setPen(pen)
-
-        if self._kind == "close":
-            s = 4.5
-            p.drawLine(QPointF(cx - s, cy - s), QPointF(cx + s, cy + s))
-            p.drawLine(QPointF(cx + s, cy - s), QPointF(cx - s, cy + s))
-        elif self._kind == "min":
-            s = 5.0
-            p.drawLine(QPointF(cx - s, cy + 0.5), QPointF(cx + s, cy + 0.5))
-        elif self._kind == "max":
-            # Квадратик — иконка «развернуть»
-            s = 4.5
-            p.setBrush(Qt.NoBrush)
-            p.drawRect(QRectF(cx - s, cy - s, s * 2, s * 2))
-        elif self._kind == "restore":
-            # Два смещённых квадратика — иконка «свернуть в окно»
-            s = 4.0
-            p.setBrush(Qt.NoBrush)
-            p.drawRect(QRectF(cx - s + 1.5, cy - s - 0.5, s * 2 - 1.5, s * 2 - 1.5))
-            p.drawRect(QRectF(cx - s - 0.5, cy - s + 1.5, s * 2 - 1.5, s * 2 - 1.5))
-
-
-class _FmTitleBar(QWidget):
-    """Кастомная шапка окна freemodel.dev: индикатор + бренд слева, кнопки справа.
-    Перетаскивание окна — за свободную область шапки."""
-
-    close_clicked = Signal()
-    minimize_clicked = Signal()
-    maximize_clicked = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(46)
-        # Сама шапка рисует только нижнюю линию — фон даёт родительский
-        # контейнер. WA_TranslucentBackground убирает дефолтную системную
-        # заливку, которая иначе видна по углам.
-        self.setAttribute(Qt.WA_StyledBackground, False)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(18, 8, 8, 8)
-        lay.setSpacing(10)
-
-        # Точка-статус слева
-        self.dot = StatusIndicator()
-        self.dot.setFixedSize(14, 14)
-        self.dot.set_state("neutral")
-        lay.addWidget(self.dot, 0, Qt.AlignVCenter)
-
-        # Бренд
-        self.title = QLabel(
-            '<span style="color:#34d399; font-weight:700;">freemodel</span>'
-            '<span style="color:#d1d5db; font-weight:500;">.dev</span>'
-            '<span style="color:#5b5f66; font-weight:400;">   •   live status</span>'
-        )
-        self.title.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
-        self.title.setTextFormat(Qt.RichText)
-        lay.addWidget(self.title, 0, Qt.AlignVCenter)
-
-        lay.addStretch()
-
-        self.btn_min = _FmTitleBarButton("min")
-        self.btn_min.clicked.connect(self.minimize_clicked.emit)
-        lay.addWidget(self.btn_min)
-
-        self.btn_max = _FmTitleBarButton("max")
-        self.btn_max.clicked.connect(self.maximize_clicked.emit)
-        lay.addWidget(self.btn_max)
-
-        self.btn_close = _FmTitleBarButton("close")
-        self.btn_close.clicked.connect(self.close_clicked.emit)
-        lay.addWidget(self.btn_close)
-
-        self._drag_offset = None
-
-    def set_maximized_icon(self, is_maximized):
-        """Меняем иконку кнопки между «развернуть» (квадратик) и
-        «свернуть в окно» (два квадратика)."""
-        self.btn_max._kind = "restore" if is_maximized else "max"
-        self.btn_max.update()
-
-    def paintEvent(self, event):
-        # Тонкая разделительная линия снизу
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, False)
-        p.setPen(QPen(QColor(_FM_COLORS["line_soft"]), 1))
-        p.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton:
-            self._drag_offset = e.globalPosition().toPoint() - self.window().pos()
-            e.accept()
-        else:
-            super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e):
-        if self._drag_offset is not None and (e.buttons() & Qt.LeftButton):
-            self.window().move(e.globalPosition().toPoint() - self._drag_offset)
-            e.accept()
-        else:
-            super().mouseMoveEvent(e)
-
-    def mouseReleaseEvent(self, e):
-        self._drag_offset = None
-        super().mouseReleaseEvent(e)
-
-    def mouseDoubleClickEvent(self, e):
-        # Двойной клик по шапке — toggle между max/restore (как в Windows).
-        if e.button() == Qt.LeftButton:
-            self.maximize_clicked.emit()
-            e.accept()
-        else:
-            super().mouseDoubleClickEvent(e)
-
-
-class _FmLegendDot(QLabel):
-    """Маленькая цветная точка для легенды. Раньше рисовалась через QPainter
-    в QWidget — но на Windows под кастомным paintEvent протекала дефолтная
-    системная заливка, из-за чего вокруг точки был виден серый квадра  .
-    Теперь это QLabel с круглым фоном через CSS (border-radius) — никакой
-    собственной отрисовки, неоткуда взяться квадрату."""
-
-    def __init__(self, color_hex, parent=None):
-        super().__init__(parent)
-        self._size = 10
-        self.setFixedSize(self._size, self._size)
-        self.set_color(color_hex)
-
-    def set_color(self, color_hex):
-        r = self._size / 2
-        self.setStyleSheet(
-            f"QLabel {{ background-color: {color_hex};"
-            f" border: none; border-radius: {r:.1f}px; }}"
-        )
-
-
-def _fm_make_legend(parent=None):
-    """Горизонтальная легенда «● ok ● slow ● very slow ● failed» —
-    точки нарисованы QPainter'ом, тексты — обычные QLabel."""
-    w = QWidget(parent)
-    w.setAttribute(Qt.WA_StyledBackground, False)
-    w.setAttribute(Qt.WA_TranslucentBackground, True)
-    lay = QHBoxLayout(w)
-    lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(16)
-    items = [
-        (_FM_COLORS["ok"],        "ok"),
-        (_FM_COLORS["slow"],      "slow"),
-        (_FM_COLORS["very_slow"], "very slow"),
-        (_FM_COLORS["bad"],       "failed"),
-    ]
-    for color, label_text in items:
-        cell = QHBoxLayout()
-        cell.setContentsMargins(0, 0, 0, 0)
-        cell.setSpacing(6)
-        cell.addWidget(_FmLegendDot(color), 0, Qt.AlignVCenter)
-        lbl = QLabel(label_text)
-        lbl.setFont(QFont("Segoe UI", 9))
-        lbl.setStyleSheet(f"color: {_FM_COLORS['ink_muted']}; background: transparent;")
-        cell.addWidget(lbl, 0, Qt.AlignVCenter)
-        lay.addLayout(cell)
-    return w
-
-
-class FreemodelStatsDialog(QDialog):
-    """Frameless-окно со статусом freemodel.dev со скруглёнными углами и кастомной
-    шапкой (_FmTitleBar). Рендер — НАСТОЯЩИЙ установленный браузер: его окно
-    запускается в app-режиме и через Win32 SetParent «вшивается» как дочернее в
-    контейнер этого окна. Так мы получаем браузерную плавность 1:1, но в своей
-    рамке. Данные страница берёт сама с локального сервера (тот же origin)."""
-
-    dot_signal = Signal(str, str)  # (overall, mode) — для индикатора в шапке
-
-    def __init__(self, parent=None, port=0, browser=None, token=""):
-        super().__init__(parent)
-        self.setWindowTitle(tr("freemodel.dev — статус и латентность"))
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setModal(False)
-        self.setMinimumSize(560, 480)
-        self.setStyleSheet("QDialog { background-color: #0a0a0f; }")
-
-        self._port = port
-        self._browser = browser
-        self._token = token
-        self._url = f"http://127.0.0.1:{port}/?fmt={token}"
-        self._status_url = f"http://127.0.0.1:{port}/api/status"
-
-        self._stop = False
-        self._launched = False
-        self._child_hwnd = None
-        self._proc = None
-        self._embed_tries = 0
-        self._w32 = None  # (ctypes, wintypes, user32) — лениво
-
-        # Восстанавливаем сохранённую «нормальную» геометрию (без maximized).
-        saved_geo = load_settings().get("freemodel_stats_geo") or {}
-        try:
-            w = max(560, int(saved_geo.get("w") or 1100))
-            h = max(480, int(saved_geo.get("h") or 860))
-            self.resize(w, h)
-            if "x" in saved_geo and "y" in saved_geo:
-                self.move(int(saved_geo["x"]), int(saved_geo["y"]))
-        except Exception:
-            self.resize(1100, 860)
-
-        self._geo_save_timer = QTimer(self)
-        self._geo_save_timer.setSingleShot(True)
-        self._geo_save_timer.setInterval(400)
-        self._geo_save_timer.timeout.connect(self._save_geometry)
-
-        try:
-            for p in (
-                os.path.join(os.path.dirname(__file__), "icon.ico"),
-                os.path.join(os.path.dirname(sys.executable), "icon.ico"),
-            ):
-                if os.path.exists(p):
-                    self.setWindowIcon(QIcon(p))
-                    break
-        except Exception:
-            pass
-
-        self._build_ui()
-
-        # Таймер поиска окна браузера (после запуска) для встраивания.
-        self._embed_timer = QTimer(self)
-        self._embed_timer.setInterval(100)
-        self._embed_timer.timeout.connect(self._try_embed)
-
-        # Индикатор статуса в шапке: лёгкий поллер локального сервера.
-        self.dot_signal.connect(self._apply_dot)
-        self._dot_thread = threading.Thread(target=self._dot_loop, daemon=True)
-        self._dot_thread.start()
-
-    # UI ---------------------------------------------------------------
-    def _build_ui(self):
-        # 6px тёмной рамки по бокам/снизу: и красиво, и это зона нативного
-        # ресайза за края (WM_NCHITTEST) — её не перекрывает дочернее окно браузера.
-        inner = QVBoxLayout(self)
-        inner.setContentsMargins(6, 0, 6, 6)
-        inner.setSpacing(0)
-
-        self.title_bar = _FmTitleBar()
-        self.title_bar.close_clicked.connect(self.close)
-        self.title_bar.minimize_clicked.connect(self.showMinimized)
-        self.title_bar.maximize_clicked.connect(self._toggle_max_restore)
-        inner.addWidget(self.title_bar)
-
-        # Контейнер, в который вшиваем окно браузера. Делаем его нативным
-        # (own HWND) — он будет родителем для дочернего окна Chromium.
-        self.container = QWidget(self)
-        self.container.setAttribute(Qt.WA_NativeWindow, True)
-        self.container.setStyleSheet("background-color: #0a0a0f;")
-        inner.addWidget(self.container, 1)
-
-        # Подпись на время загрузки/при ошибке встраивания.
-        self._overlay = QLabel(tr("Загрузка…"), self.container)
-        self._overlay.setAlignment(Qt.AlignCenter)
-        self._overlay.setStyleSheet(
-            "color:#9ca3af; font-family:'Segoe UI'; font-size:14px; background:transparent;")
-        self._overlay.setGeometry(0, 0, self.container.width(), self.container.height())
-
-    # Win32 -------------------------------------------------------------
-    def _win32(self):
-        if self._w32 is not None:
-            return self._w32
-        import ctypes
-        from ctypes import wintypes
-        u = ctypes.windll.user32
-        u.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]; u.SetParent.restype = wintypes.HWND
-        u.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]; u.GetWindowLongW.restype = ctypes.c_long
-        u.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]; u.SetWindowLongW.restype = ctypes.c_long
-        u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]; u.SetWindowPos.restype = wintypes.BOOL
-        u.MoveWindow.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.BOOL]; u.MoveWindow.restype = wintypes.BOOL
-        u.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]; u.GetClientRect.restype = wintypes.BOOL
-        u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]; u.GetWindowRect.restype = wintypes.BOOL
-        u.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]; u.GetClassNameW.restype = ctypes.c_int
-        u.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]; u.GetWindowTextW.restype = ctypes.c_int
-        u.IsWindowVisible.argtypes = [wintypes.HWND]; u.IsWindowVisible.restype = wintypes.BOOL
-        u.PostMessageW.argtypes = [wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM]; u.PostMessageW.restype = wintypes.BOOL
-        u.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]; u.SetWindowRgn.restype = ctypes.c_int
-        g = ctypes.windll.gdi32
-        g.CreateRoundRectRgn.argtypes = [ctypes.c_int] * 6; g.CreateRoundRectRgn.restype = wintypes.HRGN
-        self._w32 = (ctypes, wintypes, u)
-        return self._w32
-
-    def _launch_browser(self):
-        if self._launched or not self._browser:
-            return
-        self._launched = True
-        profile_dir = os.path.join(SETTINGS_DIR, "fm_embed_profile")
-        try:
-            os.makedirs(profile_dir, exist_ok=True)
-        except Exception:
-            pass
-        args = [
-            self._browser,
-            "--app=" + self._url,
-            "--user-data-dir=" + profile_dir,
-            "--disable-extensions",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-features=Translate",
-            # Создаём окно за пределами экрана, чтобы не мелькнуло отдельно
-            # до момента встраивания в контейнер.
-            "--window-position=-32000,-32000",
-            "--window-size=1200,800",
-        ]
-        try:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            self._proc = subprocess.Popen(args, creationflags=flags)
-        except Exception:
-            self._proc = None
-            self._embed_failed()
-            return
-        self._embed_tries = 0
-        self._embed_timer.start()
-
-    def _find_browser_window(self):
-        ctypes, wintypes, u = self._win32()
-        target = "FMSTATS_" + self._token
-        found = []
-
-        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        def _cb(hwnd, lparam):
-            try:
-                tbuf = ctypes.create_unicode_buffer(512)
-                u.GetWindowTextW(hwnd, tbuf, 512)
-                if tbuf.value == target:
-                    cbuf = ctypes.create_unicode_buffer(128)
-                    u.GetClassNameW(hwnd, cbuf, 128)
-                    if cbuf.value.startswith("Chrome_WidgetWin"):
-                        found.append(hwnd)
-                        return False
-            except Exception:
-                pass
-            return True
-
-        try:
-            u.EnumWindows(_cb, 0)
-        except Exception:
-            pass
-        return found[0] if found else None
-
-    def _try_embed(self):
-        self._embed_tries += 1
-        hwnd = self._find_browser_window()
-        if not hwnd:
-            if self._embed_tries > 60:  # ~6 секунд
-                self._embed_timer.stop()
-                self._embed_failed()
-            return
-        self._embed_timer.stop()
-        try:
-            ctypes, wintypes, u = self._win32()
-            GWL_STYLE = -16
-            WS_CHILD = 0x40000000
-            WS_VISIBLE = 0x10000000
-            WS_CLIPSIBLINGS = 0x04000000
-            REMOVE = (0x00C00000 |  # WS_CAPTION
-                      0x00040000 |  # WS_THICKFRAME
-                      0x00020000 |  # WS_MINIMIZEBOX
-                      0x00010000 |  # WS_MAXIMIZEBOX
-                      0x00080000 |  # WS_SYSMENU
-                      0x00400000 |  # WS_DLGFRAME
-                      0x00800000 |  # WS_BORDER
-                      0x80000000)   # WS_POPUP
-            style = u.GetWindowLongW(hwnd, GWL_STYLE)
-            style = (style & ~REMOVE) | WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS
-            u.SetWindowLongW(hwnd, GWL_STYLE, style)
-            parent = int(self.container.winId())
-            u.SetParent(hwnd, parent)
-            self._child_hwnd = hwnd
-            if hasattr(self, "_overlay"):
-                self._overlay.hide()
-            self._resize_embed()
-            # Применяем изменение стиля рамки.
-            u.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-                           0x0001 | 0x0002 | 0x0020 | 0x0004 | 0x0040)
-            # ^ SWP_NOSIZE|SWP_NOMOVE|SWP_FRAMECHANGED|SWP_NOZORDER|SWP_SHOWWINDOW
-        except Exception:
-            self._embed_failed()
-
-    def _embed_failed(self):
-        if hasattr(self, "_overlay"):
-            self._overlay.setText(
-                tr("Не удалось встроить окно браузера."))
-            self._overlay.show()
-
-    def _resize_embed(self):
-        if not self._child_hwnd:
-            return
-        try:
-            ctypes, wintypes, u = self._win32()
-            parent = int(self.container.winId())
-            rect = wintypes.RECT()
-            u.GetClientRect(parent, ctypes.byref(rect))
-            u.MoveWindow(self._child_hwnd, 0, 0,
-                         rect.right - rect.left, rect.bottom - rect.top, True)
-        except Exception:
-            pass
-
-    def _apply_round_region(self):
-        # Скруглённые углы окна (клипает и рамку, и вшитый браузер).
-        try:
-            ctypes, wintypes, u = self._win32()
-            if self.isMaximized():
-                u.SetWindowRgn(int(self.winId()), 0, True)
-                return
-            rect = wintypes.RECT()
-            u.GetWindowRect(int(self.winId()), ctypes.byref(rect))
-            w = rect.right - rect.left
-            h = rect.bottom - rect.top
-            r = 16
-            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r)
-            u.SetWindowRgn(int(self.winId()), rgn, True)
-        except Exception:
-            pass
-
-    # Status dot poller ------------------------------------------------
-    def _dot_loop(self):
-        while not self._stop:
-            try:
-                with urlopen(self._status_url, timeout=8) as resp:
-                    d = json.loads(resp.read().decode("utf-8", errors="replace"))
-                overall = str((d or {}).get("overall") or "unknown").lower()
-                mode = str((d or {}).get("mode") or "").lower()
-                self.dot_signal.emit(overall, mode)
-            except Exception:
-                self.dot_signal.emit("unknown", "")
-            for _ in range(50):  # ~5 секунд
-                if self._stop:
-                    return
-                time.sleep(0.1)
-
-    def _apply_dot(self, overall, mode):
-        if not hasattr(self, "title_bar"):
-            return
-        if mode == "confirming" or overall == "warn":
-            self.title_bar.dot.set_state("warn")
-        elif overall == "ok":
-            self.title_bar.dot.set_state("fm_ok")
-        elif overall in ("bad", "down"):
-            self.title_bar.dot.set_state("off")
-        else:
-            self.title_bar.dot.set_state("neutral")
-
-    # Max / restore / resize / persistence -----------------------------
-    def _toggle_max_restore(self):
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
-
-    def changeEvent(self, event):
-        try:
-            from PySide6.QtCore import QEvent
-            if event.type() == QEvent.WindowStateChange and hasattr(self, "title_bar"):
-                self.title_bar.set_maximized_icon(self.isMaximized())
-                self._apply_round_region()
-                self._resize_embed()
-        except Exception:
-            pass
-        super().changeEvent(event)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        if hasattr(self, "title_bar"):
-            self.title_bar.set_maximized_icon(self.isMaximized())
-        self._apply_round_region()
-        # Запускаем браузер один раз, когда окно уже показано (есть HWND контейнера).
-        if not self._launched:
-            QTimer.singleShot(0, self._launch_browser)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, "_overlay"):
-            self._overlay.setGeometry(0, 0, self.container.width(), self.container.height())
-        self._resize_embed()
-        self._apply_round_region()
-        if not self.isMaximized() and not self.isMinimized() and self.isVisible():
-            self._geo_save_timer.start()
-
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        if not self.isMaximized() and not self.isMinimized() and self.isVisible():
-            self._geo_save_timer.start()
-
-    def nativeEvent(self, eventType, message):
-        # Нативный ресайз frameless-окна за края (Windows WM_NCHITTEST).
-        try:
-            if eventType == "windows_generic_MSG" and not self.isMaximized():
-                import ctypes
-                from ctypes import wintypes
-                msg = wintypes.MSG.from_address(int(message))
-                if msg.message == 0x0084:  # WM_NCHITTEST
-                    gx = ctypes.c_short(msg.lParam & 0xFFFF).value
-                    gy = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-                    rect = wintypes.RECT()
-                    ctypes.windll.user32.GetWindowRect(
-                        int(self.winId()), ctypes.byref(rect)
-                    )
-                    m = 8
-                    left = gx - rect.left < m
-                    right = rect.right - gx < m
-                    top = gy - rect.top < m
-                    bottom = rect.bottom - gy < m
-                    if top and left:
-                        return True, 13
-                    if top and right:
-                        return True, 14
-                    if bottom and left:
-                        return True, 16
-                    if bottom and right:
-                        return True, 17
-                    if left:
-                        return True, 10
-                    if right:
-                        return True, 11
-                    if top:
-                        return True, 12
-                    if bottom:
-                        return True, 15
-        except Exception:
-            pass
-        return super().nativeEvent(eventType, message)
-
-    def _save_geometry(self):
-        if self.isMaximized() or self.isMinimized():
-            return
-        try:
-            s = load_settings()
-            s["freemodel_stats_geo"] = {
-                "x": int(self.x()),
-                "y": int(self.y()),
-                "w": int(self.width()),
-                "h": int(self.height()),
-            }
-            save_settings(s)
-        except Exception:
-            pass
-
-    def _kill_browser(self):
-        # Закрываем вшитое окно и завершаем процесс браузера.
-        try:
-            if self._child_hwnd:
-                ctypes, wintypes, u = self._win32()
-                u.PostMessageW(self._child_hwnd, 0x0010, 0, 0)  # WM_CLOSE
-        except Exception:
-            pass
-        try:
-            if self._proc and self._proc.poll() is None:
-                self._proc.terminate()
-        except Exception:
-            pass
-
-    def closeEvent(self, event):
-        self._stop = True
-        try:
-            self._embed_timer.stop()
-        except Exception:
-            pass
-        if not self.isMaximized() and not self.isMinimized():
-            self._save_geometry()
-        self._kill_browser()
-        super().closeEvent(event)
 
 # ============================================================
 # ИНДИКАТОР ОБНОВЛЕНИЯ (ГОЛУБАЯ ПУЛЬСИРУЮЩАЯ ТОЧКА)
@@ -8577,11 +6835,13 @@ class CubeGridSpinner(QWidget):
 # ============================================================
 
 class ClaudeInstallProgressDialog(QDialog):
-    """Показывает прогресс установки/обновления, ждёт закрытия PowerShell."""
+    """Показывает прогресс установки/обновления/удаления, ждёт закрытия PowerShell."""
 
-    def __init__(self, is_update=False, old_version="", new_version="", parent=None):
+    def __init__(self, is_update=False, old_version="", new_version="",
+                 is_uninstall=False, parent=None):
         super().__init__(parent)
         self._is_update = is_update
+        self._is_uninstall = is_uninstall
         self._old_version = old_version
         self._new_version = new_version
         self._finished = False
@@ -8590,14 +6850,19 @@ class ClaudeInstallProgressDialog(QDialog):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowModality(Qt.ApplicationModal)
 
-        if is_update:
+        if is_uninstall:
+            self._accent = (235, 90, 90)   # красный
+            self._title_text = tr("Удаление Claude Code")
+            # Не жёстко-русский action_word — берём готовый tr()-ключ
+            self._status_running_text = tr("Идёт удаление…\nНе закрывайте окно PowerShell.")
+        elif is_update:
             self._accent = (245, 180, 60)   # жёлто-оранжевый
-            self._title_text = "Обновление Claude Code"
-            self._action_word = "обновление"
+            self._title_text = tr("Обновление Claude Code")
+            self._status_running_text = tr("Идёт обновление…\nНе закрывайте окно PowerShell.")
         else:
             self._accent = (52, 211, 153)  # зелёный
-            self._title_text = "Установка Claude Code"
-            self._action_word = "установка"
+            self._title_text = tr("Установка Claude Code")
+            self._status_running_text = tr("Идёт установка…\nНе закрывайте окно PowerShell.")
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -8655,9 +6920,7 @@ class ClaudeInstallProgressDialog(QDialog):
         layout.addSpacing(6)
 
         # Статус
-        self.status_lbl = QLabel(
-            f"Идёт {self._action_word}…\nНе закрывайте окно PowerShell."
-        )
+        self.status_lbl = QLabel(self._status_running_text)
         self.status_lbl.setFont(QFont("Segoe UI", 10))
         self.status_lbl.setStyleSheet(
             "color: rgba(210, 210, 215, 0.9); background: transparent; border: none;"
@@ -8667,7 +6930,7 @@ class ClaudeInstallProgressDialog(QDialog):
         layout.addWidget(self.status_lbl)
 
         # Кнопка OK (скрыта до завершения)
-        self.btn_ok = GlowDialogButton("Понятно",
+        self.btn_ok = GlowDialogButton(tr("Понятно"),
                                        base_rgb=self._accent,
                                        hover_rgb=tuple(min(255, c + 30) for c in self._accent))
         self.btn_ok.clicked.connect(self.accept)
@@ -8724,7 +6987,13 @@ class ClaudeInstallProgressDialog(QDialog):
         self.spinner.stop()
         self.spinner.hide()
         # Обновить тексты
-        if self._is_update:
+        if self._is_uninstall:
+            self.title_lbl.setText(tr("Claude Code удалён ✓"))
+            self.sub_lbl.setText("")
+            self.status_lbl.setText(tr(
+                "Удаление завершено успешно."
+            ))
+        elif self._is_update:
             ver = actual_version or self._new_version
             self.title_lbl.setText(tr("Claude Code обновлён ✓"))
             if ver:
@@ -8757,9 +7026,13 @@ class ClaudeInstallProgressDialog(QDialog):
         self._finished = True
         self.spinner.stop()
         self.spinner.hide()
-        self.title_lbl.setText(
-            tr("Обновление отменено") if self._is_update else tr("Установка отменена")
-        )
+        if self._is_uninstall:
+            title = tr("Удаление отменено")
+        elif self._is_update:
+            title = tr("Обновление отменено")
+        else:
+            title = tr("Установка отменена")
+        self.title_lbl.setText(title)
         self.title_lbl.setStyleSheet(
             "color: rgba(200, 180, 80, 0.9); background: transparent; border: none;"
         )
@@ -8776,9 +7049,13 @@ class ClaudeInstallProgressDialog(QDialog):
         self._finished = True
         self.spinner.stop()
         self.spinner.hide()
-        self.title_lbl.setText(
-            tr("Обновление не завершено") if self._is_update else tr("Установка не завершена")
-        )
+        if self._is_uninstall:
+            title = tr("Удаление не завершено")
+        elif self._is_update:
+            title = tr("Обновление не завершено")
+        else:
+            title = tr("Установка не завершена")
+        self.title_lbl.setText(title)
         self.title_lbl.setStyleSheet(
             "color: rgb(235, 110, 110); background: transparent; border: none;"
         )
@@ -10024,7 +8301,6 @@ class ClaudeManager(QMainWindow):
     update_available = Signal(dict)  # Новый сигнал для обновлений
     claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
     claude_install_finished = Signal(object)  # context dict
-    freemodel_status_signal = Signal(str)  # overall статус freemodel.dev сервиса
 
     def __init__(self):
         super().__init__()
@@ -10213,22 +8489,12 @@ class ClaudeManager(QMainWindow):
             LANG.language_changed.connect(self._on_language_changed)
 
         # Бейдж freemodel.dev — абсолютная позиция в левом верхнем углу.
-        # Точка справа от текста меняет цвет в зависимости от состояния сервиса.
+        # Виден только когда выбран freemodel-эндпоинт (cc.freemodel.dev,
+        # api-cc.freemodel.dev и другие поддомены). Просто надпись, без
+        # индикатора статуса и клика — окно статистики больше не работает.
         self.freemodel_brand = FreemodelBrand(self)
         self.freemodel_brand.move(12, 22)
         self.freemodel_brand.raise_()
-        self.freemodel_status_signal.connect(self.freemodel_brand.set_status)
-        self.freemodel_brand.clicked.connect(self._open_freemodel_stats)
-        # Серая подсказка-стрелка «клик» → указывает на бейдж. Размещаем так,
-        # чтобы остриё стрелки приходилось чуть ниже текста freemodel.dev,
-        # а «клик» был справа-снизу. Прозрачен для мыши — не мешает клику.
-        self.freemodel_click_hint = _FmClickHint(self)
-        self.freemodel_click_hint.move(0, 36)
-        self.freemodel_click_hint.raise_()
-        # Фоновый поллер API статуса freemodel.dev — 60с между запросами,
-        # ошибки сети откатывают индикатор в нейтральное состояние.
-        threading.Thread(target=self._poll_freemodel_status, daemon=True).start()
-        # Бейдж виден только когда выбран freemodel-эндпоинт.
         QTimer.singleShot(0, self._refresh_freemodel_brand_visibility)
 
         # Секция Omniroute
@@ -11224,7 +9490,7 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
         # Форсируем перерисовку самонарисованных виджетов
-        for attr in ("freemodel_click_hint", "freemodel_brand",
+        for attr in ("freemodel_brand",
                      "status_indicator", "claude_install_indicator",
                      "title", "mode_toggle", "language_toggle"):
             try:
@@ -11372,8 +9638,6 @@ class ClaudeManager(QMainWindow):
             visible = bool(use_custom) and self._is_freemodel_endpoint(url)
             if hasattr(self, "freemodel_brand"):
                 self.freemodel_brand.setVisible(visible)
-            if hasattr(self, "freemodel_click_hint"):
-                self.freemodel_click_hint.setVisible(visible)
         except Exception:
             pass
 
@@ -13698,8 +11962,16 @@ class ClaudeManager(QMainWindow):
             return
 
         self.log("Запускаю удаление Claude Code через npm...", "info")
+
+        # Красное окно прогресса — тот же класс, что для install/update.
+        progress_dlg = ClaudeInstallProgressDialog(
+            is_uninstall=True,
+            old_version=local,
+            parent=self,
+        )
+
         try:
-            subprocess.Popen([
+            popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
                 # 1) Прибить все запущенные claude.exe / node, держащие бинарь — иначе npm падает с EBUSY
                 "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
@@ -13744,21 +12016,55 @@ class ClaudeManager(QMainWindow):
             ])
         except Exception as e:
             self.log(f"Не удалось запустить удаление: {e}", "error")
+            progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
+            progress_dlg.exec()
             return
 
-        # Через несколько секунд обновим состояние кнопок/индикаторов
-        def _refresh_after_delay():
+        # Фоновая нить: дожидается закрытия PowerShell, отмечает диалог
+        # как завершённый (успех/отмена) и триггерит обновление UI.
+        def _wait_and_finalize():
             try:
-                time.sleep(2.0)
-                self.claude_version_checked.emit(
-                    self._get_installed_claude_version(),
-                    REQUIRED_CLAUDE_VERSION,
-                    ""
-                )
+                popen.wait()
             except Exception:
                 pass
+            try:
+                # Дать инсталлятору отпустить файлы
+                time.sleep(0.5)
+                still_installed = self._is_claude_installed()
+            except Exception:
+                still_installed = True
+            try:
+                new_local = self._get_installed_claude_version()
+            except Exception:
+                new_local = ""
+            self._claude_local_version = new_local
+            # UI-часть — через QTimer.singleShot, чтобы не трогать Qt из фонового потока
+            def _finish_ui():
+                try:
+                    if not still_installed:
+                        progress_dlg.mark_finished()
+                    else:
+                        progress_dlg.mark_cancelled()
+                except Exception:
+                    pass
+                try:
+                    self.claude_version_checked.emit(
+                        new_local,
+                        REQUIRED_CLAUDE_VERSION,
+                        ""
+                    )
+                except Exception:
+                    pass
+                try:
+                    self._update_install_button_state()
+                except Exception:
+                    pass
+            QTimer.singleShot(0, _finish_ui)
 
-        threading.Thread(target=_refresh_after_delay, daemon=True).start()
+        threading.Thread(target=_wait_and_finalize, daemon=True).start()
+
+        # Показываем окно прогресса (модально)
+        progress_dlg.exec()
 
     def add_model(self):
         """Добавляет новую модель"""
@@ -13810,217 +12116,6 @@ class ClaudeManager(QMainWindow):
         except Exception as e:
             pass
 
-    def _freemodel_html_path(self):
-        """Путь к freemodel_stats.html рядом с приложением (учитывает PyInstaller)."""
-        candidates = [
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "freemodel_stats.html"),
-            os.path.join(os.path.dirname(sys.executable), "freemodel_stats.html"),
-        ]
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            candidates.insert(0, os.path.join(meipass, "freemodel_stats.html"))
-        for p in candidates:
-            if os.path.isfile(p):
-                return p
-        return candidates[0]
-
-    def _find_browser(self):
-        """Находит установленный Chromium-браузер (Chrome → Edge). Оба поддерживают --app.
-
-        Сначала — авторитетный реестр Windows (App Paths), затем стандартные пути.
-        """
-        # 1) Реестр App Paths — ловит и нестандартные места установки.
-        try:
-            import winreg
-            for exe in ("chrome.exe", "msedge.exe"):
-                for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-                    try:
-                        key = winreg.OpenKey(
-                            hive,
-                            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\\" + exe)
-                        path, _ = winreg.QueryValueEx(key, None)
-                        winreg.CloseKey(key)
-                        if path and os.path.isfile(path):
-                            return path
-                    except OSError:
-                        continue
-        except Exception:
-            pass
-
-        # 2) Стандартные пути установки.
-        local = os.environ.get("LOCALAPPDATA", "")
-        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
-        pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-        candidates = [
-            os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
-            os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"),
-            os.path.join(local, "Google", "Chrome", "Application", "chrome.exe"),
-            os.path.join(pfx86, "Microsoft", "Edge", "Application", "msedge.exe"),
-            os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
-        ]
-        for p in candidates:
-            if os.path.isfile(p):
-                return p
-        return None
-
-    def _ensure_freemodel_server(self):
-        """Поднимает (один раз) локальный сервер на 127.0.0.1, который отдаёт HTML и
-        проксирует /api/status. Возвращает порт. Так страница и данные — с одного
-        origin (http), CORS вообще не возникает, флаги-костыли браузеру не нужны.
-        """
-        port = getattr(self, "_fm_server_port", None)
-        if getattr(self, "_fm_server", None) is not None and port:
-            return port
-
-        import http.server, socketserver
-        html_path = self._freemodel_html_path()
-        html_dir = os.path.dirname(os.path.abspath(html_path))
-        upstream = "https://fm.bluealitas.com/api/status"
-
-        class _Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *a):  # тишина в консоли
-                pass
-
-            def _send(self, code, ctype, body):
-                self.send_response(code)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                if body:
-                    try:
-                        self.wfile.write(body)
-                    except Exception:
-                        pass
-
-            def do_GET(self):
-                path = self.path.split("?", 1)[0]
-                # --- API-прокси (серверный запрос, без CORS) ---
-                if path == "/api/status":
-                    try:
-                        ctx = ssl.create_default_context()
-                        req = Request(upstream, headers={
-                            "User-Agent": f"ClaudeCodeManager/{APP_VERSION}"})
-                        with urlopen(req, timeout=8, context=ctx) as r:
-                            body = r.read()
-                        self._send(200, "application/json; charset=utf-8", body)
-                    except Exception:
-                        self._send(502, "application/json; charset=utf-8",
-                                   b'{"error":"upstream"}')
-                    return
-                # --- Статика (только из папки с html) ---
-                if path in ("", "/"):
-                    fp = html_path
-                else:
-                    fp = os.path.normpath(os.path.join(html_dir, path.lstrip("/")))
-                    if not fp.startswith(html_dir):
-                        self._send(403, "text/plain", b"forbidden")
-                        return
-                if os.path.isfile(fp):
-                    ctype = "text/html; charset=utf-8" if fp.lower().endswith(".html") \
-                        else "application/octet-stream"
-                    try:
-                        with open(fp, "rb") as f:
-                            data = f.read()
-                        self._send(200, ctype, data)
-                    except Exception:
-                        self._send(500, "text/plain", b"read error")
-                else:
-                    self._send(404, "text/plain", b"not found")
-
-        httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Handler)
-        httpd.daemon_threads = True
-        port = httpd.server_address[1]
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self._fm_server = httpd
-        self._fm_server_port = port
-        return port
-
-    def _open_freemodel_stats(self):
-        """Открывает окно статистики freemodel.dev в установленном браузере (app-режим).
-
-        Рендеринг — целиком в браузере (плавность как на сайте). Данные отдаёт
-        локальный сервер 127.0.0.1 (тот же origin → без CORS). Изолированный профиль
-        (--user-data-dir) не мешает обычному браузеру и сам запоминает размер окна.
-        Защита от расширений тёмной темы: отдельный профиль + --disable-extensions
-        + мета-теги на странице.
-        """
-        html_path = self._freemodel_html_path()
-        if not os.path.isfile(html_path):
-            QMessageBox.warning(self, "freemodel stats",
-                                "Файл freemodel_stats.html не найден рядом с приложением.")
-            return
-
-        try:
-            port = self._ensure_freemodel_server()
-        except Exception as e:
-            QMessageBox.warning(self, "freemodel stats",
-                                f"Не удалось запустить локальный сервер:\n{e}")
-            return
-        url = f"http://127.0.0.1:{port}/"
-
-        browser = self._find_browser()
-        if not browser:
-            # Браузер не найден — открываем в браузере по умолчанию обычной вкладкой.
-            try:
-                import webbrowser
-                webbrowser.open(url)
-            except Exception:
-                QMessageBox.warning(self, "freemodel stats",
-                                    "Не найден установленный браузер (Chrome/Edge).")
-            return
-
-        profile_dir = os.path.join(SETTINGS_DIR, "fm_stats_profile")
-        try:
-            os.makedirs(profile_dir, exist_ok=True)
-        except Exception:
-            pass
-
-        args = [
-            browser,
-            "--app=" + url,
-            "--user-data-dir=" + profile_dir,
-            "--disable-extensions",   # защита: никакие расширения (Dark Reader и т.п.) не грузятся
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-features=Translate",
-        ]
-        try:
-            flags = 0
-            if hasattr(subprocess, "CREATE_NO_WINDOW"):
-                flags = subprocess.CREATE_NO_WINDOW
-            self._freemodel_browser_proc = subprocess.Popen(args, creationflags=flags)
-        except Exception as e:
-            QMessageBox.warning(self, "freemodel stats",
-                                f"Не удалось запустить браузер:\n{e}")
-
-    def _poll_freemodel_status(self):
-        """Фоновый поллер https://fm.bluealitas.com/api/status.
-
-        Считаем «эффективное» состояние с учётом и overall, и mode:
-        если сайт сейчас в режиме `confirming` (после ошибок проверяет, что
-        сервис стабилен) — отдаём 'confirming' вне зависимости от overall.
-        Так индикатор у бейджа жёлтый, как на сайте.
-        Запросы фиксированно каждые 2 секунды — и при успехе, и при ошибке."""
-        url = "https://fm.bluealitas.com/api/status"
-        ctx = ssl.create_default_context()
-        time.sleep(1)
-        while True:
-            try:
-                req = Request(url, headers={"User-Agent": f"ClaudeCodeManager/{APP_VERSION}"})
-                with urlopen(req, timeout=8, context=ctx) as resp:
-                    data = json.loads(resp.read().decode("utf-8", errors="replace"))
-                overall = str(data.get("overall") or "unknown").lower()
-                mode = str(data.get("mode") or "").lower()
-                if mode == "confirming":
-                    effective = "confirming"
-                elif overall in ("ok", "warn", "bad", "down", "unknown"):
-                    effective = overall
-                else:
-                    effective = "unknown"
-                self.freemodel_status_signal.emit(effective)
-            except Exception:
-                self.freemodel_status_signal.emit("unknown")
-            time.sleep(2)
 
     def _show_update_notification(self, update_info):
         """Авто-запуск скачивания обновления без подтверждения от пользователя."""
