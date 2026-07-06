@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7.1"  # Для обновлений
+APP_VERSION = "5.7.2"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -8301,6 +8301,7 @@ class ClaudeManager(QMainWindow):
     update_available = Signal(dict)  # Новый сигнал для обновлений
     claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
     claude_install_finished = Signal(object)  # context dict
+    claude_uninstall_finished = Signal(object)  # context dict (по образцу install)
 
     def __init__(self):
         super().__init__()
@@ -12020,13 +12021,33 @@ class ClaudeManager(QMainWindow):
             progress_dlg.exec()
             return
 
-        # Фоновая нить: дожидается закрытия PowerShell, отмечает диалог
-        # как завершённый (успех/отмена) и триггерит обновление UI.
-        def _wait_and_finalize():
+        # Контекст для слота (по образцу установки)
+        self._claude_uninstall_ctx = {
+            "old_local": local,
+            "progress_dlg": progress_dlg,
+            "popen": popen,
+        }
+
+        # Подключаем сигнал ОДИН раз через QueuedConnection — гарантированно
+        # доставит вызов в GUI-нить, в отличие от QTimer.singleShot из потока.
+        try:
+            self.claude_uninstall_finished.disconnect(self._on_claude_uninstall_done_safe)
+        except Exception:
+            pass
+        self.claude_uninstall_finished.connect(
+            self._on_claude_uninstall_done_safe, Qt.QueuedConnection
+        )
+
+        # Фоновая нить: ждёт PowerShell, читает состояние — не трогает Qt.
+        def _wait_and_emit():
             try:
                 popen.wait()
             except Exception:
                 pass
+            try:
+                rc = popen.returncode
+            except Exception:
+                rc = None
             try:
                 # Дать инсталлятору отпустить файлы
                 time.sleep(0.5)
@@ -12037,34 +12058,64 @@ class ClaudeManager(QMainWindow):
                 new_local = self._get_installed_claude_version()
             except Exception:
                 new_local = ""
-            self._claude_local_version = new_local
-            # UI-часть — через QTimer.singleShot, чтобы не трогать Qt из фонового потока
-            def _finish_ui():
-                try:
-                    if not still_installed:
-                        progress_dlg.mark_finished()
-                    else:
-                        progress_dlg.mark_cancelled()
-                except Exception:
-                    pass
-                try:
-                    self.claude_version_checked.emit(
-                        new_local,
-                        REQUIRED_CLAUDE_VERSION,
-                        ""
-                    )
-                except Exception:
-                    pass
-                try:
-                    self._update_install_button_state()
-                except Exception:
-                    pass
-            QTimer.singleShot(0, _finish_ui)
+            ctx = {
+                "old_local": local,
+                "new_local": new_local,
+                "still_installed": still_installed,
+                "returncode": rc,
+            }
+            try:
+                self.claude_uninstall_finished.emit(ctx)
+            except Exception:
+                pass
 
-        threading.Thread(target=_wait_and_finalize, daemon=True).start()
+        threading.Thread(target=_wait_and_emit, daemon=True).start()
 
         # Показываем окно прогресса (модально)
         progress_dlg.exec()
+
+    def _on_claude_uninstall_done_safe(self, ctx):
+        """Вызывается на main thread через сигнал. Все subprocess-вызовы уже сделаны в фоне."""
+        if not isinstance(ctx, dict):
+            return
+
+        new_local = ctx.get("new_local", "") or ""
+        still_installed = bool(ctx.get("still_installed", True))
+
+        progress_dlg = None
+        try:
+            saved_ctx = getattr(self, "_claude_uninstall_ctx", None) or {}
+            progress_dlg = saved_ctx.get("progress_dlg")
+        except Exception:
+            progress_dlg = None
+
+        dlg_alive = False
+        if progress_dlg is not None:
+            try:
+                from shiboken6 import isValid
+                dlg_alive = isValid(progress_dlg)
+            except Exception:
+                dlg_alive = True
+
+        self._claude_local_version = new_local
+
+        if dlg_alive:
+            try:
+                if not still_installed:
+                    progress_dlg.mark_finished()
+                else:
+                    progress_dlg.mark_cancelled()
+            except Exception:
+                pass
+
+        try:
+            self.claude_version_checked.emit(new_local, REQUIRED_CLAUDE_VERSION, "")
+        except Exception:
+            pass
+        try:
+            self._update_install_button_state()
+        except Exception:
+            pass
 
     def add_model(self):
         """Добавляет новую модель"""
