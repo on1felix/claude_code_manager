@@ -14,7 +14,7 @@
 AUTHOR_NAME = "on1felix"
 AUTHOR_DISCORD = "on1felix"
 AUTHOR_GITHUB = "https://github.com/on1felix/claude_code_manager"
-import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil, re
+import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil, re, calendar
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -22,11 +22,11 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
                                QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize, QEvent
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics, QIntValidator
 from PySide6.QtCore import QPointF, QRectF, QUrl
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7.2"  # Для обновлений
+APP_VERSION = "5.7.3"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -304,6 +304,57 @@ def save_settings(settings):
 KEY_LIMIT_5H_SECONDS = 5 * 3600
 KEY_LIMIT_7D_SECONDS = 7 * 24 * 3600
 
+# ── Время сброса лимита в стиле FreeModel ──────────────────────────────
+# На дашборде FreeModel (см. api.html) время следующего сброса вводится как
+# АБСОЛЮТНОЕ время в таймзоне UTC+8, в 12-часовом формате AM/PM. Ниже — точный
+# порт nextDailyTime / nextDateTime из api.html: они возвращают ближайший
+# будущий момент, соответствующий заданному времени-суток (или дате) в UTC+8,
+# в виде абсолютного epoch (UTC-секунды) — ровно то, что хранит resets_at.
+FM_UTC_OFFSET_HOURS = 8  # время на сайте FreeModel трактуется как UTC+8
+
+def fm_from12to24(h12, ampm):
+    """12-часовой формат + am/pm → 24-часовой. 12 AM = 0, 12 PM = 12."""
+    h = int(h12) % 12
+    return h if str(ampm).lower() == "am" else h + 12
+
+def _fm_offset_seconds():
+    return FM_UTC_OFFSET_HOURS * 3600
+
+def fm_next_daily_epoch(h24, m, s, now=None):
+    """Ближайший (сегодня/завтра по UTC+8) момент, когда наступит h24:m:s.
+    Возвращает абсолютный epoch (UTC). Порт nextDailyTime из api.html."""
+    if now is None:
+        now = time.time()
+    off = _fm_offset_seconds()
+    tm = time.gmtime(now + off)  # компоненты «настенного» времени UTC+8
+    shifted = calendar.timegm((tm.tm_year, tm.tm_mon, tm.tm_mday,
+                               int(h24), int(m), int(s), 0, 0, 0))
+    target = shifted - off       # обратно в абсолютный UTC
+    if target <= now:
+        target += 86400
+    return float(target)
+
+def fm_next_date_epoch(month, day, h24, m, s, now=None):
+    """Ближайшая будущая дата (month 1-12, day 1-31) со временем h24:m:s
+    в UTC+8. Если число больше длины месяца — берётся последний день месяца.
+    Возвращает абсолютный epoch (UTC). Порт nextDateTime из api.html."""
+    if now is None:
+        now = time.time()
+    off = _fm_offset_seconds()
+    tm = time.gmtime(now + off)
+
+    def _build(year):
+        dim = calendar.monthrange(year, int(month))[1]
+        d = min(int(day), dim)
+        shifted = calendar.timegm((year, int(month), d,
+                                   int(h24), int(m), int(s), 0, 0, 0))
+        return shifted - off
+
+    target = _build(tm.tm_year)
+    if target <= now:
+        target = _build(tm.tm_year + 1)
+    return float(target)
+
 def _new_key_id():
     return f"k{int(time.time() * 1000)}{random.randint(1000, 9999)}"
 
@@ -542,7 +593,16 @@ TRANSLATIONS = {
     "Через сколько сбросится лимит?": "When should the limit reset?",
     "Часы": "Hours",
     "Минуты": "Minutes",
+    "Секунды": "Seconds",
+    "Формат": "AM/PM",
+    "Месяц": "Month",
+    "Число": "Day",
     "Дни": "Days",
+    "Время следующего сброса": "Next reset time",
+    "У тебя это": "Your local time",
+    "через": "in",
+    "Точное время сброса показывает Claude Code в терминале.\nПросто перенесите его сюда.":
+        "Claude Code prints the exact reset time in the terminal.\nJust copy it here.",
     "Подтвердить": "Confirm",
     "Максимум 5 часов": "Maximum 5 hours",
     "Максимум 7 дней": "Maximum 7 days",
@@ -4913,9 +4973,12 @@ class KeyCard(QFrame):
         "yellow": (235, 200, 90),
     }
 
-    def __init__(self, key, parent=None):
+    def __init__(self, key, parent=None, is_freemodel=False):
         super().__init__(parent)
         self.key = key
+        # Для FreeModel-эндпоинтов окно лимита спрашивает точное время сброса
+        # (UTC+8, AM/PM), как на дашборде; иначе — привычную длительность.
+        self._is_freemodel = bool(is_freemodel)
         self.setFixedHeight(58)
         self.setCursor(Qt.PointingHandCursor)
         state = key_color_state(key)
@@ -4995,7 +5058,7 @@ class KeyCard(QFrame):
             return
 
         # ON → OFF: два диалога подряд.
-        limit_type, seconds = self._prompt_limit()
+        limit_type, resets_at = self._prompt_limit()
         if limit_type is None:
             # Отмена на любом шаге — возвращаем тумблер визуально на ON.
             self.toggle.blockSignals(True)
@@ -5005,7 +5068,7 @@ class KeyCard(QFrame):
 
         self.key["enabled"] = False
         self.key["limit_type"] = limit_type
-        self.key["resets_at"] = time.time() + seconds
+        self.key["resets_at"] = float(resets_at)
         self.key["disabled_at"] = time.time()  # для истории
         self._retarget()
         self._update_status_text()
@@ -5013,15 +5076,24 @@ class KeyCard(QFrame):
         self.changed.emit(self.key.get("id", ""))
 
     def _prompt_limit(self):
-        """Возвращает (limit_type, seconds) или (None, None) при отмене."""
+        """Возвращает (limit_type, resets_at_epoch) или (None, None) при отмене.
+
+        Для FreeModel-эндпоинта второй шаг — ввод точного времени сброса
+        (UTC+8, AM/PM), как на дашборде; иначе — привычная длительность."""
         parent_win = self.window()
         type_dlg = KeyLimitTypeDialog(parent=parent_win)
         if type_dlg.exec() != QDialog.Accepted or not type_dlg.result_type:
             return (None, None)
-        dur_dlg = KeyLimitDurationDialog(type_dlg.result_type, parent=parent_win)
+        lt = type_dlg.result_type
+        if self._is_freemodel:
+            dlg = FreemodelResetTimeDialog(lt, parent=parent_win)
+            if dlg.exec() != QDialog.Accepted or not dlg.result_epoch:
+                return (None, None)
+            return (lt, float(dlg.result_epoch))
+        dur_dlg = KeyLimitDurationDialog(lt, parent=parent_win)
         if dur_dlg.exec() != QDialog.Accepted or not dur_dlg.result_seconds:
             return (None, None)
-        return (type_dlg.result_type, int(dur_dlg.result_seconds))
+        return (lt, time.time() + int(dur_dlg.result_seconds))
 
     def _retarget(self):
         state = key_color_state(self.key)
@@ -5357,6 +5429,82 @@ class KeyLimitTypeDialog(QDialog):
         self._fade_out_and(lambda: super(KeyLimitTypeDialog, self).reject())
 
 
+class _NumberField(QWidget):
+    """Редактируемое числовое поле без кнопок: пользователь стирает и вводит
+    своё значение с клавиатуры. Кламп к [min, max] по завершении ввода.
+    Тот же API, что у _NumberSpinner: value()/set_value()/valueChanged(int)."""
+    valueChanged = Signal(int)
+
+    def __init__(self, minimum=0, maximum=59, initial=0, pad=False, parent=None):
+        super().__init__(parent)
+        self._min = minimum
+        self._max = maximum
+        self._pad = pad  # показывать ведущий ноль (05) — для минут/секунд
+        self._value = max(minimum, min(maximum, initial))
+        self.setFixedSize(72, 56)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        self.edit = QLineEdit(self._fmt(self._value))
+        self.edit.setAlignment(Qt.AlignCenter)
+        self.edit.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        self.edit.setFixedSize(72, 44)
+        self.edit.setMaxLength(2)
+        self.edit.setValidator(QIntValidator(minimum, maximum, self))
+        self.edit.setStyleSheet(
+            "QLineEdit{color: rgb(230,230,235); background: rgb(26,26,31);"
+            "border: 1.5px solid rgb(70,70,80); border-radius: 8px;"
+            "selection-background-color: rgb(80,80,95);}"
+            "QLineEdit:focus{border-color: rgb(120,120,140);}")
+        self.edit.editingFinished.connect(self._on_edited)
+        self.edit.textEdited.connect(self._on_text_edited)
+        lay.addWidget(self.edit)
+
+    def _fmt(self, v):
+        return f"{int(v):02d}" if self._pad else str(int(v))
+
+    def value(self):
+        return self._value
+
+    def set_range(self, minimum, maximum):
+        self._min, self._max = minimum, maximum
+        self.edit.setValidator(QIntValidator(minimum, maximum, self))
+        self.set_value(self._value)
+
+    def set_value(self, v):
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            v = self._value
+        v = max(self._min, min(self._max, v))
+        changed = (v != self._value)
+        self._value = v
+        self.edit.setText(self._fmt(v))
+        if changed:
+            self.valueChanged.emit(v)
+
+    def _on_text_edited(self, txt):
+        """Живой пересчёт превью, пока пользователь печатает (без клампа текста)."""
+        try:
+            v = int(txt)
+        except (TypeError, ValueError):
+            return
+        v = max(self._min, min(self._max, v))
+        if v != self._value:
+            self._value = v
+            self.valueChanged.emit(v)
+
+    def _on_edited(self):
+        """Завершение ввода: нормализуем текст (кламп + ведущий ноль)."""
+        txt = self.edit.text().strip()
+        if txt in ("", "-"):
+            self.edit.setText(self._fmt(self._value))
+            return
+        self.set_value(txt)
+
+
 class _NumberSpinner(QWidget):
     """Компактный вертикально-стилизованный числовой спиннер: слева
     квадратная кнопка «−», по центру крупное число, справа кнопка «+».
@@ -5615,6 +5763,467 @@ class KeyLimitDurationDialog(QDialog):
         self._fade_out_and(lambda: super(KeyLimitDurationDialog, self).reject())
 
 
+class _AmPmToggle(QWidget):
+    """Пара кнопок AM / PM (как ampm-toggle на дашборде FreeModel).
+    value() → 'am' | 'pm'. По смене эмитит changed()."""
+    changed = Signal()
+
+    def __init__(self, initial="am", parent=None):
+        super().__init__(parent)
+        self._value = "am" if str(initial).lower() != "pm" else "pm"
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.btn_am = QPushButton("AM")
+        self.btn_pm = QPushButton("PM")
+        for b in (self.btn_am, self.btn_pm):
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedSize(46, 44)
+            b.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.btn_am.clicked.connect(lambda: self._pick("am"))
+        self.btn_pm.clicked.connect(lambda: self._pick("pm"))
+        lay.addWidget(self.btn_am)
+        lay.addWidget(self.btn_pm)
+        self._restyle()
+
+    def value(self):
+        return self._value
+
+    def set_value(self, v):
+        v = "am" if str(v).lower() != "pm" else "pm"
+        if v != self._value:
+            self._value = v
+            self._restyle()
+            self.changed.emit()
+
+    def _pick(self, v):
+        self.set_value(v)
+
+    def _restyle(self):
+        active = ("color: rgb(20,20,25); background: rgb(235,200,90);"
+                  "border: 1.5px solid rgb(235,200,90);")
+        idle = ("color: rgb(200,200,205); background: rgb(30,30,35);"
+                "border: 1.5px solid rgb(70,70,80);")
+        self.btn_am.setStyleSheet(
+            "QPushButton{border-top-left-radius:8px;border-bottom-left-radius:8px;"
+            "border-top-right-radius:0;border-bottom-right-radius:0;" +
+            (active if self._value == "am" else idle) + "}")
+        self.btn_pm.setStyleSheet(
+            "QPushButton{border-top-right-radius:8px;border-bottom-right-radius:8px;"
+            "border-top-left-radius:0;border-bottom-left-radius:0;" +
+            (active if self._value == "pm" else idle) + "}")
+
+
+class MonthPillSelector(QWidget):
+    """Сетка выбора месяца 2 ряда × 6 (JAN…DEC). Пилюля плавно скользит в 2D
+    к выбранному месяцу — как ползунок выбора модели/эффорта. Клик по ячейке
+    переносит пилюлю. value()/set_value() работают числом месяца 1..12,
+    valueChanged(int) — для совместимости с _NumberField."""
+    valueChanged = Signal(int)
+
+    _MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+               "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+    _COLS = 6
+    _ROWS = 2
+    _PILL = (52, 211, 153)  # #34d399 — фирменный зелёный
+
+    def __init__(self, initial=1, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(384, 76)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        self._value = max(1, min(12, int(initial)))
+        idx = self._value - 1
+        # непрерывная позиция пилюли (col, row) — к ней плавно едем
+        self._tx = float(idx % self._COLS)
+        self._ty = float(idx // self._COLS)
+        self._px = self._tx
+        self._py = self._ty
+        self._hover_idx = -1
+        self._hover_alpha = {i: 0.0 for i in range(12)}
+        self._hover_target = {i: 0.0 for i in range(12)}
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def value(self):
+        return self._value
+
+    def set_value(self, v, animate=True):
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            return
+        v = max(1, min(12, v))
+        if v == self._value:
+            return
+        self._value = v
+        idx = v - 1
+        self._tx = float(idx % self._COLS)
+        self._ty = float(idx // self._COLS)
+        if not animate:
+            self._px, self._py = self._tx, self._ty
+        self.valueChanged.emit(v)
+        self.update()
+
+    def _cell_size(self):
+        return self.width() / self._COLS, self.height() / self._ROWS
+
+    def _idx_from_pos(self, x, y):
+        cw, ch = self._cell_size()
+        col = max(0, min(self._COLS - 1, int(x // cw)))
+        row = max(0, min(self._ROWS - 1, int(y // ch)))
+        return row * self._COLS + col
+
+    def _tick(self):
+        changed = False
+        for attr, tgt in (("_px", self._tx), ("_py", self._ty)):
+            cur = getattr(self, attr)
+            d = tgt - cur
+            if abs(d) > 0.004:
+                setattr(self, attr, cur + d * 0.22)
+                changed = True
+            elif cur != tgt:
+                setattr(self, attr, tgt)
+                changed = True
+        for i in range(12):
+            cur = self._hover_alpha[i]
+            d = self._hover_target[i] - cur
+            if abs(d) > 0.003:
+                self._hover_alpha[i] = cur + d * 0.12
+                changed = True
+            elif cur != self._hover_target[i]:
+                self._hover_alpha[i] = self._hover_target[i]
+                changed = True
+        if changed:
+            self.update()
+
+    def mousePressEvent(self, event):
+        idx = self._idx_from_pos(event.pos().x(), event.pos().y())
+        self.set_value(idx + 1)
+
+    def mouseMoveEvent(self, event):
+        idx = self._idx_from_pos(event.pos().x(), event.pos().y())
+        cur_idx = self._value - 1
+        for i in range(12):
+            self._hover_target[i] = 1.0 if (i == idx and i != cur_idx) else 0.0
+        self._hover_idx = idx
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        for i in range(12):
+            self._hover_target[i] = 0.0
+        self._hover_idx = -1
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        cw, ch = self._cell_size()
+        track_r = 10.0
+
+        # Трек
+        p.setBrush(QColor(28, 28, 33))
+        p.setPen(QPen(QColor(60, 60, 65), 1.4))
+        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
+
+        r, g, b = self._PILL
+        pad = 4.0
+        pill_w = cw - pad * 1.6
+        pill_h = ch - pad * 1.6
+        pill_x = self._px * cw + (cw - pill_w) / 2.0
+        pill_y = self._py * ch + (ch - pill_h) / 2.0
+        pill_r = 8.0
+
+        # Свечение по периметру пилюли (в клипе трека)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
+        p.save()
+        p.setClipPath(clip)
+        for i in range(1, 4):
+            alpha = int(max(0, min(200, 46 * (1 - (i - 1) / 3.2))))
+            p.setPen(QPen(QColor(r, g, b, alpha), 1))
+            p.setBrush(Qt.NoBrush)
+            ex = i * 1.4
+            p.drawRoundedRect(
+                QRectF(pill_x - ex, pill_y - ex, pill_w + ex * 2, pill_h + ex * 2),
+                pill_r + ex, pill_r + ex)
+        p.restore()
+
+        # Пилюля — вертикальный градиент
+        grad = QLinearGradient(QPointF(0, pill_y), QPointF(0, pill_y + pill_h))
+        grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
+        grad.setColorAt(1.0, QColor(max(0, r - 12), max(0, g - 12), max(0, b - 12), 240))
+        p.setBrush(QBrush(grad))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(pill_x, pill_y, pill_w, pill_h), pill_r, pill_r)
+
+        # Названия месяцев
+        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        for i, name in enumerate(self._MONTHS):
+            col = i % self._COLS
+            row = i // self._COLS
+            rect = QRectF(col * cw, row * ch, cw, ch)
+            dist = math.hypot((col - self._px), (row - self._py))
+            if dist < 0.5:
+                cover = 1.0 - dist * 2.0
+                tr_, tg_, tb_ = 20, 20, 25  # тёмный текст на пилюле
+                base = (170, 170, 178)
+                cr = int(base[0] + (tr_ - base[0]) * cover)
+                cg = int(base[1] + (tg_ - base[1]) * cover)
+                cb = int(base[2] + (tb_ - base[2]) * cover)
+                p.setPen(QColor(cr, cg, cb))
+            else:
+                hv = self._hover_alpha[i]
+                base = (170, 170, 178)
+                hi = (225, 225, 232)
+                cr = int(base[0] + (hi[0] - base[0]) * hv)
+                cg = int(base[1] + (hi[1] - base[1]) * hv)
+                cb = int(base[2] + (hi[2] - base[2]) * hv)
+                p.setPen(QColor(cr, cg, cb))
+            p.drawText(rect, Qt.AlignCenter, name)
+
+
+class FreemodelResetTimeDialog(QDialog):
+    """Ввод ТОЧНОГО времени следующего сброса лимита — как на дашборде
+    FreeModel (api.html). Время трактуется как UTC+8, 12-часовой формат AM/PM.
+    Для '7d' дополнительно выбираются месяц и число.
+
+    Возвращает result_epoch (абсолютный epoch, UTC) при подтверждении,
+    иначе result_epoch=None."""
+    _MONTHS_RU = ["янв", "фев", "мар", "апр", "май", "июн",
+                  "июл", "авг", "сен", "окт", "ноя", "дек"]
+
+    def __init__(self, limit_type, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self.limit_type = limit_type
+        self.result_epoch = None
+
+        if limit_type == "5h":
+            title_txt = tr("5-часовой лимит")
+            color = (235, 200, 90)
+        else:
+            title_txt = tr("7-дневный лимит")
+            color = (224, 90, 90)
+
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(26, 22, 26, 22)
+        lay.setSpacing(12)
+
+        # Бренд freemodel.dev — тем же стилем/цветом, что и в углу приложения.
+        brand = QLabel()
+        brand.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
+        brand.setTextFormat(Qt.RichText)
+        brand.setAlignment(Qt.AlignCenter)
+        brand.setText(
+            '<span style="color:#34d399; font-weight:700;">freemodel</span>'
+            '<span style="color:#d1d5db; font-weight:500;">.dev</span>')
+        brand.setStyleSheet("background: transparent; border: none;")
+        lay.addWidget(brand)
+
+        title = QLabel(title_txt)
+        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(
+            f"color: rgb({color[0]},{color[1]},{color[2]}); background: transparent; border: none;")
+        lay.addWidget(title)
+
+        # Подзаголовок + значок «?» с подсказкой, откуда взять точное время.
+        sub_row = QHBoxLayout()
+        sub_row.setSpacing(6)
+        sub_row.addStretch()
+        subtitle = QLabel(tr("Время следующего сброса") + "  (UTC+8)")
+        subtitle.setFont(QFont("Segoe UI", 10))
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #B5B5B5; background: transparent; border: none;")
+        sub_row.addWidget(subtitle)
+        help_badge = QLabel("?")
+        help_badge.setFixedSize(18, 18)
+        help_badge.setAlignment(Qt.AlignCenter)
+        help_badge.setCursor(Qt.WhatsThisCursor)
+        help_badge.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        help_badge.setStyleSheet(
+            "QLabel{color: rgb(180,180,190); background: rgb(40,40,48);"
+            "border: 1px solid rgb(80,80,92); border-radius: 9px;}"
+            # Стилизованный «квадратик» подсказки при наведении.
+            "QToolTip{color: #e6e6ea; background-color: #1b1b22;"
+            "border: 1px solid #34d399; border-radius: 8px; padding: 8px 10px;"
+            "font-size: 12px;}")
+        help_badge.setToolTip(tr(
+            "Точное время сброса показывает Claude Code в терминале.\n"
+            "Просто перенесите его сюда."))
+        sub_row.addWidget(help_badge)
+        sub_row.addStretch()
+        lay.addLayout(sub_row)
+
+        def _column(caption, widget):
+            col = QVBoxLayout()
+            col.setSpacing(4)
+            col.setAlignment(Qt.AlignCenter)
+            cap = QLabel(caption)
+            cap.setFont(QFont("Segoe UI", 9))
+            cap.setAlignment(Qt.AlignCenter)
+            cap.setStyleSheet("color: rgb(150,150,155); background: transparent; border: none;")
+            col.addWidget(cap)
+            wrap = QHBoxLayout()
+            wrap.addStretch()
+            wrap.addWidget(widget)
+            wrap.addStretch()
+            col.addLayout(wrap)
+            return col
+
+        # ── Дата (только для 7d) ──
+        self.sp_month = None
+        self.sp_day = None
+        if limit_type != "5h":
+            now_u = time.gmtime(time.time() + FM_UTC_OFFSET_HOURS * 3600)
+            # Месяц — сетка-пилюля 2×6 (JAN…DEC), плавно едет к выбранному.
+            month_cap = QLabel(tr("Месяц"))
+            month_cap.setFont(QFont("Segoe UI", 9))
+            month_cap.setAlignment(Qt.AlignCenter)
+            month_cap.setStyleSheet("color: rgb(150,150,155); background: transparent; border: none;")
+            lay.addWidget(month_cap)
+            self.sp_month = MonthPillSelector(now_u.tm_mon)
+            month_wrap = QHBoxLayout()
+            month_wrap.addStretch()
+            month_wrap.addWidget(self.sp_month)
+            month_wrap.addStretch()
+            lay.addLayout(month_wrap)
+
+            # Число — обычное редактируемое поле.
+            self.sp_day = _NumberField(1, 31, now_u.tm_mday)
+            day_row = QHBoxLayout()
+            day_row.addStretch()
+            day_row.addLayout(_column(tr("Число"), self.sp_day))
+            day_row.addStretch()
+            lay.addLayout(day_row)
+
+            self.sp_month.valueChanged.connect(self._update_preview)
+            self.sp_day.valueChanged.connect(self._update_preview)
+
+        # ── Время Ч:М:С + AM/PM ──
+        time_row = QHBoxLayout()
+        time_row.setSpacing(14)
+        time_row.setContentsMargins(0, 4, 0, 4)
+        time_row.addStretch()
+        self.sp_hour = _NumberField(1, 12, 12)
+        self.sp_min = _NumberField(0, 59, 0, pad=True)
+        self.sp_sec = _NumberField(0, 59, 0, pad=True)
+        self.ampm = _AmPmToggle("am")
+        time_row.addLayout(_column(tr("Часы"), self.sp_hour))
+        time_row.addLayout(_column(tr("Минуты"), self.sp_min))
+        time_row.addLayout(_column(tr("Секунды"), self.sp_sec))
+        time_row.addLayout(_column(tr("Формат"), self.ampm))
+        time_row.addStretch()
+        lay.addLayout(time_row)
+
+        for sp in (self.sp_hour, self.sp_min, self.sp_sec):
+            sp.valueChanged.connect(self._update_preview)
+        self.ampm.changed.connect(self._update_preview)
+
+        # ── Живая подсказка «местного времени / через …» ──
+        self.preview_lbl = QLabel("")
+        self.preview_lbl.setFont(QFont("Segoe UI", 9))
+        self.preview_lbl.setAlignment(Qt.AlignCenter)
+        self.preview_lbl.setWordWrap(True)
+        self.preview_lbl.setStyleSheet(
+            f"color: rgba({color[0]}, {color[1]}, {color[2]}, 230);"
+            f"background: rgba({color[0]}, {color[1]}, {color[2]}, 26);"
+            f"border: 1px solid rgba({color[0]}, {color[1]}, {color[2]}, 80);"
+            "border-radius: 6px; padding: 6px 12px;")
+        lay.addWidget(self.preview_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn.setMinimumHeight(40)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.cancel_btn)
+        self.confirm_btn = GreenButton(tr("Подтвердить"))
+        self.confirm_btn.setMinimumHeight(40)
+        self.confirm_btn.clicked.connect(self._on_confirm)
+        btn_row.addWidget(self.confirm_btn)
+        lay.addLayout(btn_row)
+
+        main.addWidget(container)
+        self.setLayout(main)
+        self.setMinimumWidth(460)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(200)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+        self._update_preview()
+
+    def _computed_epoch(self):
+        h24 = fm_from12to24(self.sp_hour.value(), self.ampm.value())
+        m, s = self.sp_min.value(), self.sp_sec.value()
+        if self.limit_type == "5h":
+            return fm_next_daily_epoch(h24, m, s)
+        return fm_next_date_epoch(self.sp_month.value(), self.sp_day.value(),
+                                  h24, m, s)
+
+    def _update_preview(self):
+        epoch = self._computed_epoch()
+        # Местное время пользователя (та же абсолютная точка)
+        local = time.strftime("%d %b %H:%M:%S", time.localtime(epoch))
+        remain = int(max(0, epoch - time.time()))
+        d, r = divmod(remain, 86400)
+        h, r = divmod(r, 3600)
+        mm, _ = divmod(r, 60)
+        if d > 0:
+            tail = f"{d}д {h}ч {mm}м"
+        elif h > 0:
+            tail = f"{h}ч {mm}м"
+        else:
+            tail = f"{mm}м"
+        self.preview_lbl.setText(
+            tr("У тебя это") + f": {local}  ·  " + tr("через") + f" {tail}")
+
+    def _on_confirm(self):
+        self.result_epoch = self._computed_epoch()
+        self.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def _fade_out_and(self, done):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(180)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(done)
+        fade.start()
+        self._fade = fade
+
+    def accept(self):
+        self._fade_out_and(lambda: super(FreemodelResetTimeDialog, self).accept())
+
+    def reject(self):
+        self._fade_out_and(lambda: super(FreemodelResetTimeDialog, self).reject())
+
+
 class ApiKeyManagerDialog(QDialog):
     """Широкое окно управления API-ключами: список карточек (до 6 видимых,
     дальше скролл), создание нового ключа с именем. Единственное место, где
@@ -5627,11 +6236,13 @@ class ApiKeyManagerDialog(QDialog):
     # окно ловит и сразу пишет settings.json, чтобы состояние переживало крэш.
     state_changed = Signal()
 
-    def __init__(self, keys, selected_id="", parent=None):
+    def __init__(self, keys, selected_id="", parent=None, is_freemodel=False):
         super().__init__(parent)
         # рабочая копия — на случай отмены мутации не заденут settings напрямую
         self.keys = [dict(k) for k in (keys or [])]
         self.selected_id = selected_id or ""
+        # Прокидывается в карточки: FreeModel → окно точного времени сброса.
+        self._is_freemodel = bool(is_freemodel)
         # Если выбранного ключа больше нет в списке — сбрасываем выбор
         if self.selected_id and not any(k.get("id") == self.selected_id for k in self.keys):
             self.selected_id = ""
@@ -5841,7 +6452,7 @@ class ApiKeyManagerDialog(QDialog):
         # вставить актуальные (перед финальным stretch)
         insert_at = 0
         for key in self.keys:
-            card = KeyCard(key)
+            card = KeyCard(key, is_freemodel=self._is_freemodel)
             card.toggled.connect(self._on_card_toggle)
             card.changed.connect(self._on_card_changed)
             card.delete_requested.connect(self._on_card_delete)
@@ -9824,6 +10435,8 @@ class ClaudeManager(QMainWindow):
             self.settings.get("api_keys", []),
             selected_id=self.settings.get("selected_key_id", ""),
             parent=self,
+            is_freemodel=self._is_freemodel_endpoint(
+                self.settings.get("custom_base_url", "")),
         )
         # Пока диалог открыт, любая мутация ключа (клик тумблера, авто-сброс
         # таймера лимита) должна тут же сохраняться на диск — чтобы состояние
