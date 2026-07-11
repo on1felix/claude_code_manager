@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7.4"  # Для обновлений
+APP_VERSION = "5.7.5"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -219,8 +219,14 @@ def load_settings():
             print(f"[load_settings] Ошибка чтения {SETTINGS_FILE}: {e}. Бэкап сохранён рядом.")
             return _default_settings()
         else:
-            # Дописываем недостающие поля для совместимости
-            if "custom_base_urls" not in loaded or not loaded.get("custom_base_urls"):
+            # Дописываем недостающие поля для совместимости.
+            # Проливаем ВСЕ отсутствующие ключи из дефолтов — иначе старые
+            # settings.json падают при добавлении новых полей (models,
+            # selected_model и т.п.).
+            for _k, _v in _default_settings().items():
+                loaded.setdefault(_k, _v)
+            # custom_base_urls — гарантируем что дефолтный URL всегда в списке
+            if not loaded.get("custom_base_urls"):
                 loaded["custom_base_urls"] = ["https://cc.freemodel.dev"]
             else:
                 for u in ["https://cc.freemodel.dev"]:
@@ -228,10 +234,12 @@ def load_settings():
                         loaded["custom_base_urls"].insert(0, u)
             if not loaded.get("custom_base_url"):
                 loaded["custom_base_url"] = loaded["custom_base_urls"][0]
-            # Язык интерфейса: по умолчанию ru, перезаписывается LangManager
-            if "app_language" not in loaded:
-                loaded["app_language"] = "ru"
-            loaded.setdefault("auto_update_enabled", True)
+            # models не может быть пустым — если старая настройка съела список,
+            # восстанавливаем дефолтную модель
+            if not loaded.get("models"):
+                loaded["models"] = list(_default_settings()["models"])
+            if not loaded.get("selected_model") or loaded["selected_model"] not in loaded["models"]:
+                loaded["selected_model"] = loaded["models"][0]
             migrate_api_keys(loaded)
             return loaded
     return _default_settings()
