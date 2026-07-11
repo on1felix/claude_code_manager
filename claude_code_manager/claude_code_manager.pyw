@@ -22,15 +22,20 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QPushButton, QFrame,
                                QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize, QEvent
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics, QIntValidator
-from PySide6.QtCore import QPointF, QRectF, QUrl
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics, QIntValidator, QCursor
+from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7.3"  # Для обновлений
+APP_VERSION = "5.7.4"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
+# Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
+# edit-имя/edit-значение/toggle/reorder/login) текущий settings.json копируется
+# в settings.json.bak, потом .bak2, .bak3 и т.д. Существующие НЕ перезаписываются
+# — по образцу «Fix Claude» с ~/.claude.json.bak.N. Восстанавливать вручную:
+# скопировать нужный .bakN обратно в settings.json.
 GITHUB_API_URL = "https://api.github.com/repos/on1felix/claude_code_manager/releases/latest"
 
 # ВСТРОЕННЫЙ status line. Раньше лежал в C:\cc\statusline-command.sh — теперь
@@ -279,6 +284,38 @@ def save_settings(settings):
     except:
         pass
 
+def _next_settings_backup_path():
+    """Подбираем имя бэкапа так, чтобы не затирать существующие: сначала .bak,
+    затем .bak2, .bak3 и т.д. По образцу Fix Claude (~/.claude.json.bak.N)."""
+    base = SETTINGS_FILE + ".bak"
+    if not os.path.exists(base):
+        return base
+    i = 2
+    while True:
+        candidate = f"{SETTINGS_FILE}.bak{i}"
+        if not os.path.exists(candidate):
+            return candidate
+        i += 1
+
+def backup_settings_before_change():
+    """Копирует текущий settings.json в свободный settings.json.bakN ПЕРЕД
+    мутацией (add/delete/edit ключа, toggle, reorder, login). Существующие
+    бэкапы НЕ трогаются — каждое изменение получает свой файл. Если
+    settings.json ещё нет — ничего не делаем (нечего копировать)."""
+    ensure_settings_dir()
+    if not os.path.exists(SETTINGS_FILE):
+        return
+    try:
+        shutil.copy2(SETTINGS_FILE, _next_settings_backup_path())
+    except Exception as e:
+        print(f"[backup_settings] Не удалось создать бэкап: {e}")
+
+def save_settings_with_backup(settings):
+    """save_settings + предварительный бэкап. Использовать для любых операций,
+    связанных с изменением данных в управлении ключами."""
+    backup_settings_before_change()
+    save_settings(settings)
+
 
 # ============================================================
 # УПРАВЛЕНИЕ API-КЛЮЧАМИ (пул именованных ключей)
@@ -381,6 +418,48 @@ def reset_key_limit(key):
         changed = True
     return changed
 
+def fm_cents_to_usd(cents):
+    """Центы (int) → строка '$X.XX'. Безопасно к мусору."""
+    try:
+        return f"${float(cents) / 100:.2f}"
+    except (TypeError, ValueError):
+        return "$0.00"
+
+def fm_usage_percent(used, limit):
+    """Процент использования 0..100 с защитой от деления на ноль."""
+    try:
+        used = float(used)
+        limit = float(limit)
+    except (TypeError, ValueError):
+        return 0
+    if limit <= 0:
+        return 0
+    return max(0, min(100, int(round(used / limit * 100))))
+
+def _online_color_state(key):
+    """Цвет ключа в online-режиме, посчитанный из кэша /api/usage и подписки:
+    • Pro-подписка истекла → red (аккаунт нельзя использовать);
+    • недельное окно исчерпано и ещё не сброшено → red;
+    • 5-часовое окно исчерпано и ещё не сброшено → yellow;
+    • иначе (в т.ч. лимит истёк по reset, нет данных, ошибка) → green.
+    Ключ в online-режиме всегда остаётся рабочим — «не-зелёный» лишь означает,
+    что балансир его временно пропустит, пока окно не сбросится."""
+    now = time.time()
+    # Истёкшая Pro-подписка — самый весомый повод покраснеть.
+    if fm_sub_expired(key):
+        return "red"
+    wk_used = key.get("usage_week_used", 0) or 0
+    wk_limit = key.get("usage_week_limit", 0) or 0
+    wk_reset = key.get("usage_week_reset", 0) or 0
+    if wk_limit > 0 and wk_used >= wk_limit and (not wk_reset or now < wk_reset):
+        return "red"
+    h5_used = key.get("usage_5h_used", 0) or 0
+    h5_limit = key.get("usage_5h_limit", 0) or 0
+    h5_reset = key.get("usage_5h_reset", 0) or 0
+    if h5_limit > 0 and h5_used >= h5_limit and (not h5_reset or now < h5_reset):
+        return "yellow"
+    return "green"
+
 def key_color_state(key):
     """green / red / yellow — визуальное состояние ключа.
     - enabled=True                     → green (активен).
@@ -388,7 +467,10 @@ def key_color_state(key):
     - enabled=False, limit_type='7d'   → red (7-дневный лимит).
     - enabled=False без корректного типа → red (fallback, старые записи).
     Если resets_at уже наступил, считаем ключ включённым (green) — авто-сброс.
+    В online-режиме статус считается из реальных метрик /api/usage.
     """
+    if key.get("mode") == "online":
+        return _online_color_state(key)
     if key.get("enabled", False):
         return "green"
     # Если таймер лимита уже истёк — визуально ключ уже активен.
@@ -471,6 +553,24 @@ def migrate_api_keys(settings):
             enabled = True
             limit_type = ""
             resets_at = 0
+
+        # ── Online-режим (FreeModel): реальные метрики /api/usage по cookie ──
+        # mode: "manual" (по умолчанию, ручной тумблер) | "online" (авто-статус
+        # из /api/usage). session_cookie — полная cookie-строка (все Set-Cookie
+        # из ответа /api/auth/verify-otp) либо «голый» bm_session-токен.
+        mode = k.get("mode", "manual")
+        if mode not in ("manual", "online"):
+            mode = "manual"
+        session_cookie = (k.get("session_cookie") or "").strip()
+        otp_email = (k.get("otp_email") or "").strip()
+
+        def _num(field, default=0):
+            v = k.get(field, default)
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return float(default)
+
         norm.append({
             "id": k.get("id") or _new_key_id(),
             "name": (k.get("name") or "Ключ").strip() or "Ключ",
@@ -479,6 +579,24 @@ def migrate_api_keys(settings):
             "activated_at": k.get("activated_at", 0) or 0,
             "limit_type": limit_type if not enabled else "",
             "resets_at": resets_at if not enabled else 0,
+            # online-режим
+            "mode": mode,
+            "session_cookie": session_cookie,
+            "otp_email": otp_email,
+            # кэш последних метрик (переживает перезапуск, показывает last-known)
+            "usage_5h_used": _num("usage_5h_used"),
+            "usage_5h_limit": _num("usage_5h_limit"),
+            "usage_5h_reset": _num("usage_5h_reset"),
+            "usage_week_used": _num("usage_week_used"),
+            "usage_week_limit": _num("usage_week_limit"),
+            "usage_week_reset": _num("usage_week_reset"),
+            "usage_fetched_at": _num("usage_fetched_at"),
+            "usage_error": (k.get("usage_error") or "").strip(),
+            # срок Pro-подписки аккаунта (из /api/billing)
+            "sub_expires_at": _num("sub_expires_at"),
+            "sub_is_pro": bool(k.get("sub_is_pro", False)),
+            "sub_plan": (k.get("sub_plan") or "").strip(),
+            "sub_fetched_at": _num("sub_fetched_at"),
         })
     settings["api_keys"] = norm
     sync_custom_api_key(settings)
@@ -551,6 +669,7 @@ TRANSLATIONS = {
     "Добавить новый URL:": "Add new URL:",
     "Управление API ключами": "Manage API keys",
     "Зелёный — активен. Жёлтый — 5-часовой лимит. Красный — 7-дневный лимит.": "Green — active. Yellow — 5-hour limit. Red — 7-day limit.",
+    "Клик — выбрать ключ. Зажать и тянуть — поменять порядок.": "Click — pick a key. Hold and drag — reorder.",
     "Ключей пока нет — добавьте первый ниже": "No keys yet — add the first one below",
     "Добавить новый ключ:": "Add new key:",
     "Название": "Name",
@@ -603,6 +722,49 @@ TRANSLATIONS = {
     "через": "in",
     "Точное время сброса показывает Claude Code в терминале.\nПросто перенесите его сюда.":
         "Claude Code prints the exact reset time in the terminal.\nJust copy it here.",
+    # ── online-режим ключа (реальные метрики FreeModel) ──
+    "Online": "Online",
+    "Войти по коду": "Log in by code",
+    "Сменить аккаунт": "Switch account",
+    "5 часов": "5 hours",
+    "7 дней": "7 days",
+    "Вход выполнен": "Logged in",
+    "Вход не выполнен": "Not logged in",
+    "нет данных": "no data",
+    "Данные на": "Data as of",
+    "Метрики ещё не загружены": "Metrics not loaded yet",
+    "Обновляем метрики…": "Refreshing metrics…",
+    "Сначала войдите по коду с почты": "Log in by e-mail code first",
+    "5ч лимит": "5h limit",
+    "недельный лимит": "weekly limit",
+    # ── диалог входа по коду с почты (OTP) ──
+    "Вход по коду с почты": "Log in by e-mail code",
+    "Введите e-mail — придёт код. Пароль вводить не нужно.":
+        "Enter your e-mail — a code will arrive. No password needed.",
+    "Отправить код": "Send code",
+    "Код из письма": "Code from e-mail",
+    "Введите корректный e-mail": "Enter a valid e-mail",
+    "Отправляем код…": "Sending code…",
+    "Код отправлен на почту. Введите его выше.": "Code sent to your e-mail. Enter it above.",
+    "Не удалось отправить код": "Failed to send code",
+    "Введите код из письма": "Enter the code from the e-mail",
+    "Проверяем код…": "Verifying code…",
+    "Готово! Вход выполнен.": "Done! Logged in.",
+    "Неверный код или ошибка": "Invalid code or error",
+    "Сессия недействительна — войдите по коду заново":
+        "Session expired — log in by code again",
+    "Нет соединения с freemodel.dev": "No connection to freemodel.dev",
+    "Ошибка загрузки метрик": "Failed to load metrics",
+    # ── подписка Pro ──
+    "Pro подписка кончилась": "Pro subscription ended",
+    "Подписка: данные не загружены": "Subscription: not loaded",
+    "осталось": "left",
+    "дн.": "days",
+    "ч.": "h",
+    # ── редактирование ключа ──
+    "Изменить ключ": "Edit key",
+    "API ключ": "API key",
+    "Сохранить": "Save",
     "Подтвердить": "Confirm",
     "Максимум 5 часов": "Maximum 5 hours",
     "Максимум 7 дней": "Maximum 7 days",
@@ -1211,6 +1373,271 @@ def check_app_update():
         }
     except:
         return None
+
+# ============================================================
+# FreeModel: OTP-вход по коду с почты + реальные метрики /api/usage
+# ============================================================
+# Вход: пользователь вводит e-mail → приходит код в письмо → вводит код →
+# сервер отдаёт Set-Cookie: bm_session=...; мы сохраняем ПОЛНУЮ cookie-строку
+# (все Set-Cookie, не только bm_session — там могут быть CSRF/device-токены,
+# критичные для долгоживущей сессии) и переиспользуем её в каждом запросе к
+# /api/usage. Пароль код не видит вообще — только одноразовый код из письма.
+
+FREEMODEL_ORIGIN = "https://freemodel.dev"
+FREEMODEL_OTP_SEND_URL = FREEMODEL_ORIGIN + "/api/auth/send-otp"
+FREEMODEL_OTP_VERIFY_URL = FREEMODEL_ORIGIN + "/api/auth/verify-otp"
+FREEMODEL_USAGE_URL = FREEMODEL_ORIGIN + "/api/usage"
+FREEMODEL_BILLING_URL = FREEMODEL_ORIGIN + "/api/billing"
+
+def _fm_post_json(url, payload):
+    """POST JSON на FreeModel. Возвращает (resp_headers, data_dict).
+    Бросает URLError/HTTPError при сетевой/HTTP-ошибке."""
+    body = json.dumps(payload).encode("utf-8")
+    req = Request(url, data=body, headers={
+        "User-Agent": "ClaudeManager",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Origin": FREEMODEL_ORIGIN,
+        "Referer": FREEMODEL_ORIGIN + "/",
+    }, method="POST")
+    with urlopen(req, timeout=15, context=_ssl_context) as resp:
+        raw = resp.read().decode("utf-8", "replace")
+        headers = resp.headers
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        data = {}
+    return headers, data
+
+def _fm_extract_cookies(headers):
+    """Собирает полную cookie-строку из всех Set-Cookie ответа.
+    Берёт из каждого заголовка только пару name=value (до первого ';'),
+    склеивает через '; '. Возвращает '' если Set-Cookie нет."""
+    try:
+        raw_cookies = headers.get_all("Set-Cookie") or []
+    except Exception:
+        one = headers.get("Set-Cookie")
+        raw_cookies = [one] if one else []
+    pairs = []
+    seen = set()
+    for sc in raw_cookies:
+        if not sc:
+            continue
+        nv = sc.split(";", 1)[0].strip()
+        if "=" not in nv:
+            continue
+        name = nv.split("=", 1)[0].strip()
+        if name in seen:
+            continue
+        seen.add(name)
+        pairs.append(nv)
+    return "; ".join(pairs)
+
+def fm_build_cookie_header(stored):
+    """Значение для заголовка Cookie из сохранённого session_cookie.
+    Обрабатывает оба формата: 'голый' токен (ручная вставка bm_session) и
+    полную cookie-строку 'a=1; b=2' (после OTP-входа)."""
+    stored = (stored or "").strip()
+    if not stored:
+        return ""
+    if "=" in stored:
+        return stored  # уже полная строка name=value[; ...]
+    return f"bm_session={stored}"  # голый токен
+
+def fm_request_otp(email):
+    """Запрашивает отправку OTP-кода на e-mail (POST /api/auth/send-otp).
+    Возвращает True при успехе, иначе бросает исключение с текстом ошибки."""
+    email = (email or "").strip()
+    if not email or "@" not in email:
+        raise ValueError("invalid email")
+    _headers, data = _fm_post_json(FREEMODEL_OTP_SEND_URL, {"email": email})
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(str(data.get("error")))
+    return True
+
+def fm_verify_otp(email, code):
+    """Обменивает код на сессию (POST /api/auth/verify-otp).
+    Возвращает полную cookie-строку (session_cookie) при успехе;
+    бросает исключение при неверном коде / ошибке."""
+    email = (email or "").strip()
+    code = (code or "").strip()
+    if not email or not code:
+        raise ValueError("email and code required")
+    headers, data = _fm_post_json(FREEMODEL_OTP_VERIFY_URL,
+                                  {"email": email, "code": code})
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(str(data.get("error")))
+    cookie = _fm_extract_cookies(headers)
+    if not cookie:
+        # На случай, если сервер вернул токен в теле, а не в Set-Cookie.
+        if isinstance(data, dict):
+            tok = data.get("bm_session") or data.get("session") or data.get("token")
+            if tok:
+                cookie = f"bm_session={tok}"
+    if not cookie:
+        raise RuntimeError("no session cookie in response")
+    return cookie
+
+def fetch_account_usage(session_cookie):
+    """GET /api/usage с сохранённой cookie. Возвращает распарсенный dict метрик.
+    Бросает исключение при сетевой/HTTP/JSON-ошибке или пустой cookie."""
+    cookie_header = fm_build_cookie_header(session_cookie)
+    if not cookie_header:
+        raise ValueError("no session cookie")
+    req = Request(FREEMODEL_USAGE_URL, headers={
+        "User-Agent": "ClaudeManager",
+        "Accept": "application/json",
+        "Cookie": cookie_header,
+        "Referer": FREEMODEL_ORIGIN + "/",
+    })
+    with urlopen(req, timeout=15, context=_ssl_context) as resp:
+        raw = resp.read().decode("utf-8", "replace")
+    return json.loads(raw)
+
+def fm_parse_usage(data):
+    """Нормализует ответ /api/usage в плоский dict полей кэша ключа.
+    Ожидаемая форма: {'window5h':{usedCents,limitCents,resetsAt},
+    'windowWeek':{...}}. Устойчив к отсутствующим полям."""
+    def _win(node):
+        node = node if isinstance(node, dict) else {}
+        return (
+            float(node.get("usedCents", 0) or 0),
+            float(node.get("limitCents", 0) or 0),
+            float(node.get("resetsAt", 0) or 0),
+        )
+    data = data if isinstance(data, dict) else {}
+    u5, l5, r5 = _win(data.get("window5h"))
+    uw, lw, rw = _win(data.get("windowWeek"))
+    return {
+        "usage_5h_used": u5, "usage_5h_limit": l5, "usage_5h_reset": r5,
+        "usage_week_used": uw, "usage_week_limit": lw, "usage_week_reset": rw,
+        "usage_fetched_at": time.time(),
+        "usage_error": "",
+    }
+
+def _fm_usage_error_text(exc):
+    """Короткий человекочитаемый текст ошибки /api/usage для карточки ключа.
+    401/403 → сессия недействительна (нужно снова войти по коду)."""
+    try:
+        code = getattr(exc, "code", None)
+        if code in (401, 403):
+            return tr("Сессия недействительна — войдите по коду заново")
+        if code:
+            return f"HTTP {code}"
+    except Exception:
+        pass
+    if isinstance(exc, (URLError, OSError)):
+        return tr("Нет соединения с freemodel.dev")
+    return tr("Ошибка загрузки метрик")
+
+def fetch_account_billing(session_cookie):
+    """GET /api/billing с сохранённой cookie. Возвращает распарсенный dict.
+    Бросает исключение при ошибке (вызывающий делает best-effort)."""
+    cookie_header = fm_build_cookie_header(session_cookie)
+    if not cookie_header:
+        raise ValueError("no session cookie")
+    req = Request(FREEMODEL_BILLING_URL, headers={
+        "User-Agent": "ClaudeManager",
+        "Accept": "application/json",
+        "Cookie": cookie_header,
+        "Referer": FREEMODEL_ORIGIN + "/",
+    })
+    with urlopen(req, timeout=15, context=_ssl_context) as resp:
+        raw = resp.read().decode("utf-8", "replace")
+    return json.loads(raw)
+
+def _fm_to_epoch(v):
+    """Приводит значение срока подписки к epoch-секундам.
+    Понимает: число (сек или мс), ISO-строку. 0 если не распознано."""
+    if v in (None, "", 0, 0.0):
+        return 0.0
+    # Число (эпоха в секундах или миллисекундах)
+    try:
+        n = float(v)
+        if n > 1e12:      # миллисекунды
+            n /= 1000.0
+        return n if n > 1e6 else 0.0  # должно выглядеть как реальная эпоха
+    except (TypeError, ValueError):
+        pass
+    # ISO-8601 строка
+    s = str(v).strip().replace("Z", "+00:00")
+    try:
+        import datetime as _dt
+        return float(_dt.datetime.fromisoformat(s).timestamp())
+    except Exception:
+        return 0.0
+
+def fm_parse_billing(data):
+    """Нормализует ответ /api/billing в поля кэша подписки ключа.
+    Формат эндпоинта заранее не известен — парсим гибко по частым именам
+    полей и вложенному объекту subscription."""
+    data = data if isinstance(data, dict) else {}
+    sub = data.get("subscription") if isinstance(data.get("subscription"), dict) else {}
+
+    def pick(*keys):
+        for src in (data, sub):
+            for k in keys:
+                if isinstance(src, dict) and src.get(k) not in (None, ""):
+                    return src.get(k)
+        return None
+
+    exp = _fm_to_epoch(pick(
+        "expiresAt", "expires_at", "currentPeriodEnd", "current_period_end",
+        "periodEnd", "period_end", "renewsAt", "renews_at", "subscriptionEnd",
+        "subscription_end", "endsAt", "ends_at", "proUntil", "pro_until",
+        "validUntil", "valid_until", "nextBillingDate", "next_billing_date"))
+    plan = pick("plan", "tier", "planName", "plan_name", "product", "productName") or ""
+    status = pick("status", "state") or ""
+    is_pro_raw = pick("isPro", "is_pro", "pro", "active", "isActive")
+
+    plan_s, status_s = str(plan).lower(), str(status).lower()
+    if is_pro_raw is not None:
+        is_pro = bool(is_pro_raw)
+    else:
+        is_pro = ("pro" in plan_s or "plus" in plan_s or "premium" in plan_s
+                  or status_s in ("active", "trialing")
+                  or (exp > 0 and exp > time.time()))
+    return {
+        "sub_expires_at": exp,
+        "sub_plan": str(plan),
+        "sub_is_pro": bool(is_pro),
+        "sub_fetched_at": time.time(),
+    }
+
+def fm_fetch_account_state(session_cookie):
+    """Единая точка сбора состояния аккаунта для online-ключа:
+    • /api/usage (обязательно — метрики лимитов);
+    • /api/billing (best-effort — срок Pro-подписки).
+    Возвращает плоский dict полей кэша ключа. Бросает исключение, если
+    /api/usage недоступен (сессия истекла / нет сети) — тогда online-статус
+    остаётся на последних известных данных, а карточка покажет ошибку."""
+    fields = fm_parse_usage(fetch_account_usage(session_cookie))
+    try:
+        fields.update(fm_parse_billing(fetch_account_billing(session_cookie)))
+    except Exception:
+        pass  # подписка опциональна — не роняем метрики из-за неё
+    return fields
+
+def fm_sub_expired(key):
+    """True, если у ключа известен срок Pro-подписки и он уже истёк."""
+    exp = key.get("sub_expires_at", 0) or 0
+    return bool(exp) and time.time() >= exp
+
+def fm_usage_bar_color(pct):
+    """Цвет полоски использования по проценту 0..100:
+    мало → салатово-зелёный (заметно отличается от бирюзы рамки),
+    середина → жёлтый, много → красный."""
+    def _lerp(a, b, t):
+        return (int(a[0] + (b[0] - a[0]) * t),
+                int(a[1] + (b[1] - a[1]) * t),
+                int(a[2] + (b[2] - a[2]) * t))
+    p = max(0.0, min(100.0, float(pct)))
+    green = (128, 214, 82)    # салатовый (не бирюзовый как рамка 52,211,153)
+    yellow = (240, 205, 70)
+    red = (228, 92, 92)
+    if p <= 50:
+        return _lerp(green, yellow, p / 50.0)
+    return _lerp(yellow, red, (p - 50.0) / 50.0)
 
 def check_claude_code_latest_version():
     """Запрашивает реально опубликованную последнюю версию Claude Code CLI
@@ -4958,14 +5385,103 @@ class KeyToggle(QWidget):
         p.end()
 
 
+class _UsageBar(QWidget):
+    """Тонкая анимированная полоска использования лимита (без текста).
+    Заливка плавно едет к целевому проценту; цвет заливки зависит от процента
+    (мало → салатово-зелёный, середина → жёлтый, много → красный) и заметно
+    отличается от бирюзовой рамки карточки, чтобы не сливаться."""
+
+    def __init__(self, color=None, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(10)
+        self.setMinimumWidth(60)
+        self._pct = 0.0       # отображаемый процент
+        self._target = 0.0    # целевой процент
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def set_percent(self, pct, animate=True):
+        self._target = max(0.0, min(100.0, float(pct)))
+        if not animate:
+            self._pct = self._target
+        self.update()
+
+    def _tick(self):
+        d = self._target - self._pct
+        if abs(d) > 0.3:
+            self._pct += d * 0.15
+            self.update()
+        elif self._pct != self._target:
+            self._pct = self._target
+            self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r = h / 2.0
+        # Тёмный трек + тонкая обводка, чтобы полоска «читалась» на фоне.
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(34, 34, 40))
+        p.drawRoundedRect(0, 0, w, h, r, r)
+        fw = int(w * self._pct / 100.0)
+        if fw > 0:
+            cr, cg, cb = fm_usage_bar_color(self._pct)
+            p.setBrush(QColor(cr, cg, cb))
+            p.drawRoundedRect(0, 0, max(fw, int(h)), h, r, r)
+
+
+class _ElidingLabel(QLabel):
+    """QLabel, который сам эли­дирует текст под собственную ширину (при каждом
+    resize). Держит полный текст отдельно, так что при расширении текст снова
+    показывается целиком. Нужен, потому что внешний resizeEvent карточки
+    срабатывает ДО того, как внутренняя раскладка выдаст лейблу финальную ширину,
+    и однократный элид «не успевал»."""
+    def __init__(self, text="", elide_mode=Qt.ElideRight, parent=None):
+        super().__init__(parent)
+        self._full = text or ""
+        self._elide_mode = elide_mode
+        super().setText(self._full)
+
+    def setText(self, text):
+        self._full = text or ""
+        self._reelide()
+
+    def fullText(self):
+        return self._full
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reelide()
+
+    def _reelide(self):
+        fm = QFontMetrics(self.font())
+        w = max(0, self.width())
+        super().setText(fm.elidedText(self._full, self._elide_mode, w) if w > 4 else self._full)
+
+
 class KeyCard(QFrame):
     """Строка одного API-ключа: тумблер OFF/ON, имя, маскированное значение,
     статус, глаз, крестик удаления. Рамка плавно перекрашивается под состояние
-    (зелёный/красный/жёлтый) и мягко «загорается» при смене."""
+    (зелёный/красный/жёлтый) и мягко «загорается» при смене.
+
+    Для FreeModel-эндпоинтов у карточки есть переключатель режима manual↔online:
+    в online-режиме статус берётся из реальных метрик /api/usage (вход по коду
+    с почты), под строкой раскрывается секция с двумя полосками лимитов."""
     toggled = Signal(str, bool)      # (key_id, on) — состояние изменилось
     delete_requested = Signal(str)   # key_id
     select_requested = Signal(str)   # key_id — клик по телу карточки
-    changed = Signal(str)            # key_id — dict ключа мутирован (для мгновенного save_settings)
+    changed = Signal(str)            # key_id — dict ключа мутирован (для мгновенного save_settings БЕЗ бэкапа)
+    data_changed = Signal(str)       # key_id — пользователь изменил ВАЖНЫЕ данные (имя/значение/логин) —
+                                     # окно поверх этого создаст .bakN. Метрики/тумблеры/reorder сюда НЕ входят.
+    usage_refresh_requested = Signal(str)  # key_id — карточка просит подтянуть /api/usage
+    height_changed = Signal()        # высота карточки изменилась (manual↔online) — окну пора переподогнаться
+    drag_started = Signal(object)    # (card) — пользователь потащил карточку
+    drag_moved = Signal(object, object) # (card, global_pos QPoint) — тащит
+    drag_finished = Signal(object)   # (card) — отпустил
+
+    _DRAG_THRESHOLD = 6              # пикселей до старта перетаскивания
 
     _COLORS = {
         "green":  (52, 211, 153),
@@ -4979,7 +5495,9 @@ class KeyCard(QFrame):
         # Для FreeModel-эндпоинтов окно лимита спрашивает точное время сброса
         # (UTC+8, AM/PM), как на дашборде; иначе — привычную длительность.
         self._is_freemodel = bool(is_freemodel)
-        self.setFixedHeight(58)
+        self._MANUAL_H = 58
+        self._ONLINE_H = 200  # высота раскрытой online-секции (аккаунт + кнопки + подписка + 2 полоски + подвал)
+        self.setFixedHeight(self._MANUAL_H)
         self.setCursor(Qt.PointingHandCursor)
         state = key_color_state(key)
         col = self._COLORS[state]
@@ -4989,12 +5507,21 @@ class KeyCard(QFrame):
         self._last_state = state
         self._revealed = False
         self._selected = False
+        self._drag_visual = False
         # Плавный «пульс» выбранной карточки — интерполируется 0..1 (усиливает рамку и лёгкое свечение)
         self._sel_progress = 0.0
 
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 8, 12, 8)
-        lay.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Верхняя строка (как раньше): тумблер/имя/значение/статус/глаз/крестик ──
+        self.top_row_w = QWidget()
+        self.top_row_w.setStyleSheet("background: transparent;")
+        self.top_row_w.setFixedHeight(self._MANUAL_H)
+        lay = QHBoxLayout(self.top_row_w)
+        lay.setContentsMargins(12, 8, 10, 8)
+        lay.setSpacing(7)
 
         # Ползунок в позиции ON только когда ключ действительно активен (зелёный).
         # Жёлтый и красный — оба означают OFF, ползунок слева.
@@ -5004,24 +5531,73 @@ class KeyCard(QFrame):
 
         info = QVBoxLayout()
         info.setSpacing(1)
-        self.name_lbl = QLabel(key.get("name", "Ключ"))
+        # Строка имени: сначала карандаш-редактирование, затем само имя.
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(6)
+        self.edit_btn = QPushButton("🖉")
+        self.edit_btn.setCursor(Qt.PointingHandCursor)
+        self.edit_btn.setFixedSize(20, 20)
+        self.edit_btn.setFont(QFont("Segoe UI Symbol", 11))
+        self.edit_btn.setToolTip(tr("Изменить ключ"))
+        self.edit_btn.setStyleSheet(
+            "QPushButton{color: rgb(150,150,158); background: transparent;"
+            "border: none; border-radius: 5px;}"
+            "QPushButton:hover{color: rgb(120,160,235); background: rgba(120,160,235,35);}")
+        self.edit_btn.clicked.connect(self._on_edit_clicked)
+        name_row.addWidget(self.edit_btn, 0, Qt.AlignVCenter)
+        self.name_lbl = _ElidingLabel(key.get("name", "Ключ"))
         self.name_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.name_lbl.setStyleSheet("color: rgb(220,220,225); background: transparent; border: none;")
-        # Игнорируем «естественную» ширину текста, чтобы длинное имя/ключ не
-        # распирали строку и не выталкивали глаз/крестик за край карточки.
+        # Имя занимает всю ширину строки, выделенную по stretch (Ignored — чтобы
+        # его собственная «естественная» ширина не влияла на раскладку и не было
+        # дёрганья). Раньше на этой строке статус отъедал место и имя схлопывалось
+        # до «Клю…»; теперь статус переехал на вторую строку, и имени хватает.
+        # Слишком длинное имя _ElidingLabel сам эли­дирует под свою ширину.
         self.name_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        info.addWidget(self.name_lbl)
+        self.name_lbl.setToolTip(key.get("name", ""))  # полное имя по наведению
+        name_row.addWidget(self.name_lbl, 1)
+        info.addLayout(name_row)
+        # Вторая строка: замаскированный ключ слева + статус справа. Статус
+        # вынесен СЮДА (а не в тесную верхнюю строку с тумблером/режимом), иначе
+        # длинный отсчёт «Сброс через 6д…» выдавливал имя до «Клю…».
         self.val_lbl = QLabel(self._mask(key.get("value", "")))
         self.val_lbl.setFont(QFont("Consolas", 9))
         self.val_lbl.setStyleSheet("color: rgb(140,140,148); background: transparent; border: none;")
         self.val_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        info.addWidget(self.val_lbl)
-        lay.addLayout(info, 1)
-
-        self.status_lbl = QLabel("")
+        val_row = QHBoxLayout()
+        val_row.setContentsMargins(0, 0, 0, 0)
+        val_row.setSpacing(8)
+        val_row.addWidget(self.val_lbl, 2)
+        self.status_lbl = _ElidingLabel("")
         self.status_lbl.setFont(QFont("Segoe UI", 8, QFont.Bold))
         self.status_lbl.setStyleSheet("background: transparent; border: none;")
-        lay.addWidget(self.status_lbl, 0, Qt.AlignVCenter)
+        # Ignored — иначе self-elide + Maximum входят в спираль (элид ужимает
+        # sizeHint → уже выделение → ещё короче элид → …), и статус схлопывался.
+        self.status_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.status_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        val_row.addWidget(self.status_lbl, 3)
+        info.addLayout(val_row)
+        lay.addLayout(info, 1)
+
+        # Переключатель режима manual/online — только для FreeModel-эндпоинтов.
+        # Подпись «Online» вынесена в тултип: в manual-строке тумблер OFF/ON (78px)
+        # уже занимает место, и текст рядом со свитчем выдавливал имя карточки.
+        self.mode_wrap = QWidget()
+        self.mode_wrap.setStyleSheet("background: transparent;")
+        mode_l = QHBoxLayout(self.mode_wrap)
+        mode_l.setContentsMargins(0, 0, 0, 0)
+        mode_l.setSpacing(5)
+        # Скрытый плейсхолдер (ссылка сохранена на случай обращений) — текст
+        # «Online» больше не показываем в строке, только тумблер с тултипом.
+        self.mode_lbl = QLabel(tr("Online"))
+        self.mode_lbl.setVisible(False)
+        self.mode_switch = ToggleSwitch(checked=(key.get("mode") == "online"))
+        self.mode_switch.setToolTip(tr("Online-режим (реальные лимиты аккаунта)"))
+        self.mode_switch.toggled.connect(self._on_mode_toggle)
+        mode_l.addWidget(self.mode_switch)
+        lay.addWidget(self.mode_wrap, 0, Qt.AlignVCenter)
+        self.mode_wrap.setVisible(self._is_freemodel)
 
         self.eye = EyeToggleButton()
         self.eye.setFixedSize(34, 30)
@@ -5032,10 +5608,249 @@ class KeyCard(QFrame):
         self.del_btn.clicked.connect(lambda: self.delete_requested.emit(self.key.get("id", "")))
         lay.addWidget(self.del_btn, 0, Qt.AlignVCenter)
 
+        root.addWidget(self.top_row_w)
+
+        # ── Online-секция (реальные метрики /api/usage) ──
+        self.online_box = self._build_online_section()
+        root.addWidget(self.online_box)
+
         self._update_status_text()
+        self._apply_mode_ui(initial=True)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
+
+    # ── Online-секция ────────────────────────────────────────────────
+    def _build_online_section(self):
+        box = QWidget()
+        box.setFixedHeight(self._ONLINE_H)
+        box.setStyleSheet("background: transparent;")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(14, 2, 12, 10)
+        v.setSpacing(7)
+
+        def _small_btn(text, accent):
+            b = QPushButton(text)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedHeight(26)
+            b.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            r, g, bl = accent
+            b.setStyleSheet(
+                f"QPushButton{{color: rgb({r},{g},{bl}); background: rgba({r},{g},{bl},28);"
+                f"border: 1px solid rgba({r},{g},{bl},110); border-radius: 6px; padding: 3px 12px;}}"
+                f"QPushButton:hover{{background: rgba({r},{g},{bl},55);}}"
+                "QPushButton:disabled{color: rgb(110,110,116); border-color: rgb(70,70,76); background: transparent;}")
+            return b
+
+        # Строка входа: аккаунт на СВОЕЙ строке (во всю ширину), кнопки — ниже.
+        # Раньше label и кнопки делили один ряд, и «Сменить аккаунт» наезжала на
+        # почту, пряча половину аккаунта. Теперь ничего не перекрывается.
+        self.login_lbl = QLabel("")
+        self.login_lbl.setFont(QFont("Segoe UI", 8))
+        self.login_lbl.setStyleSheet("color: rgb(160,160,168); background: transparent; border: none;")
+        self.login_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        v.addWidget(self.login_lbl)
+
+        act = QHBoxLayout()
+        act.setSpacing(8)
+        self.btn_login = _small_btn(tr("Войти по коду"), (52, 211, 153))
+        self.btn_login.clicked.connect(self._on_login_clicked)
+        act.addWidget(self.btn_login)
+        self.btn_refresh = _small_btn(tr("Обновить"), (120, 160, 235))
+        self.btn_refresh.clicked.connect(self._on_refresh_clicked)
+        act.addWidget(self.btn_refresh)
+        act.addStretch(1)
+        v.addLayout(act)
+
+        # Строка срока Pro-подписки аккаунта («осталось N дней» / «истекла»).
+        self.sub_lbl = QLabel("")
+        self.sub_lbl.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        self.sub_lbl.setStyleSheet("color: rgb(150,150,158); background: transparent; border: none;")
+        self.sub_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        v.addWidget(self.sub_lbl)
+
+        def _bar_row(caption):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            cap = QLabel(caption)
+            cap.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            cap.setFixedWidth(52)
+            cap.setStyleSheet("color: rgb(155,155,162); background: transparent; border: none;")
+            row.addWidget(cap)
+            bar = _UsageBar()
+            row.addWidget(bar, 1)
+            val = QLabel("")
+            val.setFont(QFont("Segoe UI", 8))
+            val.setMinimumWidth(150)
+            val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            val.setStyleSheet("color: rgb(175,175,182); background: transparent; border: none;")
+            row.addWidget(val)
+            return row, bar, val
+
+        row5, self.bar5, self.bar5_val = _bar_row(tr("5 часов"))
+        v.addLayout(row5)
+        roww, self.barw, self.barw_val = _bar_row(tr("7 дней"))
+        v.addLayout(roww)
+
+        # Подвал: «Данные на: …» + хинт ошибки
+        self.usage_foot = QLabel("")
+        self.usage_foot.setFont(QFont("Segoe UI", 8))
+        self.usage_foot.setStyleSheet("color: rgb(120,120,128); background: transparent; border: none;")
+        self.usage_foot.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        v.addWidget(self.usage_foot)
+
+        return box
+
+    def _apply_mode_ui(self, initial=False):
+        """Показывает/прячет online-секцию и подгоняет высоту карточки."""
+        online = self._is_freemodel and self.key.get("mode") == "online"
+        self.online_box.setVisible(online)
+        # В online-режиме ручной тумблер лимита не нужен — статус автоматический.
+        self.toggle.setVisible(not online)
+        self.setFixedHeight(self._MANUAL_H + (self._ONLINE_H if online else 0))
+        if online:
+            self._update_online_metrics()
+        self._update_status_text()
+        if not initial:
+            self._retarget()
+            # Высота изменилась — просим окно переподогнать скролл/размер.
+            self.height_changed.emit()
+
+    def _on_mode_toggle(self, checked):
+        self.key["mode"] = "online" if checked else "manual"
+        self._apply_mode_ui()
+        self.changed.emit(self.key.get("id", ""))
+        # При включении online сразу пробуем подтянуть метрики (если есть cookie).
+        if checked and (self.key.get("session_cookie") or "").strip():
+            self.usage_refresh_requested.emit(self.key.get("id", ""))
+
+    def _on_login_clicked(self):
+        dlg = FreemodelOtpDialog(email=self.key.get("otp_email", ""), parent=self.window())
+        if dlg.exec() == QDialog.Accepted and dlg.result_cookie:
+            self.key["session_cookie"] = dlg.result_cookie
+            self.key["otp_email"] = dlg.result_email
+            self.key["mode"] = "online"
+            self.key["usage_error"] = ""
+            # синхронизируем переключатель, если был выключен
+            self.mode_switch.blockSignals(True)
+            self.mode_switch.setChecked(True)
+            self.mode_switch.blockSignals(False)
+            self._apply_mode_ui()
+            self.changed.emit(self.key.get("id", ""))
+            # Данные входа изменились — окну надо сделать .bakN бэкап настроек.
+            self.data_changed.emit(self.key.get("id", ""))
+            self.usage_refresh_requested.emit(self.key.get("id", ""))
+
+    def _on_refresh_clicked(self):
+        if not (self.key.get("session_cookie") or "").strip():
+            self.key["usage_error"] = tr("Сначала войдите по коду с почты")
+            self._update_online_metrics()
+            return
+        self.usage_foot.setText(tr("Обновляем метрики…"))
+        self.usage_refresh_requested.emit(self.key.get("id", ""))
+
+    def _update_online_metrics(self):
+        """Перерисовывает полоски/подписи online-секции из кэша ключа (без сети)."""
+        if not hasattr(self, "bar5"):
+            return
+        k = self.key
+        logged = bool((k.get("session_cookie") or "").strip())
+        if logged:
+            email = k.get("otp_email", "")
+            self.login_lbl.setText(
+                (tr("Вход выполнен") + (f": {email}" if email else "")))
+            self.login_lbl.setStyleSheet("color: rgb(52,211,153); background: transparent; border: none;")
+            self.btn_login.setText(tr("Сменить аккаунт"))
+            self.btn_refresh.setEnabled(True)
+        else:
+            self.login_lbl.setText(tr("Вход не выполнен"))
+            self.login_lbl.setStyleSheet("color: rgb(160,160,168); background: transparent; border: none;")
+            self.btn_login.setText(tr("Войти по коду"))
+            self.btn_refresh.setEnabled(False)
+
+        now = time.time()
+
+        # ── Срок Pro-подписки ──
+        exp = k.get("sub_expires_at", 0) or 0
+        plan = (k.get("sub_plan") or "Pro").strip() or "Pro"
+        if exp <= 0:
+            # Данных о подписке ещё нет.
+            if logged:
+                self.sub_lbl.setText(tr("Подписка: данные не загружены"))
+            else:
+                self.sub_lbl.setText("")
+            self.sub_lbl.setStyleSheet("color: rgb(130,130,138); background: transparent; border: none;")
+        elif now >= exp:
+            self.sub_lbl.setText("● " + tr("Pro подписка кончилась"))
+            self.sub_lbl.setStyleSheet("color: rgb(224,90,90); background: transparent; border: none;")
+        else:
+            days = int((exp - now) // 86400)
+            until = time.strftime("%d.%m.%Y", time.localtime(exp))
+            if days >= 1:
+                tail = f"{days} " + tr("дн.")
+            else:
+                hrs = int((exp - now) // 3600)
+                tail = f"{max(1, hrs)} " + tr("ч.")
+            self.sub_lbl.setText(
+                f"● {plan} · " + tr("осталось") + f" {tail} ({until})")
+            # < 3 дней — предупреждающий янтарный, иначе зелёный.
+            col = "rgb(235,200,90)" if days < 3 else "rgb(52,211,153)"
+            self.sub_lbl.setStyleSheet(f"color: {col}; background: transparent; border: none;")
+
+        def _fill(bar, val, used, limit, reset):
+            pct = fm_usage_percent(used, limit)
+            bar.set_percent(pct)
+            money = f"{fm_cents_to_usd(used)} / {fm_cents_to_usd(limit)}"
+            if limit > 0:
+                money += f"  ({pct:.0f}%)"
+            if reset and reset > now:
+                money += "  ·  " + self._format_remaining(int(reset - now))
+            val.setText(money if limit > 0 else tr("нет данных"))
+
+        _fill(self.bar5, self.bar5_val,
+              k.get("usage_5h_used", 0), k.get("usage_5h_limit", 0), k.get("usage_5h_reset", 0))
+        _fill(self.barw, self.barw_val,
+              k.get("usage_week_used", 0), k.get("usage_week_limit", 0), k.get("usage_week_reset", 0))
+
+        err = (k.get("usage_error") or "").strip()
+        if err:
+            self.usage_foot.setText("⚠ " + err)
+            self.usage_foot.setStyleSheet("color: rgb(224,120,120); background: transparent; border: none;")
+        else:
+            fetched = k.get("usage_fetched_at", 0) or 0
+            if fetched:
+                self.usage_foot.setText(
+                    tr("Данные на") + ": " + time.strftime("%H:%M:%S", time.localtime(fetched)))
+            else:
+                self.usage_foot.setText(tr("Метрики ещё не загружены"))
+            self.usage_foot.setStyleSheet("color: rgb(120,120,128); background: transparent; border: none;")
+
+    def refresh_online_view(self):
+        """Внешний вызов (после сетевого fetch): перерисовать метрики и цвет."""
+        state = key_color_state(self.key)
+        if state != self._last_state:
+            self._retarget()
+        self._update_online_metrics()
+        self._update_status_text()
+
+    def _on_edit_clicked(self):
+        """Редактирование имени и значения (API) ключа."""
+        dlg = KeyEditDialog(self.key.get("name", ""), self.key.get("value", ""),
+                            parent=self.window())
+        if dlg.exec() != QDialog.Accepted:
+            return
+        new_name, new_value = dlg.result_name, dlg.result_value
+        if not new_value:
+            return
+        self.key["name"] = new_name or self.key.get("name", "Ключ")
+        self.key["value"] = new_value
+        self.name_lbl.setText(self.key["name"])  # _ElidingLabel хранит полный текст
+        self.name_lbl.setToolTip(self.key["name"])
+        self._apply_value_text()
+        self.changed.emit(self.key.get("id", ""))
+        # Пользователь переименовал ключ / поменял его значение — окну надо
+        # сделать .bakN бэкап настроек.
+        self.data_changed.emit(self.key.get("id", ""))
 
     def _mask(self, v):
         v = v or ""
@@ -5107,6 +5922,16 @@ class KeyCard(QFrame):
         • обновляет текст обратного отсчёта;
         • при истечении resets_at авто-включает ключ (эмитит toggled + changed);
         • перекрашивает рамку при смене цветового состояния."""
+        # Online-режим: ручного авто-сброса нет — статус целиком из метрик.
+        # Обновляем полоски (countdown до сброса) и цвет рамки без сети.
+        if self.key.get("mode") == "online":
+            state = key_color_state(self.key)
+            if state != self._last_state:
+                self._retarget()
+            self._update_online_metrics()
+            self._update_status_text()
+            return
+
         auto_reactivated = False
         if key_expired(self.key):
             # Таймер лимита истёк — авто-сброс. reset_key_limit сам обновит поля.
@@ -5142,12 +5967,21 @@ class KeyCard(QFrame):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         # Ширина изменилась — переэлидируем раскрытый ключ под новую ширину.
+        # (Имя/статус эли­дируются сами — _ElidingLabel.resizeEvent.)
         if getattr(self, "_revealed", False):
             self._apply_value_text()
 
     def _update_status_text(self):
         state = key_color_state(self.key)
-        if state == "green":
+        if self.key.get("mode") == "online":
+            # В online-режиме статус короткий: активен / лимит окна / подписка.
+            if fm_sub_expired(self.key):
+                txt = tr("Pro подписка кончилась")
+            else:
+                txt = {"green": tr("активен"),
+                       "yellow": tr("5ч лимит"),
+                       "red": tr("недельный лимит")}.get(state, tr("активен"))
+        elif state == "green":
             txt = tr("активен")
         else:
             # Показываем обратный отсчёт до сброса.
@@ -5156,9 +5990,17 @@ class KeyCard(QFrame):
             if remain <= 0:
                 txt = tr("готов к сбросу")
             else:
-                txt = tr("Сброс через") + " " + self._format_remaining(remain)
+                # Компактно (без «Сброс через») — статус живёт на 2-й строке
+                # карточки рядом с ключом, места мало; жёлтый/красный цвет и так
+                # означают лимит. Полная подпись — в тултипе.
+                txt = self._format_remaining(remain)
         r, g, b = self._COLORS[state]
-        self.status_lbl.setText(txt)
+        self.status_lbl.setText(txt)  # _ElidingLabel сам подрежет под ширину
+        self.status_lbl.setToolTip(
+            (tr("Сброс через") + " " + self._format_remaining(
+                int(max(0, (self.key.get("resets_at", 0) or 0) - time.time()))))
+            if (state != "green" and self.key.get("mode") != "online"
+                and (self.key.get("resets_at", 0) or 0) > time.time()) else "")
         self.status_lbl.setStyleSheet(f"color: rgb({r},{g},{b}); background: transparent; border: none;")
 
     @staticmethod
@@ -5192,12 +6034,51 @@ class KeyCard(QFrame):
         # Обновляем целевое состояние пульса — сам анимируется в _tick
         self.update()
 
+    def set_dragging(self, on):
+        """Визуальный акцент во время перетаскивания (сильнее рамка/подсветка)."""
+        self._drag_visual = bool(on)
+        self.update()
+
     def mousePressEvent(self, event):
-        # Клик по «телу» карточки (не по toggle/eye/delete/status) — заявка на выбор.
-        # Дочерние виджеты обрабатывают клик у себя и сюда событие не пробрасывают.
+        # Нажатие по «телу» карточки — потенциально либо выбор (клик), либо начало
+        # перетаскивания (если увели курсор). Само действие решаем на release/move.
+        # Дочерние виджеты (toggle/eye/крестик/кнопки) свои клики не пробрасывают.
         if event.button() == Qt.LeftButton:
-            self.select_requested.emit(self.key.get("id", ""))
+            self._press_gpos = event.globalPosition().toPoint()
+            self._press_local = event.position().toPoint()
+            self._maybe_drag = True
+            self._dragging = False
+            # Принимаем событие — иначе оно всплывает к диалогу, и тот начинает
+            # тащить ВСЁ ОКНО вместо перетаскивания карточки.
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, "_maybe_drag", False):
+            gp = event.globalPosition().toPoint()
+            if not self._dragging:
+                if (gp - self._press_gpos).manhattanLength() > self._DRAG_THRESHOLD:
+                    self._dragging = True
+                    self.drag_started.emit(self)
+            if self._dragging:
+                self.drag_moved.emit(self, gp)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and getattr(self, "_maybe_drag", False):
+            self._maybe_drag = False
+            if self._dragging:
+                self._dragging = False
+                self.drag_finished.emit(self)
+            else:
+                # Не увели курсор → это обычный клик → заявка на выбор.
+                self.select_requested.emit(self.key.get("id", ""))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def _tick(self):
         changed = False
@@ -5233,21 +6114,22 @@ class KeyCard(QFrame):
         r, g, b = int(self._cur[0]), int(self._cur[1]), int(self._cur[2])
         glow = self._glow
         sel = self._sel_progress
+        drag = 1.0 if self._drag_visual else 0.0
         rect = QRectF(1.5, 1.5, w - 3, h - 3)
-        # тёмный фон
+        # тёмный фон (при перетаскивании — чуть плотнее, «поднятая» карточка)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(26, 26, 31, 235))
+        p.setBrush(QColor(30, 30, 37, 245) if drag else QColor(26, 26, 31, 235))
         p.drawRoundedRect(rect, 10, 10)
-        # цветная подложка: усиливается при «загорании» + при выборе
-        tint_a = int(20 + 34 * glow + 26 * sel)
+        # цветная подложка: усиливается при «загорании» + при выборе + при drag
+        tint_a = int(20 + 34 * glow + 26 * sel + 40 * drag)
         p.setBrush(QColor(r, g, b, min(255, tint_a)))
         p.drawRoundedRect(rect, 10, 10)
-        # рамка — ярче и толще на пике glow и когда карточка выбрана
-        boost = int(45 * glow + 35 * sel)
+        # рамка — ярче и толще на пике glow, при выборе и при перетаскивании
+        boost = int(45 * glow + 35 * sel + 55 * drag)
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(
             QColor(min(255, r + boost), min(255, g + boost), min(255, b + boost)),
-            2.0 + 1.4 * glow + 1.2 * sel
+            2.0 + 1.4 * glow + 1.2 * sel + 1.4 * drag
         ))
         p.drawRoundedRect(rect, 10, 10)
         # Индикатор выбора: маленькая цветная точка у левого верхнего угла
@@ -6224,6 +7106,386 @@ class FreemodelResetTimeDialog(QDialog):
         self._fade_out_and(lambda: super(FreemodelResetTimeDialog, self).reject())
 
 
+class FreemodelOtpDialog(QDialog):
+    """Вход в аккаунт FreeModel по одноразовому коду с почты.
+    Шаг 1: e-mail → «Отправить код» (POST /api/auth/send-otp).
+    Шаг 2: код из письма → «Подтвердить» (POST /api/auth/verify-otp) →
+    сохраняем полную cookie-строку сессии.
+
+    При успехе: result_cookie = session_cookie, result_email = e-mail.
+    Сетевые запросы идут в daemon-потоках; результат приходит в GUI-поток
+    через сигналы (_otp_sent / _otp_verified) — Qt делает queued-connection."""
+
+    _otp_sent = Signal(bool, str)          # (ok, message)
+    _otp_verified = Signal(bool, str, str)  # (ok, cookie_or_error, email)
+
+    def __init__(self, email="", parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self.result_cookie = None
+        self.result_email = ""
+        self._busy = False
+        self._code_ready = False
+
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(26, 20, 26, 22)
+        lay.setSpacing(12)
+
+        # Заголовок-строка: бренд по центру + крестик справа.
+        head_row = QHBoxLayout()
+        head_row.setContentsMargins(0, 0, 0, 0)
+        head_spacer = QWidget()
+        head_spacer.setFixedSize(28, 28)
+        head_spacer.setStyleSheet("background: transparent; border: none;")
+        head_row.addWidget(head_spacer)
+        brand = QLabel()
+        brand.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
+        brand.setTextFormat(Qt.RichText)
+        brand.setAlignment(Qt.AlignCenter)
+        brand.setText(
+            '<span style="color:#34d399; font-weight:700;">freemodel</span>'
+            '<span style="color:#d1d5db; font-weight:500;">.dev</span>')
+        brand.setStyleSheet("background: transparent; border: none;")
+        head_row.addWidget(brand, 1)
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.reject)
+        head_row.addWidget(self.btn_close)
+        lay.addLayout(head_row)
+
+        title = QLabel(tr("Вход по коду с почты"))
+        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: rgb(52,211,153); background: transparent; border: none;")
+        lay.addWidget(title)
+
+        subtitle = QLabel(tr("Введите e-mail — придёт код. Пароль вводить не нужно."))
+        subtitle.setFont(QFont("Segoe UI", 9))
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color: #B5B5B5; background: transparent; border: none;")
+        lay.addWidget(subtitle)
+
+        _input_style = """
+            QLineEdit {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(210, 210, 210);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 6px;
+                padding: 9px 10px;
+            }
+            QLineEdit:focus { border: 1px solid rgb(52,211,153); }
+            QLineEdit:disabled { color: rgb(120,120,126); }
+        """
+
+        # ── Шаг 1: e-mail + «Отправить код» ──
+        email_row = QHBoxLayout()
+        email_row.setSpacing(8)
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText("you@example.com")
+        self.email_input.setFont(QFont("Segoe UI", 10))
+        self.email_input.setStyleSheet(_input_style)
+        self.email_input.setText(email or "")
+        self.email_input.returnPressed.connect(self._on_send)
+        email_row.addWidget(self.email_input, 1)
+        self.btn_send = GreenButton(tr("Отправить код"))
+        self.btn_send.setFixedHeight(40)
+        self.btn_send.setMaximumWidth(170)
+        self.btn_send.clicked.connect(self._on_send)
+        email_row.addWidget(self.btn_send)
+        lay.addLayout(email_row)
+
+        # ── Шаг 2: код + «Подтвердить» ──
+        code_row = QHBoxLayout()
+        code_row.setSpacing(8)
+        self.code_input = QLineEdit()
+        self.code_input.setPlaceholderText(tr("Код из письма"))
+        self.code_input.setFont(QFont("Consolas", 11, QFont.Bold))
+        self.code_input.setStyleSheet(_input_style)
+        self.code_input.setEnabled(False)
+        self.code_input.returnPressed.connect(self._on_verify)
+        code_row.addWidget(self.code_input, 1)
+        self.btn_verify = GreenButton(tr("Подтвердить"))
+        self.btn_verify.setFixedHeight(40)
+        self.btn_verify.setMaximumWidth(170)
+        self.btn_verify.setEnabled(False)
+        self.btn_verify.clicked.connect(self._on_verify)
+        code_row.addWidget(self.btn_verify)
+        lay.addLayout(code_row)
+
+        # ── Строка статуса (инфо/ошибка/успех) ──
+        self.status_lbl = QLabel("")
+        self.status_lbl.setFont(QFont("Segoe UI", 9))
+        self.status_lbl.setAlignment(Qt.AlignCenter)
+        self.status_lbl.setWordWrap(True)
+        self.status_lbl.setStyleSheet("color: rgb(150,150,156); background: transparent; border: none;")
+        lay.addWidget(self.status_lbl)
+
+        main.addWidget(container)
+        self.setLayout(main)
+        self.setFixedWidth(480)
+
+        self._otp_sent.connect(self._on_otp_sent)
+        self._otp_verified.connect(self._on_otp_verified)
+
+        # Плавное появление
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(200)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    # ── Статус-хелперы ──
+    def _set_status(self, text, kind="info"):
+        colors = {"info": "rgb(150,150,156)", "error": "rgb(224,120,120)",
+                  "ok": "rgb(52,211,153)"}
+        self.status_lbl.setText(text)
+        self.status_lbl.setStyleSheet(
+            f"color: {colors.get(kind, colors['info'])}; background: transparent; border: none;")
+
+    def _set_busy(self, busy):
+        self._busy = busy
+        self.email_input.setEnabled(not busy)
+        self.btn_send.setEnabled(not busy)
+        self.code_input.setEnabled(self._code_ready and not busy)
+        self.btn_verify.setEnabled(self._code_ready and not busy)
+
+    # ── Шаг 1 ──
+    def _on_send(self):
+        if self._busy:
+            return
+        email = self.email_input.text().strip()
+        if not email or "@" not in email:
+            self._set_status(tr("Введите корректный e-mail"), "error")
+            self.email_input.setFocus()
+            return
+        self._pending_email = email
+        self._set_busy(True)
+        self._set_status(tr("Отправляем код…"), "info")
+
+        def work():
+            try:
+                fm_request_otp(email)
+                self._otp_sent.emit(True, "")
+            except Exception as e:
+                self._otp_sent.emit(False, str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_otp_sent(self, ok, msg):
+        self._set_busy(False)
+        if ok:
+            self._code_ready = True
+            self.code_input.setEnabled(True)
+            self.btn_verify.setEnabled(True)
+            self.code_input.setFocus()
+            self._set_status(tr("Код отправлен на почту. Введите его выше."), "ok")
+        else:
+            self._set_status(tr("Не удалось отправить код") + f": {msg}", "error")
+
+    # ── Шаг 2 ──
+    def _on_verify(self):
+        if self._busy or not self._code_ready:
+            return
+        code = self.code_input.text().strip()
+        if not code:
+            self._set_status(tr("Введите код из письма"), "error")
+            self.code_input.setFocus()
+            return
+        email = getattr(self, "_pending_email", self.email_input.text().strip())
+        self._set_busy(True)
+        self._set_status(tr("Проверяем код…"), "info")
+
+        def work():
+            try:
+                cookie = fm_verify_otp(email, code)
+                self._otp_verified.emit(True, cookie, email)
+            except Exception as e:
+                self._otp_verified.emit(False, str(e), email)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_otp_verified(self, ok, payload, email):
+        if ok:
+            self.result_cookie = payload
+            self.result_email = email
+            self._set_status(tr("Готово! Вход выполнен."), "ok")
+            self.accept()
+        else:
+            self._set_busy(False)
+            self._set_status(tr("Неверный код или ошибка") + f": {payload}", "error")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def _fade_out_and(self, done):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(160)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(done)
+        fade.start()
+        self._fade = fade
+
+    def accept(self):
+        self._fade_out_and(lambda: super(FreemodelOtpDialog, self).accept())
+
+    def reject(self):
+        self._fade_out_and(lambda: super(FreemodelOtpDialog, self).reject())
+
+
+class KeyEditDialog(QDialog):
+    """Редактирование имени и значения (API-ключа). Поля предзаполнены текущими
+    значениями — можно дописать/поменять. Возвращает result_name / result_value."""
+
+    def __init__(self, name="", value="", parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self.result_name = None
+        self.result_value = None
+
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(26, 20, 26, 22)
+        lay.setSpacing(12)
+
+        head_row = QHBoxLayout()
+        head_row.setContentsMargins(0, 0, 0, 0)
+        head_spacer = QWidget()
+        head_spacer.setFixedSize(28, 28)
+        head_spacer.setStyleSheet("background: transparent; border: none;")
+        head_row.addWidget(head_spacer)
+        title = QLabel(tr("Изменить ключ"))
+        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        head_row.addWidget(title, 1)
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.reject)
+        head_row.addWidget(self.btn_close)
+        lay.addLayout(head_row)
+
+        _input_style = """
+            QLineEdit {
+                background-color: rgba(30, 30, 35, 200);
+                color: rgb(210, 210, 210);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 6px;
+                padding: 9px 10px;
+            }
+            QLineEdit:focus { border: 1px solid rgb(52,211,153); }
+        """
+
+        cap_name = QLabel(tr("Название"))
+        cap_name.setFont(QFont("Segoe UI", 9))
+        cap_name.setStyleSheet("color: rgb(150,150,155); background: transparent; border: none;")
+        lay.addWidget(cap_name)
+        self.name_input = QLineEdit()
+        self.name_input.setFont(QFont("Segoe UI", 10))
+        self.name_input.setStyleSheet(_input_style)
+        self.name_input.setText(name or "")
+        # Enter в поле имени — тоже «Сохранить». Иначе Qt по умолчанию отдаёт
+        # Enter первой попавшейся кнопке в tab-order (у нас Cancel), и окно
+        # закрывалось без сохранения.
+        self.name_input.returnPressed.connect(self._on_save)
+        lay.addWidget(self.name_input)
+
+        cap_val = QLabel(tr("API ключ"))
+        cap_val.setFont(QFont("Segoe UI", 9))
+        cap_val.setStyleSheet("color: rgb(150,150,155); background: transparent; border: none;")
+        lay.addWidget(cap_val)
+        self.value_input = QLineEdit()
+        self.value_input.setFont(QFont("Consolas", 10))
+        self.value_input.setStyleSheet(_input_style)
+        self.value_input.setText(value or "")
+        self.value_input.returnPressed.connect(self._on_save)
+        lay.addWidget(self.value_input)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn.setMinimumHeight(40)
+        self.cancel_btn.setAutoDefault(False)
+        self.cancel_btn.setDefault(False)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.cancel_btn)
+        self.save_btn = GreenButton(tr("Сохранить"))
+        self.save_btn.setMinimumHeight(40)
+        self.save_btn.setDefault(True)
+        self.save_btn.clicked.connect(self._on_save)
+        btn_row.addWidget(self.save_btn)
+        lay.addLayout(btn_row)
+
+        main.addWidget(container)
+        self.setLayout(main)
+        self.setFixedWidth(460)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(200)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _on_save(self):
+        val = self.value_input.text().strip()
+        if not val:
+            self.value_input.setFocus()
+            return
+        self.result_name = self.name_input.text().strip()
+        self.result_value = val
+        self.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def _fade_out_and(self, done):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(160)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(done)
+        fade.start()
+        self._fade = fade
+
+    def accept(self):
+        self._fade_out_and(lambda: super(KeyEditDialog, self).accept())
+
+    def reject(self):
+        self._fade_out_and(lambda: super(KeyEditDialog, self).reject())
+
+
 class ApiKeyManagerDialog(QDialog):
     """Широкое окно управления API-ключами: список карточек (до 6 видимых,
     дальше скролл), создание нового ключа с именем. Единственное место, где
@@ -6231,10 +7493,23 @@ class ApiKeyManagerDialog(QDialog):
     CARD_H = 58
     GAP = 8
     MAX_VISIBLE = 4
+    EXTRA_H = 24        # запас высоты скролла
+    WIDTH = 860         # ширина окна (2 колонки)
+    COLS = 2            # карточек в ряд
+    COL_GAP = 14        # зазор между колонками
+    ROW_GAP = 12        # зазор между рядами
+    VISIBLE_ROWS = 2    # сколько рядов видно без скролла
 
-    # Эмитим при любой мутации ключа (тумблер, авто-сброс таймера) — главное
-    # окно ловит и сразу пишет settings.json, чтобы состояние переживало крэш.
+    # Эмитим при любой мутации ключа (тумблер, авто-сброс таймера, обновление
+    # метрик, reorder) — главное окно ловит и пишет settings.json БЕЗ бэкапа.
     state_changed = Signal()
+    # Эмитим ТОЛЬКО когда пользователь изменил важные пользовательские данные:
+    # добавил ключ / удалил ключ / переименовал / поменял значение / вошёл-
+    # переключил аккаунт. Главное окно ловит и делает .bakN-бэкап перед save.
+    # Метрики /api/usage, toggle, mode, reorder сюда НЕ входят.
+    keys_data_changed = Signal()
+    # Результат фонового запроса /api/usage: (key_id, dict метрик | Exception).
+    usage_fetched = Signal(str, object)
 
     def __init__(self, keys, selected_id="", parent=None, is_freemodel=False):
         super().__init__(parent)
@@ -6284,6 +7559,12 @@ class ApiKeyManagerDialog(QDialog):
         title_row.addWidget(self.btn_close)
         layout.addLayout(title_row)
 
+        hint = QLabel(tr("Клик — выбрать ключ. Зажать и тянуть — поменять порядок."))
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color: rgb(160, 160, 168); background: transparent; border: none;")
+        layout.addWidget(hint)
+
         info = QLabel(tr("Зелёный — активен. Жёлтый — 5-часовой лимит. Красный — 7-дневный лимит."))
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
@@ -6304,10 +7585,13 @@ class ApiKeyManagerDialog(QDialog):
         """)
         self.cards_host = QWidget()
         self.cards_host.setStyleSheet("background: transparent;")
-        self.cards_layout = QVBoxLayout(self.cards_host)
-        self.cards_layout.setContentsMargins(0, 0, 6, 0)
-        self.cards_layout.setSpacing(self.GAP)
-        self.cards_layout.addStretch()
+        # Карточки позиционируются ВРУЧНУЮ (2-колоночная сетка) — без layout,
+        # чтобы работали FLIP-анимации перетаскивания и «плавающая» карточка.
+        self._cards = []  # KeyCard в визуальном порядке
+        self._drag_anims = []   # держим ссылки на анимации позиций (иначе GC)
+        self._drag_active = False
+        self._drag_card = None
+        self.cards_host.installEventFilter(self)  # ловим resize → пересчёт колонок
         self.scroll.setWidget(self.cards_host)
         layout.addWidget(self.scroll)
 
@@ -6357,11 +7641,17 @@ class ApiKeyManagerDialog(QDialog):
         add_row.addWidget(self.btn_add)
         layout.addLayout(add_row)
 
+        self._container = container
         main_layout.addWidget(container)
         self.setLayout(main_layout)
-        self.setFixedWidth(620)
+        self.setFixedWidth(self.WIDTH)
 
         self._rebuild_cards()
+
+        # Результат фонового /api/usage приходит сюда (queued-connection из потока).
+        self.usage_fetched.connect(self._on_usage_fetched)
+        # Разово подтягиваем метрики всех online-ключей при открытии окна.
+        QTimer.singleShot(0, self._fetch_all_online)
 
         # Живой пересчёт: обратный отсчёт до сброса лимита + авто-включение
         # ключа по истечении таймера. Тикаем раз в секунду, чтобы отсчёт
@@ -6391,33 +7681,26 @@ class ApiKeyManagerDialog(QDialog):
             self._center_on_parent()
             self._positioned = True
 
-    def _reference_height(self):
-        """Высота, которую окно занимало бы при MAX_VISIBLE карточках (полный
-        скролл-потолок). Верх окна цепляется за эту высоту — тогда при 1-2
-        ключах окно короче снизу, но верх остаётся на том же уровне и не
-        подъезжает к переключателю Omniroute/BaseURL."""
-        return (self.MAX_VISIBLE * self.CARD_H
-                + (self.MAX_VISIBLE - 1) * self.GAP + 6  # scroll area
-                + 200)  # шапка + плейсхолдер + строка добавления + отступы
-
     def _center_on_parent(self):
         try:
+            from PySide6.QtGui import QGuiApplication
             self.adjustSize()
-            self.setFixedWidth(620)
+            self.setFixedWidth(self.WIDTH)
             dw = self.width()
-            ref_h = self._reference_height()
+            screen = QGuiApplication.primaryScreen().availableGeometry()
             parent_win = self.parent().window() if self.parent() else None
             if parent_win is not None and parent_win.isVisible():
                 pg = parent_win.frameGeometry()
                 cx = pg.center().x()
-                cy = pg.center().y()
+                # Верх диалога цепляем к ШАПКЕ родителя (а не по центру), чтобы
+                # окно поднималось вверх и перекрывало заголовок «Claude Code
+                # Manager», как просил пользователь.
+                top_y = pg.top() + 28
             else:
-                from PySide6.QtGui import QGuiApplication
-                screen = QGuiApplication.primaryScreen().availableGeometry()
                 cx = screen.center().x()
-                cy = screen.center().y()
-            # Верх диалога — как если бы он был максимальной высоты.
-            top_y = cy - ref_h // 2
+                top_y = screen.top() + 60
+            # Страховка: не залезать за верх экрана.
+            top_y = max(screen.top() + 8, top_y)
             self.move(cx - dw // 2, top_y)
         except Exception:
             pass
@@ -6437,34 +7720,143 @@ class ApiKeyManagerDialog(QDialog):
         self.accept()
 
     def _card_widgets(self):
-        cards = []
-        for i in range(self.cards_layout.count()):
-            w = self.cards_layout.itemAt(i).widget()
-            if isinstance(w, KeyCard):
-                cards.append(w)
-        return cards
+        return list(self._cards)
+
+    # ── Перетаскивание самого окна (frameless — своего заголовка у него нет) ──
+    def mousePressEvent(self, event):
+        # Сюда событие доходит только если его не «съел» дочерний виджет
+        # (карточки/кнопки/скролл жуют свои клики сами) — значит нажали по
+        # шапке/фону/полям диалога. Это и есть зона захвата для переноса окна.
+        if event.button() == Qt.LeftButton:
+            self._win_drag_offset = (event.globalPosition().toPoint()
+                                     - self.frameGeometry().topLeft())
+            self._win_dragging = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, "_win_dragging", False) and (event.buttons() & Qt.LeftButton):
+            self.move(event.globalPosition().toPoint() - self._win_drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if getattr(self, "_win_dragging", False):
+            self._win_dragging = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def eventFilter(self, obj, event):
+        # Ширина cards_host изменилась (ресайз/первый показ) — пересчитать колонки.
+        if obj is self.cards_host and event.type() == QEvent.Resize:
+            if not getattr(self, "_drag_active", False):
+                self._layout_grid(animate=False)
+        return super().eventFilter(obj, event)
+
+    def _grid_positions(self, order):
+        """Позиции карточек в 2-колоночной сетке (reading-order, слева-направо,
+        сверху-вниз). Высота ряда = самой высокой карточке ряда (online выше).
+        Возвращает (positions:{card->(x,y)}, row_heights:list, total_h, col_w)."""
+        cols = self.COLS
+        host_w = max(self.cards_host.width(), 200)
+        col_w = (host_w - self.COL_GAP * (cols - 1)) // cols
+        positions = {}
+        row_heights = []
+        y = 0
+        for i in range(0, len(order), cols):
+            row = order[i:i + cols]
+            row_h = max((c.height() for c in row), default=self.CARD_H)
+            row_heights.append(row_h)
+            for col, c in enumerate(row):
+                x = col * (col_w + self.COL_GAP)
+                positions[c] = (x, y)
+            y += row_h + self.ROW_GAP
+        total_h = max(0, y - self.ROW_GAP)
+        return positions, row_heights, total_h, col_w
+
+    def _layout_grid(self, animate=False):
+        """Расставляет карточки по сетке; при animate — плавно (FLIP-разъезд)."""
+        order = self._cards
+        positions, _rows, total_h, col_w = self._grid_positions(order)
+        for c in order:
+            if c.width() != col_w:
+                c.setFixedWidth(col_w)
+            x, y = positions[c]
+            if animate and c.pos() != QPoint(x, y):
+                self._animate_card_to_xy(c, x, y)
+            else:
+                c.move(x, y)
+        self.cards_host.setMinimumHeight(total_h)
+        self._recompute_scroll_height()
+
+    def _recompute_scroll_height(self):
+        """Высота скролл-области рассчитана на VISIBLE_ROWS рядов. Берём САМЫЕ
+        ВЫСОКИЕ ряды (а не первые), чтобы при включении online у карточки в
+        3-м+ ряду окно тоже выросло — иначе высокая online-карточка «под
+        сгибом» не помещалась и окно не раскрывалось."""
+        if not self._cards:
+            self.scroll.setFixedHeight(self.CARD_H + 6)
+            return
+        _pos, row_heights, _total, _cw = self._grid_positions(self._cards)
+        vis = sorted(row_heights, reverse=True)[:self.VISIBLE_ROWS]
+        total = sum(vis) + (len(vis) - 1) * self.ROW_GAP + 6 + self.EXTRA_H
+        self.scroll.setFixedHeight(total)
+
+    def _on_card_height_changed(self):
+        """Карточка сменила режим (manual↔online) и стала выше/ниже — пересчитываем
+        сетку и переподгоняем окно. Тонкий момент: карточка позиционируется
+        ВРУЧНУЮ (не в лейауте) — после её `setFixedHeight` реальная геометрия
+        обновляется только на СЛЕДУЮЩЕМ тике event-loop. Если пересчитывать
+        сетку синхронно (в этом же тике), `c.height()` возвращает СТАРУЮ высоту
+        → окно раздувается вверх и вниз при выключении online в среднем/нижнем
+        ряду. Решение: (1) отключаем отрисовку сразу — межкадровый глюк не
+        попадёт на экран; (2) откладываем relayout на следующий тик — геометрия
+        карточек уже правильная; (3) включаем отрисовку — виден только финал."""
+        if getattr(self, "_refit_pending", False):
+            return
+        self._refit_pending = True
+        self.setUpdatesEnabled(False)
+        QTimer.singleShot(0, self._do_relayout_after_size)
+
+    def _do_relayout_after_size(self):
+        try:
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(16777215, 16777215)
+            self._layout_grid(animate=False)
+            self._refit_window()
+        finally:
+            self._refit_pending = False
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def _rebuild_cards(self):
         # удалить старые карточки
-        for w in self._card_widgets():
+        for w in self._cards:
             w.setParent(None)
             w.deleteLater()
-        # вставить актуальные (перед финальным stretch)
-        insert_at = 0
+        self._cards = []
         for key in self.keys:
-            card = KeyCard(key, is_freemodel=self._is_freemodel)
+            card = KeyCard(key, parent=self.cards_host, is_freemodel=self._is_freemodel)
             card.toggled.connect(self._on_card_toggle)
             card.changed.connect(self._on_card_changed)
+            card.data_changed.connect(lambda _kid: self.keys_data_changed.emit())
             card.delete_requested.connect(self._on_card_delete)
             card.select_requested.connect(self._on_card_select)
+            card.usage_refresh_requested.connect(self._fetch_usage_for_id)
+            card.height_changed.connect(self._on_card_height_changed)
+            card.drag_started.connect(self._on_drag_started)
+            card.drag_moved.connect(self._on_drag_moved)
+            card.drag_finished.connect(self._on_drag_finished)
             card.set_selected(key.get("id") == self.selected_id)
-            self.cards_layout.insertWidget(insert_at, card)
-            insert_at += 1
+            card.show()
+            self._cards.append(card)
         n = len(self.keys)
         self.empty_lbl.setVisible(n == 0)
         self.scroll.setVisible(n > 0)
-        vis = max(1, min(self.MAX_VISIBLE, n))
-        self.scroll.setFixedHeight(vis * self.CARD_H + (vis - 1) * self.GAP + 6)
+        self._layout_grid(animate=False)
         # После изменения количества карточек окно должно и расти, и
         # уменьшаться. По умолчанию QDialog запоминает наибольший вычисленный
         # sizeHint как минимум — сбрасываем ограничения и переподгоняем размер.
@@ -6479,15 +7871,138 @@ class ApiKeyManagerDialog(QDialog):
         # каждый раз, когда пользователь удаляет ключ.
         top_left = self.pos()
         self.layout().activate()
+        # ВАЖНО: adjustSize() у QDialog нестабильно РАСТИТ окно (Qt держит
+        # предыдущий размер как минимум и не поднимается к sizeHint, если тот
+        # больше). Считаем нужную высоту руками из sizeHint и форсируем resize
+        # — иначе окно, ужавшееся после выключения online, не вырастает обратно
+        # при включении online.
         self.adjustSize()
-        self.setFixedWidth(620)
+        target_h = max(self.sizeHint().height(), self.minimumSizeHint().height())
+        self.resize(self.WIDTH, target_h)
+        self.setFixedWidth(self.WIDTH)
         # Восстанавливаем позицию — если она уже была задана (после первого показа).
         if getattr(self, "_positioned", False):
             self.move(top_left)
+        # Принудительная полная перерисовка. На frameless + translucent-окне
+        # после add/delete карточки остаются «призраки» удалённого виджета
+        # поверх строки добавления, пока не наведёшь мышь (нет события paint).
+        # Дёргаем repaint контейнера и вьюпорта скролла явно.
+        self._container.update()
+        self.scroll.viewport().update()
+        self.update()
+        self.repaint()
 
     def _apply_selection_to_cards(self):
         for card in self._card_widgets():
             card.set_selected(card.key.get("id") == self.selected_id)
+
+    # ── Перетаскивание карточек (2D-сетка, FLIP-разъезд) ─────────────────
+    def _animate_card_to_xy(self, card, x, y, dur=260):
+        anim = QPropertyAnimation(card, b"pos", self)
+        anim.setDuration(dur)
+        anim.setStartValue(card.pos())
+        anim.setEndValue(QPoint(int(x), int(y)))
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+        # держим ссылки только на живые анимации (иначе список растёт бесконечно)
+        self._drag_anims = [a for a in self._drag_anims
+                            if a.state() == QPropertyAnimation.Running]
+        self._drag_anims.append(anim)
+
+    def _on_drag_started(self, card):
+        if getattr(self, "_drag_active", False):
+            return
+        cards = self._card_widgets()
+        if card not in cards or len(cards) < 2:
+            return
+        self._drag_active = True
+        self._drag_card = card
+        self._drag_anims = []
+        self._drag_order = list(cards)
+        # смещение курсора внутри карточки (в момент нажатия)
+        grab = getattr(card, "_press_local", QPoint(20, 20))
+        self._drag_grab_dx = grab.x()
+        self._drag_grab_dy = grab.y()
+        card.set_dragging(True)
+        card.raise_()
+
+    def _drag_insert_index(self, cursor_x, cursor_y):
+        """Reading-order (как dndInsertBefore из api.html): индекс, ПЕРЕД которым
+        встанет перетаскиваемая карточка. Геометрия — из текущей раскладки."""
+        card = self._drag_card
+        positions, _rows, _total, col_w = self._grid_positions(self._drag_order)
+        idx = 0
+        for c in self._drag_order:
+            if c is card:
+                continue
+            x, y = positions[c]
+            cx = x + col_w / 2.0
+            if cursor_y < y + c.height() and (cursor_y < y or cursor_x < cx):
+                return idx
+            idx += 1
+        return idx  # в самый конец
+
+    def _on_drag_moved(self, card, global_pos):
+        if not getattr(self, "_drag_active", False) or card is not self._drag_card:
+            return
+        host = self.cards_host
+        # позиция курсора внутри host (нужны и X, и Y для сетки)
+        pt = host.mapFromGlobal(global_pos)
+        new_x = pt.x() - self._drag_grab_dx
+        new_y = pt.y() - self._drag_grab_dy
+        new_x = max(0, min(new_x, max(0, host.width() - card.width())))
+        new_y = max(0, min(new_y, max(0, host.height() - card.height())))
+        card.move(int(new_x), int(new_y))
+        card.raise_()
+        self._drag_autoscroll(global_pos.y())
+        # индекс вставки — по позиции КУРСORA (как dndInsertBefore в api.html)
+        others = [c for c in self._drag_order if c is not card]
+        insert_at = self._drag_insert_index(pt.x(), pt.y())
+        new_order = others[:insert_at] + [card] + others[insert_at:]
+        if new_order != self._drag_order:
+            self._drag_order = new_order
+            positions, _r, total_h, _cw = self._grid_positions(new_order)
+            self.cards_host.setMinimumHeight(total_h)
+            # плавно разъезжаемся: двигаем всех, кроме перетаскиваемой
+            for c in new_order:
+                if c is card:
+                    continue
+                x, y = positions[c]
+                if c.pos() != QPoint(x, y):
+                    self._animate_card_to_xy(c, x, y)
+
+    def _drag_autoscroll(self, global_y):
+        bar = self.scroll.verticalScrollBar()
+        if bar.maximum() <= 0:
+            return
+        vp = self.scroll.viewport()
+        top = vp.mapToGlobal(QPoint(0, 0)).y()
+        bottom = top + vp.height()
+        if global_y < top + 26:
+            bar.setValue(bar.value() - 12)
+        elif global_y > bottom - 26:
+            bar.setValue(bar.value() + 12)
+
+    def _on_drag_finished(self, card):
+        if not getattr(self, "_drag_active", False) or card is not self._drag_card:
+            return
+        order = list(self._drag_order)
+        positions, _r, total_h, _cw = self._grid_positions(order)
+        card.set_dragging(False)
+        # карточка мягко «приземляется» в свой слот
+        x, y = positions[card]
+        self._animate_card_to_xy(card, x, y, dur=240)
+        self.cards_host.setMinimumHeight(total_h)
+
+        def _commit():
+            self._cards = order
+            id_order = [c.key.get("id") for c in order]
+            self.keys.sort(key=lambda k: id_order.index(k.get("id")))
+            self._drag_active = False
+            self._drag_card = None
+            self._recompute_scroll_height()
+            self.state_changed.emit()
+        QTimer.singleShot(250, _commit)
 
     def _on_card_select(self, key_id):
         # Выбираем только зелёные ключи (жёлтые/красные — сначала подтвердить/включить).
@@ -6538,6 +8053,8 @@ class ApiKeyManagerDialog(QDialog):
         if self.selected_id == key_id:
             self.selected_id = ""
         self._rebuild_cards()
+        # Удаление ключа — важное изменение → окно сделает .bakN.
+        self.keys_data_changed.emit()
 
     def add_key(self):
         val = self.key_input.text().strip()
@@ -6559,6 +8076,8 @@ class ApiKeyManagerDialog(QDialog):
         self.name_input.clear()
         self.key_input.clear()
         self._rebuild_cards()
+        # Добавление ключа — важное изменение → окно сделает .bakN.
+        self.keys_data_changed.emit()
         # прокрутить вниз к новому ключу
         QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(
             self.scroll.verticalScrollBar().maximum()))
@@ -6566,6 +8085,55 @@ class ApiKeyManagerDialog(QDialog):
     def _refresh_states(self):
         for card in self._card_widgets():
             card.refresh_state()
+
+    # ── Online-режим: фоновый запрос реальных метрик /api/usage ──
+    def _card_by_id(self, key_id):
+        for card in self._card_widgets():
+            if card.key.get("id") == key_id:
+                return card
+        return None
+
+    def _fetch_usage_for_id(self, key_id):
+        """Запускает daemon-поток, который тянет /api/usage по cookie ключа.
+        Результат (или ошибка) приходит в GUI-поток через usage_fetched."""
+        key = next((k for k in self.keys if k.get("id") == key_id), None)
+        if not key:
+            return
+        cookie = (key.get("session_cookie") or "").strip()
+        if not cookie:
+            return
+
+        def work():
+            try:
+                fields = fm_fetch_account_state(cookie)  # usage + billing
+                self.usage_fetched.emit(key_id, fields)
+            except Exception as e:
+                self.usage_fetched.emit(key_id, e)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _fetch_all_online(self):
+        """Разово подтягивает метрики для всех online-ключей с cookie."""
+        for k in self.keys:
+            if k.get("mode") == "online" and (k.get("session_cookie") or "").strip():
+                self._fetch_usage_for_id(k.get("id", ""))
+
+    def _on_usage_fetched(self, key_id, result):
+        """Слот usage_fetched (GUI-поток): пишет метрики в dict ключа,
+        обновляет карточку и сохраняет settings через state_changed."""
+        key = next((k for k in self.keys if k.get("id") == key_id), None)
+        if not key:
+            return
+        if isinstance(result, Exception):
+            key["usage_error"] = _fm_usage_error_text(result)
+            key["usage_fetched_at"] = time.time()
+        elif isinstance(result, dict):
+            key.update(result)  # уже распарсенные поля (usage + billing)
+        card = self._card_by_id(key_id)
+        if card is not None:
+            card.refresh_online_view()
+        # Персистим кэш метрик на диск.
+        self.state_changed.emit()
 
     def get_result(self):
         return [dict(k) for k in self.keys], self.selected_id
@@ -8913,6 +10481,7 @@ class ClaudeManager(QMainWindow):
     claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
     claude_install_finished = Signal(object)  # context dict
     claude_uninstall_finished = Signal(object)  # context dict (по образцу install)
+    _online_usage_polled = Signal(str, object)  # (key_id, data|Exception) — фоновый /api/usage
 
     def __init__(self):
         super().__init__()
@@ -9782,6 +11351,15 @@ class ClaudeManager(QMainWindow):
         )
         self._claude_version_timer.start(60 * 60 * 1000)  # 1 час
 
+        # ── Фоновый опрос online-ключей FreeModel (реальные метрики /api/usage) ──
+        # Держим авто-статус свежим даже когда окно управления ключами закрыто,
+        # чтобы балансир (first_active_key) учитывал реальный расход аккаунта.
+        self._online_usage_polled.connect(self._on_online_usage_polled)
+        self._online_poll_timer = QTimer(self)
+        self._online_poll_timer.timeout.connect(self._poll_online_keys)
+        self._online_poll_timer.start(60 * 1000)  # раз в 60 секунд
+        QTimer.singleShot(1500, self._poll_online_keys)
+
         # Первая проверка
         self._print_console_banner()
         self.check_status_async()
@@ -9789,6 +11367,51 @@ class ClaudeManager(QMainWindow):
         # Проверка наличия Node.js/npm — если нет, показываем окно с прямой ссылкой
         # на скачивание. Через singleShot, чтобы UI успел полностью отрисоваться.
         QTimer.singleShot(400, self._check_nodejs_on_startup)
+
+    def _poll_online_keys(self):
+        """Тянет /api/usage для всех online-ключей с cookie в фоновых потоках.
+        Результат приходит в GUI-поток через _online_usage_polled."""
+        try:
+            keys = self.settings.get("api_keys", [])
+        except Exception:
+            return
+        for k in keys:
+            if k.get("mode") != "online":
+                continue
+            cookie = (k.get("session_cookie") or "").strip()
+            if not cookie:
+                continue
+            kid = k.get("id", "")
+
+            def work(kid=kid, cookie=cookie):
+                try:
+                    fields = fm_fetch_account_state(cookie)  # usage + billing
+                    self._online_usage_polled.emit(kid, fields)
+                except Exception as e:
+                    self._online_usage_polled.emit(kid, e)
+
+            threading.Thread(target=work, daemon=True).start()
+
+    def _on_online_usage_polled(self, key_id, result):
+        """Слот _online_usage_polled (GUI-поток): пишет метрики в settings и
+        пересобирает активный ключ балансира по свежим данным."""
+        keys = self.settings.get("api_keys", [])
+        key = next((k for k in keys if k.get("id") == key_id), None)
+        if not key:
+            return
+        if isinstance(result, Exception):
+            key["usage_error"] = _fm_usage_error_text(result)
+            key["usage_fetched_at"] = time.time()
+        elif isinstance(result, dict):
+            key.update(result)  # уже распарсенные поля (usage + billing)
+        # Реальный расход мог перевести ключ в не-зелёный — обновляем выбор
+        # активного ключа и сохраняем кэш на диск.
+        sync_custom_api_key(self.settings)
+        save_settings(self.settings)
+        try:
+            self._refresh_active_key_display()
+        except Exception:
+            pass
 
     def _check_nodejs_on_startup(self):
         """Однократная проверка npm при старте. Если npm нет — показывает окно
@@ -10439,14 +12062,20 @@ class ClaudeManager(QMainWindow):
                 self.settings.get("custom_base_url", "")),
         )
         # Пока диалог открыт, любая мутация ключа (клик тумблера, авто-сброс
-        # таймера лимита) должна тут же сохраняться на диск — чтобы состояние
-        # переживало неожиданное закрытие приложения.
+        # таймера лимита, обновление метрик) должна тут же сохраняться на диск,
+        # чтобы состояние переживало неожиданное закрытие приложения — но БЕЗ
+        # бэкапа, иначе .bakN засоряется каждой автометрикой.
         dlg.state_changed.connect(lambda: self._persist_key_state(dlg))
+        # А вот для важных пользовательских изменений (add/delete/edit-name/
+        # edit-value/логин) — сохраняем с .bakN бэкапом.
+        dlg.keys_data_changed.connect(lambda: self._persist_key_state(dlg, with_backup=True))
         dlg.exec()
         keys, selected_id = dlg.get_result()
         self.settings["api_keys"] = keys
         self.settings["selected_key_id"] = selected_id
         sync_custom_api_key(self.settings)
+        # Финальное сохранение при закрытии окна — БЕЗ бэкапа. Все важные
+        # изменения уже вызвали свой .bakN во время работы диалога.
         save_settings(self.settings)
         self._refresh_active_key_display()
         # Активный ключ мог смениться — обновим модель в ~/.claude/settings.json
@@ -10457,16 +12086,24 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
 
-    def _persist_key_state(self, dlg):
-        """Слот сигнала ApiKeyManagerDialog.state_changed: подхватывает
-        текущее состояние ключей из открытого диалога и пишет settings.json,
-        не дожидаясь закрытия окна."""
+    def _persist_key_state(self, dlg, with_backup=False):
+        """Слот сигнала ApiKeyManagerDialog: подхватывает текущее состояние
+        ключей из открытого диалога и пишет settings.json, не дожидаясь
+        закрытия окна.
+
+        with_backup=True — вызывается на важные изменения (add/delete/edit-
+        имя/edit-значение/login), сначала снимает .bakN бэкап.
+        with_backup=False (по умолчанию) — для тривиальных мутаций (метрики,
+        toggle, mode, reorder), пишет без бэкапа."""
         try:
             keys, selected_id = dlg.get_result()
             self.settings["api_keys"] = keys
             self.settings["selected_key_id"] = selected_id
             sync_custom_api_key(self.settings)
-            save_settings(self.settings)
+            if with_backup:
+                save_settings_with_backup(self.settings)
+            else:
+                save_settings(self.settings)
             self._refresh_active_key_display()
         except Exception as e:
             print(f"[_persist_key_state] Не удалось сохранить: {e}")
