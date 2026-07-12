@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7.5"  # Для обновлений
+APP_VERSION = "5.7.6"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -259,7 +259,7 @@ def _default_settings():
         "custom_base_urls": [
             "https://cc.freemodel.dev"
         ],
-        "custom_model": "",
+        "custom_model": "Opus 4.8",
         "custom_endpoint": "",
         "app_language": "ru",
         "auto_update_enabled": True,
@@ -491,18 +491,28 @@ def key_color_state(key):
         return "yellow"
     return "red"  # '7d' или неизвестный → красный
 
+def key_is_usable(key):
+    """Можно ли выбрать/использовать этот ключ.
+    Зелёные — да. Красные ИЗ-ЗА ИСТЁКШЕЙ Pro-подписки — тоже да: сам аккаунт
+    рабочий, юзер может продлить оплату отдельно. Остальные красные (7-дневный
+    лимит, ручной disable) и жёлтые (5-часовой лимит) — нет."""
+    if key_color_state(key) == "green":
+        return True
+    return key.get("mode") == "online" and fm_sub_expired(key)
+
 def first_active_key(settings):
     """Активный ключ, который реально пойдёт в ANTHROPIC_API_KEY.
-    Приоритет: явно выбранный пользователем (selected_key_id), если он зелёный;
-    иначе — первый зелёный по порядку."""
+    Приоритет: явно выбранный пользователем (selected_key_id), если он
+    пригоден; иначе — первый пригодный по порядку. «Пригодный» = зелёный
+    или online с истёкшей Pro-подпиской."""
     keys = settings.get("api_keys", [])
     sel_id = settings.get("selected_key_id") or ""
     if sel_id:
         for k in keys:
-            if k.get("id") == sel_id and key_color_state(k) == "green":
+            if k.get("id") == sel_id and key_is_usable(k):
                 return k
     for k in keys:
-        if key_color_state(k) == "green":
+        if key_is_usable(k):
             return k
     return None
 
@@ -1026,8 +1036,7 @@ TRANSLATIONS = {
     "пропишет туда обратно само — настройки лежат в нём отдельно "
     "и не теряются.<br>"
     "• <code>DISABLE_UPDATES=1</code> — официальный способ выключить "
-    "автообновление Claude Code; без него CLI рано или поздно "
-    "обновится с зафиксированной v":
+    "автообновление Claude Code.":
         "• the original <code>~/.claude.json</code> is <b>not deleted</b> — "
         "it stays as <code>.bak</code> and can be restored.<br>"
         "• a fresh <code>~/.claude.json</code> will be created with "
@@ -1039,11 +1048,7 @@ TRANSLATIONS = {
         "and hangs at Retrying). Model, effort and token are written back "
         "by the app itself — those settings live separately and are not lost.<br>"
         "• <code>DISABLE_UPDATES=1</code> is the official way to disable "
-        "automatic updates of Claude Code; without it the CLI will "
-        "sooner or later update from the pinned v",
-    " до более новой версии, где FreeModel / Omniroute / прокси "
-    "уже не работают.":
-        " to a newer version where FreeModel / Omniroute / proxy no longer work.",
+        "automatic updates of Claude Code.",
     "Нажимай, только если у тебя реально проблемы: "
     "Claude Code не отвечает, выдаёт ошибки API, или ведёт себя странно "
     "после смены способа авторизации.":
@@ -8013,9 +8018,11 @@ class ApiKeyManagerDialog(QDialog):
         QTimer.singleShot(250, _commit)
 
     def _on_card_select(self, key_id):
-        # Выбираем только зелёные ключи (жёлтые/красные — сначала подтвердить/включить).
+        # Выбираем зелёные ключи + красные из-за истёкшей Pro-подписки (аккаунт
+        # рабочий, юзер может использовать; лимиты — отдельно).
+        # Жёлтые (5ч) и красные (7д / manual off) — по-прежнему не выбираются.
         key = next((k for k in self.keys if k.get("id") == key_id), None)
-        if not key or key_color_state(key) != "green":
+        if not key or not key_is_usable(key):
             return
         if self.selected_id == key_id:
             return
@@ -8030,7 +8037,7 @@ class ApiKeyManagerDialog(QDialog):
             self.selected_id = ""
         elif on and not self.selected_id:
             key = next((k for k in self.keys if k.get("id") == key_id), None)
-            if key and key_color_state(key) == "green":
+            if key and key_is_usable(key):
                 self.selected_id = key_id
         self._apply_selection_to_cards()
 
@@ -8618,10 +8625,13 @@ class CustomTokenDialog(QDialog):
             "claude-opus-4-6": "Opus 4.6",
             "claude-fable-5": "Fable 5",
         }
-        saved_model = settings.get("custom_model", "Opus 4.8")
+        # Пустая строка "" (старый дефолт) тоже должна раскрываться в Opus 4.8,
+        # иначе комбо остаётся на первом элементе списка (Fable 5).
+        saved_model = settings.get("custom_model") or "Opus 4.8"
         saved_model = model_remap.get(saved_model, saved_model)
-        if saved_model in models:
-            self.model_combo.setCurrentText(saved_model)
+        if saved_model not in models:
+            saved_model = "Opus 4.8"
+        self.model_combo.setCurrentText(saved_model)
         layout.addWidget(self.model_combo)
 
         # Кнопки
@@ -9780,10 +9790,7 @@ class ClaudeJsonFixDialog(QDialog):
                  "пропишет туда обратно само — настройки лежат в нём отдельно "
                  "и не теряются.<br>"
                  "• <code>DISABLE_UPDATES=1</code> — официальный способ выключить "
-                 "автообновление Claude Code; без него CLI рано или поздно "
-                 "обновится с зафиксированной v") + REQUIRED_CLAUDE_VERSION +
-            tr(" до более новой версии, где FreeModel / Omniroute / прокси "
-               "уже не работают.")
+                 "автообновление Claude Code.")
         )
 
         message_label = QLabel(message)
@@ -11049,7 +11056,10 @@ class ClaudeManager(QMainWindow):
             tooltips=model_tooltips,
             title=tr("Выбор модели"),
         )
-        saved_m = self.settings.get("custom_model", "Opus 4.8")
+        # Пустая строка "" (старый дефолт первого запуска) тоже разворачивается
+        # в Opus 4.8, иначе комбо остаётся на первом элементе списка (Fable 5)
+        # и цвет/рамка не применяются — «модель не светится».
+        saved_m = self.settings.get("custom_model") or "Opus 4.8"
         remap = {
             "default (claude-opus-4-8)": "Opus 4.8",
             "Opus 4.8 (default)": "Opus 4.8",
@@ -11061,14 +11071,19 @@ class ClaudeManager(QMainWindow):
             "claude-fable-5": "Fable 5",
         }
         saved_m = remap.get(saved_m, saved_m)
-        if saved_m in fm_models:
-            self.fm_model_combo.setCurrentText(saved_m)
+        if saved_m not in fm_models:
+            saved_m = "Opus 4.8"
+        self.fm_model_combo.setCurrentText(saved_m)
         # Начальный цвет текста и рамки под выбранную модель
         if saved_m in model_colors:
             self.fm_model_combo.setTextColor(model_colors[saved_m])
             self.fm_model_combo.setAccentColor(model_colors[saved_m])
         # Запомнить исходную модель для отката при отмене предупреждения
-        self._fm_prev_model = saved_m if saved_m in fm_models else "Opus 4.8"
+        self._fm_prev_model = saved_m
+        # Синхронизируем в settings — если первый запуск с "" в custom_model,
+        # чтобы дальше по коду везде было консистентно "Opus 4.8"
+        if self.settings.get("custom_model") != saved_m:
+            self.settings["custom_model"] = saved_m
         self.fm_model_combo.currentTextChanged.connect(self._fm_model_changed)
         # ModelDialog теперь эмитит и модель, и effort одним сигналом
         try:
