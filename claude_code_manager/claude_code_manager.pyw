@@ -468,6 +468,16 @@ def _online_color_state(key):
         return "yellow"
     return "green"
 
+def key_time_expired(key):
+    """True если ключ старше срока валидности (30 дней) от created_at.
+    Актуально только когда карточка НЕ подключена к живым метрикам —
+    для online-карточки с логином истечение считаем через /api/usage."""
+    created = key.get("created_at", 0) or 0
+    if not created:
+        return False
+    valid_seconds = 30 * 86400
+    return time.time() >= created + valid_seconds
+
 def key_color_state(key):
     """green / red / yellow — визуальное состояние ключа.
     - enabled=True                     → green (активен).
@@ -475,10 +485,19 @@ def key_color_state(key):
     - enabled=False, limit_type='7d'   → red (7-дневный лимит).
     - enabled=False без корректного типа → red (fallback, старые записи).
     Если resets_at уже наступил, считаем ключ включённым (green) — авто-сброс.
-    В online-режиме статус считается из реальных метрик /api/usage.
+    В online-режиме С АКТИВНЫМ ЛОГИНОМ статус берётся из реальных метрик
+    /api/usage. Всё остальное (manual или online БЕЗ входа) — единая логика
+    на основе тумблера/лимита/срока жизни: пользователь хочет чтобы статус
+    подчинялся тем же правилам, что и в manual, независимо от положения
+    online-ползунка, пока карточка не залогинена в аккаунт.
     """
-    if key.get("mode") == "online":
+    # Online + реально залогинен → верим /api/usage; таймер жизни игнорируем.
+    if key.get("mode") == "online" and (key.get("session_cookie") or "").strip():
         return _online_color_state(key)
+    # Manual или online-без-входа: единая логика.
+    # Таймер жизни ключа истёк (created_at + 30 дней) → сразу red.
+    if key_time_expired(key):
+        return "red"
     if key.get("enabled", False):
         return "green"
     # Если таймер лимита уже истёк — визуально ключ уже активен.
@@ -493,12 +512,19 @@ def key_color_state(key):
 
 def key_is_usable(key):
     """Можно ли выбрать/использовать этот ключ.
-    Зелёные — да. Красные ИЗ-ЗА ИСТЁКШЕЙ Pro-подписки — тоже да: сам аккаунт
-    рабочий, юзер может продлить оплату отдельно. Остальные красные (7-дневный
-    лимит, ручной disable) и жёлтые (5-часовой лимит) — нет."""
-    if key_color_state(key) == "green":
+    - Зелёные (активные, без лимитов) — да.
+    - Жёлтые/красные из-за лимита (5ч/недельный) — нет, ключ реально
+      заблокирован окном, кидать на него запросы бесполезно.
+    - Исключение: если ключ «истёк» (созданный срок жизни ушёл, либо
+      Pro-подписка кончилась) — разрешаем выбирать, пусть пользователь
+      сам решает, использовать такую карточку или обновить."""
+    if not key:
+        return False
+    # Истёкший срок жизни / истёкшая Pro-подписка — исключение.
+    if key_time_expired(key) or fm_sub_expired(key):
         return True
-    return key.get("mode") == "online" and fm_sub_expired(key)
+    # Всё остальное: только зелёные пригодны.
+    return key_color_state(key) == "green"
 
 def first_active_key(settings):
     """Активный ключ, который реально пойдёт в ANTHROPIC_API_KEY.
@@ -595,6 +621,12 @@ def migrate_api_keys(settings):
             "value": val,
             "enabled": enabled,
             "activated_at": k.get("activated_at", 0) or 0,
+            # created_at — дата «создания» ключа (эпоха). Отсчёт 30 дней в
+            # manual/logged-out режиме идёт от неё; пользователь может править
+            # её вручную через KeyEditDialog. Для старых записей без поля —
+            # берём activated_at, иначе now, чтобы не показывать «срок истёк»
+            # сразу после апдейта приложения.
+            "created_at": _num("created_at") or _num("activated_at") or time.time(),
             "limit_type": limit_type if not enabled else "",
             "resets_at": resets_at if not enabled else 0,
             # online-режим
@@ -763,6 +795,11 @@ TRANSLATIONS = {
     "Сначала войдите по коду с почты": "Log in by e-mail code first",
     "5ч лимит": "5h limit",
     "недельный лимит": "weekly limit",
+    # Короткие формы + префикс — используются в _update_status_text: перед
+    # любым не-«активен» статусом сначала пишется «лимит», потом сам тип.
+    "лимит": "limit",
+    "5ч": "5h",
+    "недельный": "weekly",
     # ── диалог входа по коду с почты (OTP) ──
     "Вход по коду с почты": "Log in by e-mail code",
     "Введите e-mail — придёт код. Пароль вводить не нужно.":
@@ -789,8 +826,21 @@ TRANSLATIONS = {
     "осталось": "left",
     "дн.": "days",
     "ч.": "h",
+    # ── срок жизни ключа ──
+    "срок ключа истёк": "key expired",
+    "Создан": "Created",
+    "Срок действия ключа": "Key validity period",
+    "Сколько ещё будет действовать ключ?": "How much longer will the key be valid?",
+    "Изменить срок действия ключа": "Change key validity period",
+    "Максимум": "Maximum",
+    # ── подтверждение включения ключа с активным лимитом ──
+    "Включить ключ?": "Enable the key?",
+    "У ключа стоит лимит. Если включить его сейчас, лимит сбросится и ключ снова пойдёт в работу.":
+        "The key has an active limit. Enabling it now will reset the limit and the key will be used again.",
+    "Да, включить": "Yes, enable",
     # ── редактирование ключа ──
     "Изменить ключ": "Edit key",
+    "Изменить дату создания ключа": "Change key creation date",
     "API ключ": "API key",
     "Сохранить": "Save",
     "Подтвердить": "Confirm",
@@ -5529,8 +5579,20 @@ class KeyCard(QFrame):
         # Для FreeModel-эндпоинтов окно лимита спрашивает точное время сброса
         # (UTC+8, AM/PM), как на дашборде; иначе — привычную длительность.
         self._is_freemodel = bool(is_freemodel)
-        self._MANUAL_H = 58
+        # Верхний ряд с тумблером/именем/значением/режимом всегда фикс-высоты;
+        # строка «Создан … · осталось …» вынесена в отдельную полосу ПОД верхним
+        # рядом, чтобы занимать всю ширину карточки (иначе длинный текст не
+        # влезал в info-колонку и приходилось резать по elidedText).
+        self._TOP_H = 58
+        self._EXP_H = 18           # высота полосы «Создан … · осталось …»
+        self._MANUAL_H_BASE = self._TOP_H                  # без полосы таймера
+        self._MANUAL_H_TIMER = self._TOP_H + self._EXP_H   # с ней
+        self._MANUAL_H = self._MANUAL_H_BASE
         self._ONLINE_H = 200  # высота раскрытой online-секции (аккаунт + кнопки + подписка + 2 полоски + подвал)
+        # Срок жизни ключа (дней) — отсчёт от created_at. Используется только
+        # когда карточка НЕ подключена к живым метрикам (manual или online
+        # без входа). Онлайн-карточка с логином показывает реальные лимиты.
+        self._VALID_DAYS = 30
         self.setFixedHeight(self._MANUAL_H)
         self.setCursor(Qt.PointingHandCursor)
         state = key_color_state(key)
@@ -5552,16 +5614,31 @@ class KeyCard(QFrame):
         # ── Верхняя строка (как раньше): тумблер/имя/значение/статус/глаз/крестик ──
         self.top_row_w = QWidget()
         self.top_row_w.setStyleSheet("background: transparent;")
-        self.top_row_w.setFixedHeight(self._MANUAL_H)
+        self.top_row_w.setFixedHeight(self._TOP_H)
         lay = QHBoxLayout(self.top_row_w)
         lay.setContentsMargins(12, 8, 10, 8)
         lay.setSpacing(7)
 
         # Ползунок в позиции ON только когда ключ действительно активен (зелёный).
         # Жёлтый и красный — оба означают OFF, ползунок слева.
+        # Ползунок и статус («активен», «5ч лимит», …) живут в одной
+        # вертикальной колонке — статус ПОД ползунком, чтобы визуально
+        # относиться к нему (это ползунок таймера/лимита). В online-режиме
+        # колонка целиком скрыта, а статус переезжает в правый нижний угол.
         self.toggle = KeyToggle(on=(state == "green"))
         self.toggle.toggled.connect(self._on_toggle)
-        lay.addWidget(self.toggle, 0, Qt.AlignVCenter)
+        self.toggle_col_w = QWidget()
+        self.toggle_col_w.setStyleSheet("background: transparent;")
+        toggle_col = QVBoxLayout(self.toggle_col_w)
+        toggle_col.setContentsMargins(0, 0, 0, 0)
+        toggle_col.setSpacing(3)
+        toggle_col.addWidget(self.toggle, 0, Qt.AlignHCenter)
+        self.status_lbl_top = QLabel("")
+        self.status_lbl_top.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        self.status_lbl_top.setAlignment(Qt.AlignCenter)
+        self.status_lbl_top.setStyleSheet("background: transparent; border: none;")
+        toggle_col.addWidget(self.status_lbl_top, 0, Qt.AlignHCenter)
+        lay.addWidget(self.toggle_col_w, 0, Qt.AlignVCenter)
 
         info = QVBoxLayout()
         info.setSpacing(1)
@@ -5592,9 +5669,8 @@ class KeyCard(QFrame):
         self.name_lbl.setToolTip(key.get("name", ""))  # полное имя по наведению
         name_row.addWidget(self.name_lbl, 1)
         info.addLayout(name_row)
-        # Вторая строка: замаскированный ключ слева + статус справа. Статус
-        # вынесен СЮДА (а не в тесную верхнюю строку с тумблером/режимом), иначе
-        # длинный отсчёт «Сброс через 6д…» выдавливал имя до «Клю…».
+        # Вторая строка — только замаскированный ключ (статус уехал вправо/вниз
+        # в зависимости от режима; см. status_lbl_top / status_lbl_bottom ниже).
         self.val_lbl = QLabel(self._mask(key.get("value", "")))
         self.val_lbl.setFont(QFont("Consolas", 9))
         self.val_lbl.setStyleSheet("color: rgb(140,140,148); background: transparent; border: none;")
@@ -5602,36 +5678,53 @@ class KeyCard(QFrame):
         val_row = QHBoxLayout()
         val_row.setContentsMargins(0, 0, 0, 0)
         val_row.setSpacing(8)
-        val_row.addWidget(self.val_lbl, 2)
-        self.status_lbl = _ElidingLabel("")
-        self.status_lbl.setFont(QFont("Segoe UI", 8, QFont.Bold))
-        self.status_lbl.setStyleSheet("background: transparent; border: none;")
-        # Ignored — иначе self-elide + Maximum входят в спираль (элид ужимает
-        # sizeHint → уже выделение → ещё короче элид → …), и статус схлопывался.
-        self.status_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.status_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        val_row.addWidget(self.status_lbl, 3)
+        val_row.addWidget(self.val_lbl, 1)
         info.addLayout(val_row)
+        # Полоса «Создан 12.06.2026 · осталось 29д 23ч 59м 42с» / «срок ключа
+        # истёк» — БОЛЬШЕ НЕ живёт в info-колонке, иначе тесное место с именем
+        # и значением обрезало дату. Виджет создаётся здесь, а прикрепляется к
+        # root ниже top_row_w (см. root.addWidget(self.exp_row_w) дальше) —
+        # тогда полоса занимает всю ширину карточки и текст помещается целиком.
+        exp_row = QHBoxLayout()
+        exp_row.setContentsMargins(12, 0, 12, 4)
+        exp_row.setSpacing(4)
+        self.exp_lbl = QLabel("")
+        self.exp_lbl.setFont(QFont("Segoe UI", 8))
+        self.exp_lbl.setStyleSheet("color: rgb(150,150,158); background: transparent; border: none;")
+        exp_row.addWidget(self.exp_lbl, 0)
+        exp_row.addStretch(1)
+        self.exp_row_w = QWidget()
+        self.exp_row_w.setStyleSheet("background: transparent;")
+        self.exp_row_w.setLayout(exp_row)
+        self.exp_row_w.setFixedHeight(self._EXP_H)
+        # Кэш последнего цвета/текста — чтобы не пере-выставлять styleSheet
+        # каждую секунду (иначе Qt пересчитывает styleSheet и рамка моргает).
+        self._exp_last_col = "rgb(150,150,158)"
+        self._exp_last_text = ""
         lay.addLayout(info, 1)
 
         # Переключатель режима manual/online — только для FreeModel-эндпоинтов.
-        # Подпись «Online» вынесена в тултип: в manual-строке тумблер OFF/ON (78px)
-        # уже занимает место, и текст рядом со свитчем выдавливал имя карточки.
+        # Слева от свитча — маленькая динамическая надпись «online on / off»,
+        # цвет от красного (off) к зелёному (on). Статус ключа сюда больше
+        # не заезжает: в manual он под левым тумблером, в online — в правом
+        # нижнем углу online-секции.
         self.mode_wrap = QWidget()
         self.mode_wrap.setStyleSheet("background: transparent;")
         mode_l = QHBoxLayout(self.mode_wrap)
         mode_l.setContentsMargins(0, 0, 0, 0)
-        mode_l.setSpacing(5)
-        # Скрытый плейсхолдер (ссылка сохранена на случай обращений) — текст
-        # «Online» больше не показываем в строке, только тумблер с тултипом.
-        self.mode_lbl = QLabel(tr("Online"))
-        self.mode_lbl.setVisible(False)
+        mode_l.setSpacing(6)
+        self.mode_lbl = QLabel("")
+        self.mode_lbl.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        self.mode_lbl.setStyleSheet("background: transparent; border: none;")
+        mode_l.addWidget(self.mode_lbl, 0, Qt.AlignVCenter)
         self.mode_switch = ToggleSwitch(checked=(key.get("mode") == "online"))
         self.mode_switch.setToolTip(tr("Online-режим (реальные лимиты аккаунта)"))
         self.mode_switch.toggled.connect(self._on_mode_toggle)
-        mode_l.addWidget(self.mode_switch)
+        mode_l.addWidget(self.mode_switch, 0, Qt.AlignVCenter)
         lay.addWidget(self.mode_wrap, 0, Qt.AlignVCenter)
         self.mode_wrap.setVisible(self._is_freemodel)
+        # Инициируем текст/цвет надписи по текущему состоянию.
+        self._apply_mode_label(self.mode_switch.isChecked())
 
         self.eye = EyeToggleButton()
         self.eye.setFixedSize(34, 30)
@@ -5643,6 +5736,9 @@ class KeyCard(QFrame):
         lay.addWidget(self.del_btn, 0, Qt.AlignVCenter)
 
         root.addWidget(self.top_row_w)
+        # Полоса срока — своя, во всю ширину карточки; висит между верхним
+        # рядом и online-секцией. Показ/скрытие делает _apply_mode_ui.
+        root.addWidget(self.exp_row_w)
 
         # ── Online-секция (реальные метрики /api/usage) ──
         self.online_box = self._build_online_section()
@@ -5653,6 +5749,12 @@ class KeyCard(QFrame):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
+        # Отдельный тик для строки таймера — раз в секунду. Внутри
+        # _update_expiry_text setStyleSheet вызывается только при смене
+        # цвета, а setText только при смене текста — карточка не моргает.
+        self._exp_timer = QTimer(self)
+        self._exp_timer.timeout.connect(self._on_expiry_tick)
+        self._exp_timer.start(1000)
 
     # ── Online-секция ────────────────────────────────────────────────
     def _build_online_section(self):
@@ -5690,12 +5792,16 @@ class KeyCard(QFrame):
         self.btn_login = _small_btn(tr("Войти по коду"), (52, 211, 153))
         self.btn_login.clicked.connect(self._on_login_clicked)
         act.addWidget(self.btn_login)
-        self.btn_refresh = _small_btn(tr("Обновить"), (120, 160, 235))
-        self.btn_refresh.clicked.connect(self._on_refresh_clicked)
-        act.addWidget(self.btn_refresh)
+        # Порядок при активной сессии: [Сменить аккаунт] [Выйти] [Обновить] —
+        # так «Обновить» стоит подальше от «Выйти» и случайно попасть в чужую
+        # кнопку сложнее (юзер попросил поменять местами обновить/выйти).
+        # Когда логина нет, btn_logout скрыт, и снаружи видно [Войти] [Обновить].
         self.btn_logout = _small_btn(tr("Выйти"), (224, 90, 90))
         self.btn_logout.clicked.connect(self._on_logout_clicked)
         act.addWidget(self.btn_logout)
+        self.btn_refresh = _small_btn(tr("Обновить"), (120, 160, 235))
+        self.btn_refresh.clicked.connect(self._on_refresh_clicked)
+        act.addWidget(self.btn_refresh)
         act.addStretch(1)
         v.addLayout(act)
 
@@ -5729,22 +5835,53 @@ class KeyCard(QFrame):
         roww, self.barw, self.barw_val = _bar_row(tr("7 дней"))
         v.addLayout(roww)
 
-        # Подвал: «Данные на: …» + хинт ошибки
+        # Подвал: слева — «Данные на: …» / хинт ошибки, справа — статус ключа
+        # (переезжает сюда, когда online-ползунок ВКЛЮЧЁН; в manual статус
+        # сидит наверху над свитчем).
         self.usage_foot = QLabel("")
         self.usage_foot.setFont(QFont("Segoe UI", 8))
         self.usage_foot.setStyleSheet("color: rgb(120,120,128); background: transparent; border: none;")
         self.usage_foot.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        v.addWidget(self.usage_foot)
+        foot_row = QHBoxLayout()
+        foot_row.setContentsMargins(0, 0, 0, 0)
+        foot_row.setSpacing(8)
+        foot_row.addWidget(self.usage_foot, 1)
+        self.status_lbl_bottom = QLabel("")
+        self.status_lbl_bottom.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        self.status_lbl_bottom.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.status_lbl_bottom.setStyleSheet("background: transparent; border: none;")
+        foot_row.addWidget(self.status_lbl_bottom, 0)
+        v.addLayout(foot_row)
 
         return box
 
     def _apply_mode_ui(self, initial=False):
-        """Показывает/прячет online-секцию и подгоняет высоту карточки."""
+        """Показывает/прячет online-секцию и подгоняет высоту карточки.
+        Заодно включает/выключает строку срока жизни ключа: она видна,
+        когда карточка НЕ получает живых метрик (manual, либо online без
+        логина). Онлайн-карточка с логином показывает реальные лимиты,
+        таймер жизни ей не нужен."""
         online = self._is_freemodel and self.key.get("mode") == "online"
+        logged = bool((self.key.get("session_cookie") or "").strip())
+        # Полоса срока видна во всех случаях КРОМЕ online-с-логином:
+        # тогда карточка получает реальные метрики через /api/usage и таймер
+        # жизни ключа не нужен.
+        show_timer = not (online and logged)
         self.online_box.setVisible(online)
-        # В online-режиме ручной тумблер лимита не нужен — статус автоматический.
-        self.toggle.setVisible(not online)
+        # В online-режиме ручной тумблер лимита (и его статус под ним) не нужен —
+        # реальный статус берётся из /api/usage и уезжает в правый нижний угол.
+        self.toggle_col_w.setVisible(not online)
+        # Верхний ряд — всегда фикс-высоты; полоса срока — своя, отдельная.
+        self.exp_row_w.setVisible(show_timer)
+        self._MANUAL_H = self._MANUAL_H_TIMER if show_timer else self._MANUAL_H_BASE
+        self.top_row_w.setFixedHeight(self._TOP_H)
         self.setFixedHeight(self._MANUAL_H + (self._ONLINE_H if online else 0))
+        # Статус ключа: в online — в правом нижнем углу online-секции;
+        # в manual — под ползунком слева (внутри toggle_col_w).
+        if hasattr(self, "status_lbl_bottom"):
+            self.status_lbl_bottom.setVisible(online)
+        if show_timer:
+            self._update_expiry_text()
         if online:
             self._update_online_metrics()
         self._update_status_text()
@@ -5755,11 +5892,28 @@ class KeyCard(QFrame):
 
     def _on_mode_toggle(self, checked):
         self.key["mode"] = "online" if checked else "manual"
+        self._apply_mode_label(checked)
         self._apply_mode_ui()
         self.changed.emit(self.key.get("id", ""))
         # При включении online сразу пробуем подтянуть метрики (если есть cookie).
         if checked and (self.key.get("session_cookie") or "").strip():
             self.usage_refresh_requested.emit(self.key.get("id", ""))
+
+    def _apply_mode_label(self, checked):
+        """Динамический ярлык рядом с mode_switch: «online on» зелёным при
+        включённом онлайн-режиме, «online off» красным при выключенном.
+        Меняем и текст, и цвет разом — экономим на setStyleSheet."""
+        if not hasattr(self, "mode_lbl"):
+            return
+        if checked:
+            text = "online on"
+            col = "rgb(120, 200, 120)"
+        else:
+            text = "online off"
+            col = "rgb(220, 110, 110)"
+        self.mode_lbl.setText(text)
+        self.mode_lbl.setStyleSheet(
+            f"color: {col}; background: transparent; border: none;")
 
     def _on_login_clicked(self):
         dlg = FreemodelOtpDialog(email=self.key.get("otp_email", ""), parent=self.window())
@@ -5772,6 +5926,7 @@ class KeyCard(QFrame):
             self.mode_switch.blockSignals(True)
             self.mode_switch.setChecked(True)
             self.mode_switch.blockSignals(False)
+            self._apply_mode_label(True)
             self._apply_mode_ui()
             self.changed.emit(self.key.get("id", ""))
             # Данные входа изменились — окну надо сделать .bakN бэкап настроек.
@@ -5783,7 +5938,12 @@ class KeyCard(QFrame):
             self.key["usage_error"] = tr("Сначала войдите по коду с почты")
             self._update_online_metrics()
             return
+        # Флаг держит «Обновляем метрики…» в подвале до реального ответа —
+        # снимается в refresh_online_view (после _on_usage_fetched).
+        self._loading_metrics = True
         self.usage_foot.setText(tr("Обновляем метрики…"))
+        self.usage_foot.setStyleSheet(
+            "color: rgb(120,120,128); background: transparent; border: none;")
         self.usage_refresh_requested.emit(self.key.get("id", ""))
 
     def _on_logout_clicked(self):
@@ -5813,8 +5973,94 @@ class KeyCard(QFrame):
                 self.key[f] = "" if isinstance(self.key.get(f), str) else 0
         self._update_online_metrics()
         self._update_status_text()
+        # Логин ушёл → таймер жизни ключа снова актуален, высота карточки
+        # тоже могла измениться → полный пересчёт mode-UI.
+        self._apply_mode_ui()
+        # Цвет рамки может пересчитаться (если срок жизни истёк, красный).
+        self._retarget()
         self.changed.emit(self.key.get("id", ""))
         # Данные входа изменились → бэкап настроек (.bakN)
+        self.data_changed.emit(self.key.get("id", ""))
+
+    def _update_expiry_text(self):
+        """Обновляет строку «осталось Nд Hч Mм Sс» / «срок ключа истёк».
+        В manual-режиме показываем только оставшееся время. В online-режиме
+        (без входа — иначе строка вообще скрыта) добавляем префикс
+        «Создан DD.MM.YYYY · …», чтобы была видна полная дата.
+        Полоса живёт своим рядом ПОД верхней строкой и получает всю ширину
+        карточки — обрезание больше не нужно.
+        Специально: setStyleSheet ставим ТОЛЬКО когда цвет меняется, а
+        setText — только когда текст правда другой. Иначе Qt каждую секунду
+        пере-парсит styleSheet и рамка карточки моргает."""
+        if not hasattr(self, "exp_lbl"):
+            return
+        created = self.key.get("created_at", 0) or 0
+        if not created:
+            created = self.key.get("activated_at", 0) or time.time()
+            self.key["created_at"] = created
+        valid_seconds = self._VALID_DAYS * 86400
+        expires = created + valid_seconds
+        now = time.time()
+        is_online = self.key.get("mode") == "online"
+        if now >= expires:
+            body = tr("срок ключа истёк")
+            col = "rgb(224,90,90)"
+        else:
+            remain = int(max(0, expires - now))
+            body = tr("осталось") + " " + self._format_remaining(remain, with_seconds=True)
+            days_left = remain // 86400
+            col = "rgb(235,200,90)" if days_left < 3 else "rgb(150,150,158)"
+        if is_online:
+            try:
+                created_str = time.strftime("%d.%m.%Y", time.localtime(created))
+            except Exception:
+                created_str = ""
+            text = (tr("Создан") + " " + created_str + " · " + body) if created_str else body
+        else:
+            text = body
+        if text != self._exp_last_text:
+            self.exp_lbl.setText(text)
+            self._exp_last_text = text
+        if col != self._exp_last_col:
+            self.exp_lbl.setStyleSheet(
+                f"color: {col}; background: transparent; border: none;")
+            self._exp_last_col = col
+
+    def _on_expiry_tick(self):
+        """Каждую секунду: если строка таймера видима — обновляем текст
+        (только сам QLabel; setStyleSheet — лишь при смене цвета, см.
+        _update_expiry_text). При переходе через ноль (истёк только что)
+        перекрашиваем рамку и обновляем статус — но один раз, а не каждый
+        тик, иначе весь ряд карточек моргает."""
+        if not self.exp_row_w.isVisible():
+            return
+        self._update_expiry_text()
+        expired_now = key_time_expired(self.key)
+        if expired_now != getattr(self, "_exp_was_expired", None):
+            self._exp_was_expired = expired_now
+            self._retarget()
+            self._update_status_text()
+
+    def _on_expiry_clicked(self):
+        """Больше не подключено к UI — правка created_at теперь живёт внутри
+        KeyEditDialog (кнопка «Изменить дату создания ключа»). Оставлено на
+        случай программного вызова из другого кода — держит ту же логику."""
+        created = self.key.get("created_at", 0) or time.time()
+        valid_seconds = self._VALID_DAYS * 86400
+        remain = max(0, int(created + valid_seconds - time.time()))
+        dlg = KeyValidityDialog(
+            remaining_seconds=remain,
+            valid_days=self._VALID_DAYS,
+            parent=self.window(),
+        )
+        if dlg.exec() != QDialog.Accepted or dlg.result_seconds is None:
+            return
+        new_created = time.time() + dlg.result_seconds - valid_seconds
+        self.key["created_at"] = new_created
+        self._update_expiry_text()
+        self._retarget()
+        self._update_status_text()
+        self.changed.emit(self.key.get("id", ""))
         self.data_changed.emit(self.key.get("id", ""))
 
     def _update_online_metrics(self):
@@ -5894,6 +6140,13 @@ class KeyCard(QFrame):
               k.get("usage_week_used", 0), k.get("usage_week_limit", 0), k.get("usage_week_reset", 0))
 
         err = (k.get("usage_error") or "").strip()
+        # Пока идёт refresh-запрос — не даём кэшированному «Данные на: …»
+        # перезатирать «Обновляем метрики…». Ошибку показываем всегда:
+        # если fetch провалился, флаг всё равно снимется в refresh_online_view,
+        # но безопаснее пропускать ошибочные оверрайды тоже. Проще: пока флаг
+        # стоит, подвал вообще не трогаем.
+        if getattr(self, "_loading_metrics", False):
+            return
         if err:
             self.usage_foot.setText("⚠ " + err)
             self.usage_foot.setStyleSheet("color: rgb(224,120,120); background: transparent; border: none;")
@@ -5908,6 +6161,9 @@ class KeyCard(QFrame):
 
     def refresh_online_view(self):
         """Внешний вызов (после сетевого fetch): перерисовать метрики и цвет."""
+        # Данные пришли — снимаем флаг, чтобы _update_online_metrics ниже
+        # заменил «Обновляем метрики…» на реальное «Данные на: HH:MM:SS».
+        self._loading_metrics = False
         state = key_color_state(self.key)
         if state != self._last_state:
             self._retarget()
@@ -5915,23 +6171,47 @@ class KeyCard(QFrame):
         self._update_status_text()
 
     def _on_edit_clicked(self):
-        """Редактирование имени и значения (API) ключа."""
-        dlg = KeyEditDialog(self.key.get("name", ""), self.key.get("value", ""),
-                            parent=self.window())
+        """Редактирование имени и значения (API) ключа. Внутри диалога есть
+        кнопка «Изменить дату создания ключа» — если пользователь ей
+        воспользовался, dlg.result_seconds не None и мы применяем правку
+        created_at (то же самое, что раньше делал карандаш в exp_row).
+        Бэкап .bakN срабатывает если поменялось хоть что-то — имя, значение,
+        или дата создания."""
+        created = self.key.get("created_at", 0) or time.time()
+        valid_seconds = self._VALID_DAYS * 86400
+        remain = max(0, int(created + valid_seconds - time.time()))
+        dlg = KeyEditDialog(
+            self.key.get("name", ""),
+            self.key.get("value", ""),
+            remaining_seconds=remain,
+            valid_days=self._VALID_DAYS,
+            parent=self.window(),
+        )
         if dlg.exec() != QDialog.Accepted:
             return
-        new_name, new_value = dlg.result_name, dlg.result_value
-        if not new_value:
-            return
-        self.key["name"] = new_name or self.key.get("name", "Ключ")
-        self.key["value"] = new_value
-        self.name_lbl.setText(self.key["name"])  # _ElidingLabel хранит полный текст
-        self.name_lbl.setToolTip(self.key["name"])
-        self._apply_value_text()
-        self.changed.emit(self.key.get("id", ""))
-        # Пользователь переименовал ключ / поменял его значение — окну надо
-        # сделать .bakN бэкап настроек.
-        self.data_changed.emit(self.key.get("id", ""))
+        changed_anything = False
+        # Имя/значение — если поле не пустое (иначе не трогаем ключ).
+        if dlg.result_value:
+            self.key["name"] = dlg.result_name or self.key.get("name", "Ключ")
+            self.key["value"] = dlg.result_value
+            self.name_lbl.setText(self.key["name"])  # _ElidingLabel хранит полный текст
+            self.name_lbl.setToolTip(self.key["name"])
+            self._apply_value_text()
+            changed_anything = True
+        # Дата создания — если пользователь нажимал «Изменить» и подтвердил.
+        # Пересчёт: срок должен истечь ровно через result_seconds → created_at
+        # = now + result_seconds − VALID_DAYS.
+        if dlg.result_seconds is not None:
+            self.key["created_at"] = time.time() + dlg.result_seconds - valid_seconds
+            self._update_expiry_text()
+            self._update_status_text()
+            self._retarget()
+            changed_anything = True
+        if changed_anything:
+            self.changed.emit(self.key.get("id", ""))
+            # Пользователь переименовал ключ / поменял значение / поменял
+            # дату создания — окну надо сделать .bakN бэкап настроек.
+            self.data_changed.emit(self.key.get("id", ""))
 
     def _mask(self, v):
         v = v or ""
@@ -5945,7 +6225,29 @@ class KeyCard(QFrame):
         Наша задача — либо принять изменение (и мутировать key), либо
         откатить визуал тумблера (при отмене диалога)."""
         if on:
-            # OFF → ON вручную. Сброс лимита, ключ активен.
+            # OFF → ON вручную. Если у ключа реально стоит лимит — сначала
+            # спрашиваем подтверждение (жёлтая карточка = 5ч лимит, красная
+            # = 7д лимит). Ключ с пустым limit_type и resets_at=0 включаем
+            # без вопросов — там сбрасывать нечего.
+            had_limit = (bool(self.key.get("limit_type"))
+                         or (self.key.get("resets_at", 0) or 0) > 0)
+            if had_limit:
+                confirm = ConfirmActionDialog(
+                    title=tr("Включить ключ?"),
+                    message=tr("У ключа стоит лимит. Если включить его сейчас, "
+                               "лимит сбросится и ключ снова пойдёт в работу."),
+                    detail=self.key.get("name", ""),
+                    confirm_text=tr("Да, включить"),
+                    icon="!",
+                    icon_color=(235, 200, 90),
+                    parent=self.window(),
+                )
+                if confirm.exec() != QDialog.Accepted:
+                    # Отмена — возвращаем тумблер визуально в OFF.
+                    self.toggle.blockSignals(True)
+                    self.toggle.set_on(False, animate=True)
+                    self.toggle.blockSignals(False)
+                    return
             reset_key_limit(self.key)
             self._retarget()
             self._update_status_text()
@@ -6053,9 +6355,36 @@ class KeyCard(QFrame):
             self._apply_value_text()
 
     def _update_status_text(self):
+        # Если таймер лимита истёк — сбрасываем ключ ПРЯМО СЕЙЧАС и не ждём
+        # следующего _tick. Иначе между исходом лимита и ближайшим кадром
+        # можно увидеть промежуточное «готов к сбросу»; юзер хочет чтобы
+        # карточка сразу становилась зелёной, а рамка плавно перекатывалась
+        # в зелёный цвет (_retarget → _tick интерполирует _cur → _target).
+        if key_expired(self.key):
+            reset_key_limit(self.key)
+            if hasattr(self, "toggle"):
+                self.toggle.blockSignals(True)
+                self.toggle.set_on(True, animate=True)
+                self.toggle.blockSignals(False)
+            self._retarget()
+            # Авто-сброс — тривиальная мутация (без .bakN), идёт по changed.
+            self.changed.emit(self.key.get("id", ""))
         state = key_color_state(self.key)
-        if self.key.get("mode") == "online":
-            # В online-режиме статус короткий: активен / лимит окна / подписка.
+        is_online = self.key.get("mode") == "online"
+        logged = bool((self.key.get("session_cookie") or "").strip())
+        real_online = is_online and logged  # только тогда полагаемся на /api/usage
+        # Флаг «это лимит» — если True, перед txt дорисуем «лимит » (юзер
+        # попросил префикс для всех статусов кроме «активен»; для «Pro
+        # кончилась», «Нет Pro» и «срок ключа истёк» префикс не ставим —
+        # они не про лимит, а про смерть ключа/подписки).
+        prefix_limit = False
+        # Истёкший срок жизни ключа перекрывает любые прочие статусы —
+        # ключ реально дохлый, важно чтоб это было видно на карточке.
+        # (Кроме случая с реальными метриками — там свой источник истины.)
+        if key_time_expired(self.key) and not real_online:
+            txt = tr("срок ключа истёк")
+        elif real_online:
+            # В online-с-логином статус короткий: активен / лимит окна / подписка.
             exp = self.key.get("sub_expires_at", 0) or 0
             fetched = self.key.get("sub_fetched_at", 0) or 0
             is_pro = bool(self.key.get("sub_is_pro", False))
@@ -6063,35 +6392,53 @@ class KeyCard(QFrame):
                 txt = tr("Pro подписка кончилась")
             elif fetched and not is_pro:
                 txt = tr("Нет Pro-подписки")
+            elif state == "green":
+                txt = tr("активен")
             else:
-                txt = {"green": tr("активен"),
-                       "yellow": tr("5ч лимит"),
-                       "red": tr("недельный лимит")}.get(state, tr("активен"))
+                # yellow / red — реальные лимиты окна из /api/usage.
+                txt = {"yellow": tr("5ч"),
+                       "red": tr("недельный")}.get(state, tr("активен"))
+                prefix_limit = True
         elif state == "green":
             txt = tr("активен")
         else:
-            # Показываем обратный отсчёт до сброса.
+            # manual или online-без-входа: обратный отсчёт до сброса лимита.
+            # После auto-reset наверху сюда попадаем только если ключ реально
+            # ещё в лимите — тогда remain > 0. Если по какой-то причине
+            # resets_at=0 (битые данные) — показываем «активен» без префикса,
+            # а не бывшее «лимит готов к сбросу».
             resets_at = self.key.get("resets_at", 0) or 0
             remain = int(max(0, resets_at - time.time())) if resets_at else 0
-            if remain <= 0:
-                txt = tr("готов к сбросу")
-            else:
-                # Компактно (без «Сброс через») — статус живёт на 2-й строке
-                # карточки рядом с ключом, места мало; жёлтый/красный цвет и так
-                # означают лимит. Полная подпись — в тултипе.
+            if remain > 0:
+                # Компактно (без «Сброс через»): жёлтый/красный цвет и так
+                # означают лимит; полная подпись — в тултипе.
                 txt = self._format_remaining(remain)
+                prefix_limit = True
+            else:
+                txt = tr("активен")
+        if prefix_limit:
+            txt = tr("лимит") + " " + txt
         r, g, b = self._COLORS[state]
-        self.status_lbl.setText(txt)  # _ElidingLabel сам подрежет под ширину
-        self.status_lbl.setToolTip(
+        css = f"color: rgb({r},{g},{b}); background: transparent; border: none;"
+        tooltip = (
             (tr("Сброс через") + " " + self._format_remaining(
                 int(max(0, (self.key.get("resets_at", 0) or 0) - time.time()))))
-            if (state != "green" and self.key.get("mode") != "online"
+            if (state != "green" and not real_online
                 and (self.key.get("resets_at", 0) or 0) > time.time()) else "")
-        self.status_lbl.setStyleSheet(f"color: rgb({r},{g},{b}); background: transparent; border: none;")
+        # Пишем в обе метки — какая из них видима, решает _apply_mode_ui.
+        for lbl in (getattr(self, "status_lbl_top", None),
+                    getattr(self, "status_lbl_bottom", None)):
+            if lbl is None:
+                continue
+            lbl.setText(txt)
+            lbl.setToolTip(tooltip)
+            lbl.setStyleSheet(css)
 
     @staticmethod
-    def _format_remaining(seconds):
-        """Красивый обратный отсчёт: 6д 12ч 05м, 3ч 12м 05с, 12м 05с, 05с."""
+    def _format_remaining(seconds, with_seconds=False):
+        """Красивый обратный отсчёт: 6д 12ч 05м, 3ч 12м 05с, 12м 05с, 05с.
+        with_seconds=True — принудительно добавляет секунды в дневной формат
+        (для строки срока жизни ключа, чтобы отсчёт шёл в реальном времени)."""
         seconds = max(0, int(seconds))
         d, r = divmod(seconds, 86400)
         h, r = divmod(r, 3600)
@@ -6101,6 +6448,8 @@ class KeyCard(QFrame):
             parts.append(f"{d}{tr('д')}")
             parts.append(f"{h}{tr('ч')}")
             parts.append(f"{m:02d}{tr('м')}")
+            if with_seconds:
+                parts.append(f"{s:02d}{tr('с')}")
         elif h > 0:
             parts.append(f"{h}{tr('ч')}")
             parts.append(f"{m:02d}{tr('м')}")
@@ -6729,6 +7078,157 @@ class KeyLimitDurationDialog(QDialog):
 
     def reject(self):
         self._fade_out_and(lambda: super(KeyLimitDurationDialog, self).reject())
+
+
+class KeyValidityDialog(QDialog):
+    """Правка срока жизни ключа: пользователь указывает СКОЛЬКО ОСТАЛОСЬ
+    (дни/часы/минуты), а мы пересчитываем created_at так, чтобы
+    created_at + VALID_DAYS попадал точно на now + remaining.
+    Стилистически как KeyLimitDurationDialog (жёлтый акцент, спиннеры,
+    кнопки, fade)."""
+    def __init__(self, remaining_seconds=None, valid_days=30, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self._valid_days = int(valid_days)
+        # Верхний предел спиннера дней — жёсткий лимит убран (юзер сам решает,
+        # сколько дней жизни навесить); держим разумный потолок в 999 дней,
+        # чтобы _NumberField не превратился в кассу с шестизначными числами.
+        self._max_days = 999
+        # Что показать в спиннерах при открытии:
+        if remaining_seconds is None:
+            seed = int(valid_days) * 86400
+        else:
+            seed = max(0, int(remaining_seconds))
+        self.result_seconds = None
+
+        color = (110, 200, 235)  # приглушённый голубой — не путать с лимитом
+        title_txt = tr("Срок действия ключа")
+
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(26, 22, 26, 22)
+        lay.setSpacing(12)
+
+        title = QLabel(title_txt)
+        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(
+            f"color: rgb({color[0]},{color[1]},{color[2]}); background: transparent; border: none;")
+        lay.addWidget(title)
+
+        subtitle = QLabel(tr("Сколько ещё будет действовать ключ?"))
+        subtitle.setFont(QFont("Segoe UI", 10))
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #B5B5B5; background: transparent; border: none;")
+        subtitle.setWordWrap(True)
+        lay.addWidget(subtitle)
+
+        seed_d, r = divmod(seed, 86400)
+        seed_h, r = divmod(r, 3600)
+        seed_m = r // 60
+
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        row.setContentsMargins(0, 4, 0, 4)
+        row.addStretch()
+
+        def _column(caption, spinner):
+            col = QVBoxLayout()
+            col.setSpacing(4)
+            col.setAlignment(Qt.AlignCenter)
+            cap = QLabel(caption)
+            cap.setFont(QFont("Segoe UI", 9))
+            cap.setAlignment(Qt.AlignCenter)
+            cap.setStyleSheet("color: rgb(150,150,155); background: transparent; border: none;")
+            col.addWidget(cap)
+            wrap = QHBoxLayout()
+            wrap.addStretch()
+            wrap.addWidget(spinner)
+            wrap.addStretch()
+            col.addLayout(wrap)
+            return col
+
+        self.sp_days = _NumberField(0, self._max_days, min(seed_d, self._max_days))
+        self.sp_hours = _NumberField(0, 23, seed_h, pad=True)
+        self.sp_minutes = _NumberField(0, 59, seed_m, pad=True)
+        row.addLayout(_column(tr("Дни"), self.sp_days))
+        row.addLayout(_column(tr("Часы"), self.sp_hours))
+        row.addLayout(_column(tr("Минуты"), self.sp_minutes))
+        row.addStretch()
+        lay.addLayout(row)
+
+        self.err_lbl = QLabel("")
+        self.err_lbl.setFont(QFont("Segoe UI", 9))
+        self.err_lbl.setAlignment(Qt.AlignCenter)
+        self.err_lbl.setStyleSheet("color: rgb(224, 90, 90); background: transparent; border: none;")
+        lay.addWidget(self.err_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn.setMinimumHeight(40)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.cancel_btn)
+        self.confirm_btn = GreenButton(tr("Подтвердить"))
+        self.confirm_btn.setMinimumHeight(40)
+        self.confirm_btn.clicked.connect(self._on_confirm)
+        btn_row.addWidget(self.confirm_btn)
+        lay.addLayout(btn_row)
+
+        main.addWidget(container)
+        self.setLayout(main)
+        self.setMinimumWidth(440)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(200)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _total_seconds(self):
+        return (self.sp_days.value() * 86400
+                + self.sp_hours.value() * 3600
+                + self.sp_minutes.value() * 60)
+
+    def _on_confirm(self):
+        # Верхний предел мягкий (см. self._max_days) — не режем результат.
+        # Ноль тоже разрешён — «истёк прямо сейчас».
+        self.result_seconds = self._total_seconds()
+        self.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def _fade_out_and(self, done):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(180)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(done)
+        fade.start()
+        self._fade = fade
+
+    def accept(self):
+        self._fade_out_and(lambda: super(KeyValidityDialog, self).accept())
+
+    def reject(self):
+        self._fade_out_and(lambda: super(KeyValidityDialog, self).reject())
 
 
 class _AmPmToggle(QWidget):
@@ -7440,13 +7940,22 @@ class KeyEditDialog(QDialog):
     """Редактирование имени и значения (API-ключа). Поля предзаполнены текущими
     значениями — можно дописать/поменять. Возвращает result_name / result_value."""
 
-    def __init__(self, name="", value="", parent=None):
+    def __init__(self, name="", value="", remaining_seconds=None,
+                 valid_days=30, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
         self.result_name = None
         self.result_value = None
+        # Правка срока (дата создания) — необязательная, живёт внутри этого
+        # диалога через отдельную кнопку. Если пользователь не открывал
+        # KeyValidityDialog — оставляем None и вызывающий код не трогает
+        # created_at.
+        self.result_seconds = None
+        self._valid_days = int(valid_days)
+        self._current_remaining = (None if remaining_seconds is None
+                                   else int(remaining_seconds))
 
         main = QVBoxLayout()
         main.setContentsMargins(0, 0, 0, 0)
@@ -7515,6 +8024,28 @@ class KeyEditDialog(QDialog):
         self.value_input.returnPressed.connect(self._on_save)
         lay.addWidget(self.value_input)
 
+        # Строка правки даты создания. Кнопка «Изменить» слева, пояснение
+        # справа. Клик по кнопке открывает KeyValidityDialog со спиннерами
+        # дни/часы/минуты — то же окно, что раньше открывал карандаш на
+        # самой карточке. Результат кладётся в self.result_seconds и
+        # применяется вызывающим кодом только если оно не None.
+        expiry_row = QHBoxLayout()
+        expiry_row.setContentsMargins(0, 6, 0, 0)
+        expiry_row.setSpacing(10)
+        self.expiry_btn = BlueButton(tr("Изменить"))
+        self.expiry_btn.setMinimumHeight(32)
+        self.expiry_btn.setAutoDefault(False)
+        self.expiry_btn.setDefault(False)
+        self.expiry_btn.clicked.connect(self._on_change_created)
+        expiry_row.addWidget(self.expiry_btn, 0)
+        self.expiry_hint = QLabel(tr("Изменить дату создания ключа"))
+        self.expiry_hint.setFont(QFont("Segoe UI", 9))
+        self.expiry_hint.setStyleSheet(
+            "color: rgb(180,180,188); background: transparent; border: none;")
+        self.expiry_hint.setAlignment(Qt.AlignVCenter)
+        expiry_row.addWidget(self.expiry_hint, 1)
+        lay.addLayout(expiry_row)
+
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
         self.cancel_btn = RedButton(tr("Отмена"))
@@ -7550,6 +8081,40 @@ class KeyEditDialog(QDialog):
         self.result_name = self.name_input.text().strip()
         self.result_value = val
         self.accept()
+
+    def _on_change_created(self):
+        """Клик по кнопке «Изменить» → закрывает это окно (KeyEditDialog) и
+        сразу открывает KeyValidityDialog. Пользователь явно попросил именно
+        такой флоу: одно окно ушло — второе появилось.
+
+        Чтобы не потерять правки имени/значения (пользователь мог поменять
+        поля, а потом нажать «Изменить»), пред-сохраняем их в result_*.
+        Родителем KeyValidityDialog делаем родителя KeyEditDialog — тогда он
+        живёт независимо от того, что этот диалог закрыт."""
+        val = self.value_input.text().strip()
+        if val:
+            self.result_name = self.name_input.text().strip()
+            self.result_value = val
+        seed = (self.result_seconds
+                if self.result_seconds is not None
+                else self._current_remaining)
+        # Родителем берём того же родителя, что и у нас (обычно — окно
+        # менеджера ключей). Если родителя нет — Qt повесит окно top-level.
+        parent = self.parent() if self.parent() is not None else None
+        # Прячем себя визуально до открытия суб-диалога; сам QDialog жив
+        # (иначе parent-цепочка суб-диалога развалится).
+        self.hide()
+        dlg = KeyValidityDialog(
+            remaining_seconds=seed,
+            valid_days=self._valid_days,
+            parent=parent,
+        )
+        if dlg.exec() == QDialog.Accepted and dlg.result_seconds is not None:
+            self.result_seconds = int(dlg.result_seconds)
+        # Закрываем KeyEditDialog — окно уже скрыто, fade не нужен, вызываем
+        # базовый accept() напрямую (иначе fade будет крутиться на невидимом
+        # виджете и добавит паузы перед применением изменений).
+        QDialog.accept(self)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -8157,6 +8722,7 @@ class ApiKeyManagerDialog(QDialog):
             "value": val,
             "enabled": True,
             "activated_at": time.time(),
+            "created_at": time.time(),
         })
         # Первый заведённый ключ автоматически становится выбранным
         if not self.selected_id:
@@ -8201,10 +8767,21 @@ class ApiKeyManagerDialog(QDialog):
         threading.Thread(target=work, daemon=True).start()
 
     def _fetch_all_online(self):
-        """Разово подтягивает метрики для всех online-ключей с cookie."""
+        """Разово подтягивает метрики для всех online-ключей с cookie.
+        На каждой карточке, для которой стартует запрос, поднимаем «loading»-
+        флаг и меняем подпись подвала на «Обновляем метрики…» — иначе при
+        открытии окна кнопка «Обновить» не нажималась, а подпись висела
+        старым «Данные на: …» вплоть до ответа сервера."""
         for k in self.keys:
             if k.get("mode") == "online" and (k.get("session_cookie") or "").strip():
-                self._fetch_usage_for_id(k.get("id", ""))
+                key_id = k.get("id", "")
+                card = self._card_by_id(key_id)
+                if card is not None and hasattr(card, "usage_foot"):
+                    card._loading_metrics = True
+                    card.usage_foot.setText(tr("Обновляем метрики…"))
+                    card.usage_foot.setStyleSheet(
+                        "color: rgb(120,120,128); background: transparent; border: none;")
+                self._fetch_usage_for_id(key_id)
 
     def _on_usage_fetched(self, key_id, result):
         """Слот usage_fetched (GUI-поток): пишет метрики в dict ключа,
