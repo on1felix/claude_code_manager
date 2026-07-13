@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7.6"  # Для обновлений
+APP_VERSION = "5.7.7"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -744,6 +744,14 @@ TRANSLATIONS = {
     "Online": "Online",
     "Войти по коду": "Log in by code",
     "Сменить аккаунт": "Switch account",
+    "Выйти": "Log out",
+    "Выйти из аккаунта?": "Log out of account?",
+    "Сессия и данные о лимитах/подписке будут стёрты. "
+    "Чтобы вернуться, потребуется снова войти по коду с почты.":
+        "The session and cached limits/subscription data will be wiped. "
+        "To come back you'll need to log in by email code again.",
+    "аккаунт": "account",
+    "Да, выйти": "Yes, log out",
     "5 часов": "5 hours",
     "7 дней": "7 days",
     "Вход выполнен": "Logged in",
@@ -775,6 +783,8 @@ TRANSLATIONS = {
     "Ошибка загрузки метрик": "Failed to load metrics",
     # ── подписка Pro ──
     "Pro подписка кончилась": "Pro subscription ended",
+    "Нет Pro-подписки": "No Pro subscription",
+    "активна": "active",
     "Подписка: данные не загружены": "Subscription: not loaded",
     "осталось": "left",
     "дн.": "days",
@@ -1632,9 +1642,20 @@ def fm_fetch_account_state(session_cookie):
     return fields
 
 def fm_sub_expired(key):
-    """True, если у ключа известен срок Pro-подписки и он уже истёк."""
+    """True, если у аккаунта НЕТ активной Pro-подписки:
+    • срок подписки известен и уже истёк, ИЛИ
+    • billing запрошен (sub_fetched_at > 0), но sub_is_pro=False —
+      аккаунт без Pro (не оформлял или подписка кончилась и /api/billing
+      вернул неактивный статус).
+    Если billing ещё не запрашивался (sub_fetched_at=0) — считаем «неизвестно»
+    и возвращаем False (не красим красным до первого фактического ответа)."""
     exp = key.get("sub_expires_at", 0) or 0
-    return bool(exp) and time.time() >= exp
+    if exp and time.time() >= exp:
+        return True
+    fetched = key.get("sub_fetched_at", 0) or 0
+    if fetched and not key.get("sub_is_pro", False):
+        return True
+    return False
 
 def fm_usage_bar_color(pct):
     """Цвет полоски использования по проценту 0..100:
@@ -5672,6 +5693,9 @@ class KeyCard(QFrame):
         self.btn_refresh = _small_btn(tr("Обновить"), (120, 160, 235))
         self.btn_refresh.clicked.connect(self._on_refresh_clicked)
         act.addWidget(self.btn_refresh)
+        self.btn_logout = _small_btn(tr("Выйти"), (224, 90, 90))
+        self.btn_logout.clicked.connect(self._on_logout_clicked)
+        act.addWidget(self.btn_logout)
         act.addStretch(1)
         v.addLayout(act)
 
@@ -5762,6 +5786,37 @@ class KeyCard(QFrame):
         self.usage_foot.setText(tr("Обновляем метрики…"))
         self.usage_refresh_requested.emit(self.key.get("id", ""))
 
+    def _on_logout_clicked(self):
+        """Выход из аккаунта FreeModel на карточке: подтверждение → чистим
+        сохранённую сессию (cookie, email, кэш метрик и подписки). Триггерит
+        .bakN бэкап настроек через data_changed — как и вход/смена аккаунта."""
+        email = (self.key.get("otp_email") or "").strip()
+        confirm = ConfirmActionDialog(
+            title=tr("Выйти из аккаунта?"),
+            message=tr("Сессия и данные о лимитах/подписке будут стёрты. "
+                       "Чтобы вернуться, потребуется снова войти по коду с почты."),
+            detail=email or tr("аккаунт"),
+            confirm_text=tr("Да, выйти"),
+            icon="!",
+            icon_color=(224, 90, 90),
+            parent=self.window(),
+        )
+        if confirm.exec() != QDialog.Accepted:
+            return
+        # Стираем всё, что связано с входом и кэшем аккаунта.
+        for f in ("session_cookie", "otp_email",
+                  "usage_5h_used", "usage_5h_limit", "usage_5h_reset",
+                  "usage_week_used", "usage_week_limit", "usage_week_reset",
+                  "usage_fetched_at", "usage_error",
+                  "sub_expires_at", "sub_plan", "sub_is_pro", "sub_fetched_at"):
+            if f in self.key:
+                self.key[f] = "" if isinstance(self.key.get(f), str) else 0
+        self._update_online_metrics()
+        self._update_status_text()
+        self.changed.emit(self.key.get("id", ""))
+        # Данные входа изменились → бэкап настроек (.bakN)
+        self.data_changed.emit(self.key.get("id", ""))
+
     def _update_online_metrics(self):
         """Перерисовывает полоски/подписи online-секции из кэша ключа (без сети)."""
         if not hasattr(self, "bar5"):
@@ -5775,27 +5830,40 @@ class KeyCard(QFrame):
             self.login_lbl.setStyleSheet("color: rgb(52,211,153); background: transparent; border: none;")
             self.btn_login.setText(tr("Сменить аккаунт"))
             self.btn_refresh.setEnabled(True)
+            self.btn_logout.setVisible(True)
         else:
             self.login_lbl.setText(tr("Вход не выполнен"))
             self.login_lbl.setStyleSheet("color: rgb(160,160,168); background: transparent; border: none;")
             self.btn_login.setText(tr("Войти по коду"))
             self.btn_refresh.setEnabled(False)
+            self.btn_logout.setVisible(False)
 
         now = time.time()
 
         # ── Срок Pro-подписки ──
         exp = k.get("sub_expires_at", 0) or 0
         plan = (k.get("sub_plan") or "Pro").strip() or "Pro"
-        if exp <= 0:
-            # Данных о подписке ещё нет.
-            if logged:
-                self.sub_lbl.setText(tr("Подписка: данные не загружены"))
-            else:
-                self.sub_lbl.setText("")
+        fetched = k.get("sub_fetched_at", 0) or 0
+        is_pro = bool(k.get("sub_is_pro", False))
+        if not logged:
+            self.sub_lbl.setText("")
             self.sub_lbl.setStyleSheet("color: rgb(130,130,138); background: transparent; border: none;")
-        elif now >= exp:
+        elif not fetched:
+            # billing ещё ни разу не отвечал
+            self.sub_lbl.setText(tr("Подписка: данные не загружены"))
+            self.sub_lbl.setStyleSheet("color: rgb(130,130,138); background: transparent; border: none;")
+        elif exp > 0 and now >= exp:
+            # был Pro со сроком — срок вышел
             self.sub_lbl.setText("● " + tr("Pro подписка кончилась"))
             self.sub_lbl.setStyleSheet("color: rgb(224,90,90); background: transparent; border: none;")
+        elif not is_pro:
+            # billing ответил, Pro не оформлен (или уже неактивен без даты)
+            self.sub_lbl.setText("● " + tr("Нет Pro-подписки"))
+            self.sub_lbl.setStyleSheet("color: rgb(224,90,90); background: transparent; border: none;")
+        elif exp <= 0:
+            # Pro активен, но без даты окончания — сервер её не отдал
+            self.sub_lbl.setText(f"● {plan} · " + tr("активна"))
+            self.sub_lbl.setStyleSheet("color: rgb(52,211,153); background: transparent; border: none;")
         else:
             days = int((exp - now) // 86400)
             until = time.strftime("%d.%m.%Y", time.localtime(exp))
@@ -5988,8 +6056,13 @@ class KeyCard(QFrame):
         state = key_color_state(self.key)
         if self.key.get("mode") == "online":
             # В online-режиме статус короткий: активен / лимит окна / подписка.
-            if fm_sub_expired(self.key):
+            exp = self.key.get("sub_expires_at", 0) or 0
+            fetched = self.key.get("sub_fetched_at", 0) or 0
+            is_pro = bool(self.key.get("sub_is_pro", False))
+            if exp > 0 and time.time() >= exp:
                 txt = tr("Pro подписка кончилась")
+            elif fetched and not is_pro:
+                txt = tr("Нет Pro-подписки")
             else:
                 txt = {"green": tr("активен"),
                        "yellow": tr("5ч лимит"),
