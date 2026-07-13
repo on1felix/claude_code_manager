@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7.7"  # Для обновлений
+APP_VERSION = "5.7.8"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -5897,6 +5897,7 @@ class KeyCard(QFrame):
         self.changed.emit(self.key.get("id", ""))
         # При включении online сразу пробуем подтянуть метрики (если есть cookie).
         if checked and (self.key.get("session_cookie") or "").strip():
+            self._begin_loading_metrics()
             self.usage_refresh_requested.emit(self.key.get("id", ""))
 
     def _apply_mode_label(self, checked):
@@ -5931,19 +5932,26 @@ class KeyCard(QFrame):
             self.changed.emit(self.key.get("id", ""))
             # Данные входа изменились — окну надо сделать .bakN бэкап настроек.
             self.data_changed.emit(self.key.get("id", ""))
+            self._begin_loading_metrics()
             self.usage_refresh_requested.emit(self.key.get("id", ""))
+
+    def _begin_loading_metrics(self):
+        """Поднимает флаг + пишет «Обновляем метрики…» в подвал online-секции.
+        Флаг снимает refresh_online_view — то есть надпись висит от старта
+        любого фетча (клик «Обновить», включение online-режима, вход по коду,
+        первичный fetch при открытии окна) до реального ответа сервера."""
+        self._loading_metrics = True
+        if hasattr(self, "usage_foot"):
+            self.usage_foot.setText(tr("Обновляем метрики…"))
+            self.usage_foot.setStyleSheet(
+                "color: rgb(120,120,128); background: transparent; border: none;")
 
     def _on_refresh_clicked(self):
         if not (self.key.get("session_cookie") or "").strip():
             self.key["usage_error"] = tr("Сначала войдите по коду с почты")
             self._update_online_metrics()
             return
-        # Флаг держит «Обновляем метрики…» в подвале до реального ответа —
-        # снимается в refresh_online_view (после _on_usage_fetched).
-        self._loading_metrics = True
-        self.usage_foot.setText(tr("Обновляем метрики…"))
-        self.usage_foot.setStyleSheet(
-            "color: rgb(120,120,128); background: transparent; border: none;")
+        self._begin_loading_metrics()
         self.usage_refresh_requested.emit(self.key.get("id", ""))
 
     def _on_logout_clicked(self):
@@ -8776,11 +8784,8 @@ class ApiKeyManagerDialog(QDialog):
             if k.get("mode") == "online" and (k.get("session_cookie") or "").strip():
                 key_id = k.get("id", "")
                 card = self._card_by_id(key_id)
-                if card is not None and hasattr(card, "usage_foot"):
-                    card._loading_metrics = True
-                    card.usage_foot.setText(tr("Обновляем метрики…"))
-                    card.usage_foot.setStyleSheet(
-                        "color: rgb(120,120,128); background: transparent; border: none;")
+                if card is not None:
+                    card._begin_loading_metrics()
                 self._fetch_usage_for_id(key_id)
 
     def _on_usage_fetched(self, key_id, result):
