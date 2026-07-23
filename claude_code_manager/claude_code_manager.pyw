@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7.8"  # Для обновлений
+APP_VERSION = "5.7.9"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -234,6 +234,15 @@ def load_settings():
                         loaded["custom_base_urls"].insert(0, u)
             if not loaded.get("custom_base_url"):
                 loaded["custom_base_url"] = loaded["custom_base_urls"][0]
+            # openai_base_urls — та же гарантия для вкладки OpenAI
+            if not loaded.get("openai_base_urls"):
+                loaded["openai_base_urls"] = ["https://api.freemodel.dev"]
+            else:
+                for u in ["https://api.freemodel.dev"]:
+                    if u not in loaded["openai_base_urls"]:
+                        loaded["openai_base_urls"].insert(0, u)
+            if not loaded.get("openai_base_url"):
+                loaded["openai_base_url"] = loaded["openai_base_urls"][0]
             # models не может быть пустым — если старая настройка съела список,
             # восстанавливаем дефолтную модель
             if not loaded.get("models"):
@@ -265,10 +274,18 @@ def _default_settings():
         "auto_update_enabled": True,
         "use_1m_context": False,
         "api_keys": [],
-        "selected_key_id": ""
+        "selected_key_id": "",
+        "app_mode": "anthropic",
+        "openai_base_url": "https://api.freemodel.dev",
+        "openai_base_urls": [
+            "https://api.freemodel.dev"
+        ],
+        "openai_model": "gpt-5.6-sol",
+        "openai_effort": "low"
     }
 
 DEFAULT_BASE_URLS = ["https://cc.freemodel.dev"]
+DEFAULT_OPENAI_BASE_URLS = ["https://api.freemodel.dev"]
 
 def migrate_settings(settings):
     """Дописывает недостающие поля в старые настройки"""
@@ -281,6 +298,14 @@ def migrate_settings(settings):
                 settings["custom_base_urls"].insert(0, u)
     if not settings.get("custom_base_url"):
         settings["custom_base_url"] = settings["custom_base_urls"][0]
+    if "openai_base_urls" not in settings or not settings.get("openai_base_urls"):
+        settings["openai_base_urls"] = list(DEFAULT_OPENAI_BASE_URLS)
+    else:
+        for u in DEFAULT_OPENAI_BASE_URLS:
+            if u not in settings["openai_base_urls"]:
+                settings["openai_base_urls"].insert(0, u)
+    if not settings.get("openai_base_url"):
+        settings["openai_base_url"] = settings["openai_base_urls"][0]
     settings.setdefault("auto_update_enabled", True)
     return settings
 
@@ -662,6 +687,48 @@ def migrate_api_keys(settings):
 # кода.
 
 TRANSLATIONS = {
+    # ── вкладка OpenAI / Codex CLI
+    "Установить Codex CLI": "Install Codex CLI",
+    "Удалить Codex CLI": "Uninstall Codex CLI",
+    "Обновить Codex CLI": "Update Codex CLI",
+    "Установка Codex CLI": "Install Codex CLI",
+    "Обновление Codex CLI": "Update Codex CLI",
+    "Удаление": "Uninstalling",
+    "Обновление": "Updating",
+    "Установка": "Installing",
+    "удалён ✓": "uninstalled ✓",
+    "обновлён ✓": "updated ✓",
+    "установлен ✓": "installed ✓",
+    "Запустить Codex CLI": "Start Codex CLI",
+    "Выберите рабочую директорию": "Select working directory",
+    "npm установит последнюю версию Codex CLI.": "npm will install the latest Codex CLI version.",
+    "Будет установлен официальный Codex CLI (npm-пакет @openai/codex).\n\n"
+    "Откроется окно PowerShell, где пойдёт установка.":
+        "The official Codex CLI (npm package @openai/codex) will be installed.\n\n"
+        "A PowerShell window will open to run the installation.",
+    "Будет удалён глобальный npm-пакет Codex CLI": "The global Codex CLI npm package will be removed",
+    "Настройки в %USERPROFILE%\\.codex не пострадают — удалится только бинарь.":
+        "Settings in %USERPROFILE%\\.codex will be kept — only the binary is removed.",
+    "Установка завершена успешно.\n"
+    "Если команда codex не найдена — открой новое окно консоли\n"
+    "(npm обычно сам прописывает её в PATH).":
+        "Installation completed successfully.\n"
+        "If the codex command is not found — open a new console window\n"
+        "(npm usually adds it to PATH automatically).",
+    "Обновление завершено успешно.": "Update completed successfully.",
+    "Codex CLI удалён": "Codex CLI uninstalled",
+    "Codex CLI обновлён до v{v}": "Codex CLI updated to v{v}",
+    "Codex CLI установлен (v{v})": "Codex CLI installed (v{v})",
+    "Установка Codex CLI через npm...": "Installing Codex CLI via npm...",
+    "Удаление Codex CLI (npm)...": "Uninstalling Codex CLI (npm)...",
+    "Останавливаю запущенные процессы codex...": "Stopping running codex processes...",
+    "Готово. Проверь команду: codex -V": "Done. Check the command: codex -V",
+    "Нажмите любую клавишу, чтобы закрыть PowerShell...": "Press any key to close PowerShell...",
+    "Повторная попытка (файл был залочен)...": "Retrying (file was locked)...",
+    "NPM не смог удалить — удаляю папку напрямую...": "NPM could not remove it — deleting the folder directly...",
+    "Не всё удалось удалить — закрой все окна Codex и попробуй снова.":
+        "Some files could not be removed — close all Codex windows and try again.",
+    "Codex CLI полностью удалён.": "Codex CLI has been fully uninstalled.",
     # ── главное окно: кнопки шапки
     "Установить Claude Code": "Install Claude Code",
     "Удалить Claude Code": "Uninstall Claude Code",
@@ -751,6 +818,7 @@ TRANSLATIONS = {
     "максимум размышлений — потолок обычного режима": "maximum reasoning — ceiling of normal mode",
     "максимум мощности + многоагентная оркестрация": "maximum power + multi-agent orchestration",
     "Reasoning effort изменён на": "Reasoning effort changed to",
+    "Модель изменена на": "Model changed to",
     # ── диалог выбора типа лимита при выключении ключа
     "Выберите тип лимита": "Choose limit type",
     "На какой срок отключить ключ?": "For how long to disable the key?",
@@ -1729,6 +1797,20 @@ def check_claude_code_latest_version():
     try:
         req = Request(
             "https://registry.npmjs.org/@anthropic-ai/claude-code/latest",
+            headers={'User-Agent': 'ClaudeManager-Updater'}
+        )
+        with urlopen(req, timeout=8, context=_ssl_context) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        return data.get('version', '') or ''
+    except:
+        return ''
+
+def check_codex_latest_version():
+    """Запрашивает последнюю опубликованную версию Codex CLI (npm registry).
+    Возвращает пустую строку при любой ошибке сети."""
+    try:
+        req = Request(
+            "https://registry.npmjs.org/@openai/codex/latest",
             headers={'User-Agent': 'ClaudeManager-Updater'}
         )
         with urlopen(req, timeout=8, context=_ssl_context) as resp:
@@ -3870,67 +3952,139 @@ class ToggleSwitch(QWidget):
 # ============================================================
 
 class ModeToggle(QWidget):
-    """Левое положение = FreeModel (оранжевый), Правое = Omniroute (синий)"""
-    toggled = Signal(bool)  # True = Omniroute, False = FreeModel
+    """Три вкладки-режима: Anthropic (оранжевый) / OpenAI (зелёный) / Omniroute (синий)."""
+    modeChanged = Signal(str)  # 'anthropic' | 'openai' | 'omniroute'
 
-    def __init__(self, omniroute_mode=True, parent=None):
+    MODES = ["anthropic", "openai", "omniroute"]
+    LABELS = {"anthropic": "Anthropic", "omniroute": "Omniroute", "openai": "OpenAI"}
+    COLORS = {
+        "anthropic": (255, 170, 40),
+        "omniroute": (100, 150, 255),
+        "openai":    (52, 211, 153),
+    }
+
+    def __init__(self, mode="anthropic", parent=None):
         super().__init__(parent)
-        self.setFixedSize(280, 38)
+        self.setFixedSize(390, 38)
         self.setCursor(Qt.PointingHandCursor)
-        self._omniroute = omniroute_mode
-        self._progress = 1.0 if omniroute_mode else 0.0
+        self.setMouseTracking(True)
+        if mode not in self.MODES:
+            mode = "anthropic"
+        self._mode = mode
+        self._progress = float(self.MODES.index(mode))
         self._target = self._progress
+
+        # Hover-подсветка неактивных ячеек: буква плавно «загорается»
+        # цветом соответствующей вкладки при наведении — как в OptionSlider.
+        n = len(self.MODES)
+        self._hover_alpha = {i: 0.0 for i in range(n)}
+        self._hover_target = {i: 0.0 for i in range(n)}
 
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)  # 60fps
 
-    def isOmniroute(self):
-        return self._omniroute
+    def mode(self):
+        return self._mode
 
-    def setOmniroute(self, val, animate=True):
-        if val != self._omniroute:
-            self._omniroute = val
-            self._target = 1.0 if val else 0.0
-            if not animate:
-                self._progress = self._target
-                self.update()
+    def setMode(self, mode, animate=True):
+        if mode not in self.MODES or mode == self._mode:
+            return
+        self._mode = mode
+        self._target = float(self.MODES.index(mode))
+        if not animate:
+            self._progress = self._target
+        self.update()
 
     def _tick(self):
+        changed = False
         diff = self._target - self._progress
         if abs(diff) > 0.004:
             self._progress += diff * 0.18
-            self.update()
+            changed = True
         elif self._progress != self._target:
             self._progress = self._target
+            changed = True
+        # Hover-fade каждой ячейки: подтягиваем _hover_alpha к _hover_target
+        # шагом 0.09 (~250 мс до 1.0), даёт мягкий «прогрев» цвета букв.
+        for i in range(len(self.MODES)):
+            cur = self._hover_alpha[i]
+            tgt = self._hover_target[i]
+            d = tgt - cur
+            if abs(d) > 0.003:
+                self._hover_alpha[i] = cur + d * 0.09
+                changed = True
+            elif cur != tgt:
+                self._hover_alpha[i] = tgt
+                changed = True
+        if changed:
             self.update()
 
+    def _lerp_color(self, prog):
+        n = len(self.MODES)
+        prog = max(0.0, min(n - 1, prog))
+        i = int(prog)
+        f = prog - i
+        if i >= n - 1:
+            return self.COLORS[self.MODES[-1]]
+        c0 = self.COLORS[self.MODES[i]]
+        c1 = self.COLORS[self.MODES[i + 1]]
+        return (
+            int(c0[0] + (c1[0] - c0[0]) * f),
+            int(c0[1] + (c1[1] - c0[1]) * f),
+            int(c0[2] + (c1[2] - c0[2]) * f),
+        )
+
     def mousePressEvent(self, event):
-        new_mode = event.pos().x() >= self.width() / 2
-        if new_mode != self._omniroute:
-            self._omniroute = new_mode
-            self._target = 1.0 if self._omniroute else 0.0
-            self.toggled.emit(self._omniroute)
+        n = len(self.MODES)
+        idx = int(event.pos().x() // (self.width() / n))
+        idx = max(0, min(n - 1, idx))
+        new_mode = self.MODES[idx]
+        if new_mode != self._mode:
+            self._mode = new_mode
+            self._target = float(idx)
+            # только что выбранная ячейка не должна «догорать» hover-цветом
+            # поверх тёмного текста на пилюле
+            self._hover_target[idx] = 0.0
+            self.modeChanged.emit(new_mode)
+
+    def mouseMoveEvent(self, event):
+        n = len(self.MODES)
+        idx = int(event.pos().x() // (self.width() / n))
+        idx = max(0, min(n - 1, idx))
+        cur_idx = self.MODES.index(self._mode)
+        for i in range(n):
+            self._hover_target[i] = (1.0 if (i == idx and i != cur_idx) else 0.0)
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        for i in range(len(self.MODES)):
+            self._hover_target[i] = 0.0
+        super().leaveEvent(event)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        t = self._progress
         w, h = self.width(), self.height()
+        n = len(self.MODES)
+        cw = w / n
 
         # Трек
         p.setBrush(QColor(28, 28, 33))
         p.setPen(QPen(QColor(60, 60, 65), 2))
         p.drawRoundedRect(1, 1, w - 2, h - 2, 9, 9)
 
-        # Активная "таблетка" (скользящая половина)
-        pill_w = w / 2 - 4
-        pill_x = 2 + (w / 2) * t  # 2 → w/2 + 2
+        # Тонкие разделители между ячейками
+        p.setPen(QPen(QColor(52, 52, 58), 1.0))
+        for i in range(1, n):
+            x = i * cw
+            p.drawLine(QPointF(x, 5), QPointF(x, h - 5))
 
-        # Цвет: оранжевый (FreeModel) → синий (Omniroute)
-        r = int(255 + (100 - 255) * t)   # 255 → 100
-        g = int(170 + (150 - 170) * t)   # 170 → 150
-        b = int(40 + (255 - 40) * t)     # 40  → 255
+        # Активная "таблетка" (скользящая треть)
+        pill_w = cw - 6
+        pill_x = 3 + cw * self._progress
+
+        r, g, b = self._lerp_color(self._progress)
 
         # Свечение вокруг таблетки (клипом обрезаем по внутренней области трека)
         clip_path = QPainterPath()
@@ -3953,18 +4107,27 @@ class ModeToggle(QWidget):
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(QRectF(pill_x, 2, pill_w, h - 4), 7, 7)
 
-        # Текст
+        # Тексты: яркость каждой ячейки зависит от близости пилюли, а
+        # для «неактивных» ячеек буква плавно загорается цветом вкладки
+        # при наведении курсора (hover_alpha).
         p.setFont(QFont("Segoe UI", 10, QFont.Bold))
-
-        # Левая половина: FreeModel — яркая когда t=0
-        left_b = int(235 - 120 * t)
-        p.setPen(QColor(left_b, left_b, left_b))
-        p.drawText(QRectF(0, 0, w / 2, h), Qt.AlignCenter, "BaseURL")
-
-        # Правая половина: Omniroute — яркая когда t=1
-        right_b = int(115 + 120 * t)
-        p.setPen(QColor(right_b, right_b, right_b))
-        p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignCenter, "Omniroute")
+        for i, m in enumerate(self.MODES):
+            dist = abs(self._progress - i)
+            if dist < 0.5:
+                # под пилюлей — тёмный текст на цветном фоне
+                cover = 1.0 - dist * 2.0
+                shade = int(235 - 215 * cover)
+                p.setPen(QColor(shade, shade, shade))
+            else:
+                base = 115
+                hover = self._hover_alpha.get(i, 0.0)
+                cr, cg, cb = self.COLORS[m]
+                p.setPen(QColor(
+                    int(base + (cr - base) * hover),
+                    int(base + (cg - base) * hover),
+                    int(base + (cb - base) * hover),
+                ))
+            p.drawText(QRectF(i * cw, 0, cw, h), Qt.AlignCenter, self.LABELS[m])
 
         p.end()
 
@@ -5299,6 +5462,597 @@ class ModelDialog(QDialog):
                 self.slider.set_model(new_m)
             return
         super().keyPressEvent(event)
+
+
+# ============================================================
+# OPENAI (CODEX CLI) — модели, эфорты, слайдеры, диалог выбора
+# ============================================================
+
+OPENAI_MODEL_ORDER = ["gpt-5.2", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
+
+OPENAI_MODEL_COLORS = {
+    "gpt-5.2":       (130, 220, 130),
+    "gpt-5.5":       (180, 235, 150),
+    "gpt-5.6-luna":  (230, 220, 130),
+    "gpt-5.6-terra": (235, 180, 110),
+    "gpt-5.6-sol":   (235, 120, 100),
+}
+
+OPENAI_MODEL_LABELS = {
+    "gpt-5.2":       "5.2",
+    "gpt-5.5":       "5.5",
+    "gpt-5.6-luna":  "5.6 Luna",
+    "gpt-5.6-terra": "5.6 Terra",
+    "gpt-5.6-sol":   "5.6 Sol",
+}
+
+OPENAI_MODEL_DESCRIPTIONS = {
+    "gpt-5.2":       "для профессиональной работы и долгоживущих агентов",
+    "gpt-5.5":       "фронтир-модель для сложного кода и ресёрча",
+    "gpt-5.6-luna":  "быстрая и дешёвая agentic-модель для кода",
+    "gpt-5.6-terra": "сбалансированная agentic-модель на каждый день",
+    "gpt-5.6-sol":   "новейшая флагманская agentic-модель для кода",
+}
+OPENAI_MODEL_DESCRIPTIONS_EN = {
+    "gpt-5.2":       "optimized for professional work and long-running agents",
+    "gpt-5.5":       "frontier model for complex coding, research, and real-world work",
+    "gpt-5.6-luna":  "fast and affordable agentic coding model",
+    "gpt-5.6-terra": "balanced agentic coding model for everyday work",
+    "gpt-5.6-sol":   "latest frontier agentic coding model",
+}
+
+OPENAI_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"]
+
+# Максимально доступный effort для каждой модели. Уровни выше — заблокированы
+# в диалоге выбора и в popup-комбо (текст выводится приглушённым и не даёт
+# кликнуть). При загрузке сохранённых настроек effort кламппится к этому пределу.
+OPENAI_MODEL_MAX_EFFORT = {
+    "gpt-5.2":       "xhigh",
+    "gpt-5.5":       "xhigh",
+    "gpt-5.6-luna":  "max",
+}
+
+
+def _openai_disabled_efforts(model):
+    """Множество effort-уровней, недоступных для указанной модели."""
+    max_lvl = OPENAI_MODEL_MAX_EFFORT.get(model)
+    if not max_lvl or max_lvl not in OPENAI_EFFORT_LEVELS:
+        return set()
+    max_idx = OPENAI_EFFORT_LEVELS.index(max_lvl)
+    return set(OPENAI_EFFORT_LEVELS[max_idx + 1:])
+
+
+def _clamp_openai_effort(model, effort):
+    """Понижает effort до предела модели, если он выше допустимого."""
+    disabled = _openai_disabled_efforts(model)
+    if effort not in disabled:
+        return effort
+    max_lvl = OPENAI_MODEL_MAX_EFFORT.get(model, effort)
+    return max_lvl
+
+OPENAI_EFFORT_COLORS = {
+    "low":    (120, 220, 130),
+    "medium": (180, 210, 130),
+    "high":   (235, 180, 110),
+    "xhigh":  (235, 120, 100),
+    "max":    (220, 70, 85),
+    "ultra":  (170, 110, 255),
+}
+
+OPENAI_EFFORT_LABELS = {
+    "low":    "LOW",
+    "medium": "MEDIUM",
+    "high":   "HIGH",
+    "xhigh":  "XHIGH",
+    "max":    "MAX",
+    "ultra":  "ULTRA",
+}
+
+OPENAI_EFFORT_DESCRIPTIONS = {
+    "low":    "быстрые ответы с лёгким reasoning",
+    "medium": "баланс скорости и глубины для повседневных задач",
+    "high":   "глубокий reasoning для сложных задач",
+    "xhigh":  "экстра-глубокий reasoning для сложных проблем",
+    "max":    "качество важнее скорости · повышенный расход лимитов",
+    "ultra":  "тяжёлая работа с несколькими агентами · максимальный расход",
+}
+OPENAI_EFFORT_DESCRIPTIONS_EN = {
+    "low":    "fast responses with lighter reasoning",
+    "medium": "balances speed and reasoning depth for everyday tasks",
+    "high":   "greater reasoning depth for complex problems",
+    "xhigh":  "extra high reasoning depth for complex problems",
+    "max":    "quality over speed for difficult problems · higher usage",
+    "ultra":  "demanding work using multiple agents · highest usage",
+}
+
+
+class OptionSlider(QWidget):
+    """Обобщённый N-позиционный ползунок (копия EffortSlider, но с
+    параметризуемыми levels/colors/labels). Последняя позиция пульсирует
+    свечением, как ultracode/Fable 5 в родных слайдерах."""
+
+    changed = Signal(str)
+
+    def __init__(self, levels, colors, labels, value=None, parent=None, pulse_last=True):
+        super().__init__(parent)
+        self._levels = list(levels)
+        self._colors = dict(colors)
+        self._labels = dict(labels)
+        self._pulse_last = pulse_last
+        self.setFixedSize(468, 34)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        if value not in self._levels:
+            value = self._levels[0]
+        self._level = value
+        self._target = float(self._levels.index(value))
+        self._progress = self._target
+        self._hover_idx = -1
+        self._hover_alpha = {i: 0.0 for i in range(len(self._levels))}
+        self._hover_target = {i: 0.0 for i in range(len(self._levels))}
+        # Заблокированные уровни: клик по ним игнорируется, текст рисуется
+        # приглушённым и не подсвечивается hover'ом.
+        self._disabled = set()
+        self._pulse = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def set_disabled_levels(self, disabled_levels):
+        """Обновляет список disabled-уровней. Если текущее значение попало в
+        disabled — сдвигает к последнему доступному ниже, эмитит `changed`."""
+        new_disabled = set(disabled_levels or ())
+        # оставляем только валидные ключи
+        new_disabled &= set(self._levels)
+        if new_disabled == self._disabled:
+            return
+        self._disabled = new_disabled
+        if self._level in self._disabled:
+            # ищем ближайший доступный слева
+            idx = self._levels.index(self._level)
+            fallback = None
+            for j in range(idx - 1, -1, -1):
+                candidate = self._levels[j]
+                if candidate not in self._disabled:
+                    fallback = candidate
+                    break
+            if fallback is None:
+                for j in range(idx + 1, len(self._levels)):
+                    candidate = self._levels[j]
+                    if candidate not in self._disabled:
+                        fallback = candidate
+                        break
+            if fallback is not None and fallback != self._level:
+                self._level = fallback
+                self._target = float(self._levels.index(fallback))
+                self.changed.emit(fallback)
+        self.update()
+
+    def set_value(self, value, animate=True):
+        if value not in self._levels or value == self._level:
+            return
+        self._level = value
+        self._target = float(self._levels.index(value))
+        if not animate:
+            self._progress = self._target
+        self.update()
+
+    def value(self):
+        return self._level
+
+    def _cell_width(self):
+        return self.width() / len(self._levels)
+
+    def _idx_from_x(self, x):
+        cw = self._cell_width()
+        idx = int(x // cw)
+        return max(0, min(len(self._levels) - 1, idx))
+
+    def _lerp_color(self, prog):
+        n = len(self._levels)
+        prog = max(0.0, min(n - 1, prog))
+        i = int(prog)
+        f = prog - i
+        if i >= n - 1:
+            return self._colors[self._levels[-1]]
+        c0 = self._colors[self._levels[i]]
+        c1 = self._colors[self._levels[i + 1]]
+        return (
+            int(c0[0] + (c1[0] - c0[0]) * f),
+            int(c0[1] + (c1[1] - c0[1]) * f),
+            int(c0[2] + (c1[2] - c0[2]) * f),
+        )
+
+    def _tick(self):
+        changed = False
+        d = self._target - self._progress
+        if abs(d) > 0.004:
+            self._progress += d * 0.18
+            changed = True
+        elif self._progress != self._target:
+            self._progress = self._target
+            changed = True
+        for i in range(len(self._levels)):
+            cur = self._hover_alpha[i]
+            tgt = self._hover_target[i]
+            d = tgt - cur
+            if abs(d) > 0.003:
+                self._hover_alpha[i] = cur + d * 0.09
+                changed = True
+            elif cur != tgt:
+                self._hover_alpha[i] = tgt
+                changed = True
+        self._pulse = (self._pulse + 0.045) % (math.pi * 2)
+        if self._pulse_last and (self._level == self._levels[-1]
+                                 or abs(self._progress - (len(self._levels) - 1)) < 0.5):
+            changed = True
+        if changed:
+            self.update()
+
+    def mousePressEvent(self, event):
+        idx = self._idx_from_x(event.pos().x())
+        new_level = self._levels[idx]
+        if new_level in self._disabled:
+            return
+        if new_level != self._level:
+            self._level = new_level
+            self._target = float(idx)
+            self.changed.emit(new_level)
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        idx = self._idx_from_x(event.pos().x())
+        cur_idx = self._levels.index(self._level)
+        for i in range(len(self._levels)):
+            allowed = (self._levels[i] not in self._disabled)
+            self._hover_target[i] = (1.0 if (allowed and i == idx and i != cur_idx) else 0.0)
+        self._hover_idx = idx
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        for i in range(len(self._levels)):
+            self._hover_target[i] = 0.0
+        self._hover_idx = -1
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        n = len(self._levels)
+        cw = w / n
+
+        track_r = 8.0
+        pill_r = 6.5
+
+        p.setBrush(QColor(28, 28, 33))
+        p.setPen(QPen(QColor(60, 60, 65), 1.4))
+        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
+
+        p.setPen(QPen(QColor(52, 52, 58), 1.0))
+        for i in range(1, n):
+            x = i * cw
+            p.drawLine(QPointF(x, 4), QPointF(x, h - 4))
+
+        r, g, b = self._lerp_color(self._progress)
+        pad = 3.0
+        pill_w = cw - pad * 1.4
+        pill_x = self._progress * cw + (cw - pill_w) / 2.0
+
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
+        p.save()
+        p.setClipPath(clip)
+        is_last = self._pulse_last and (self._level == self._levels[-1]
+                                        or self._progress > n - 1.5)
+        pulse_amp = (0.5 + 0.5 * math.sin(self._pulse)) if is_last else 0.0
+        glow_boost = 1.0 + 0.8 * pulse_amp
+        for i in range(1, 4):
+            base_alpha = 48 * (1 - (i - 1) / 3.2) * glow_boost
+            alpha = int(max(0, min(200, base_alpha)))
+            p.setPen(QPen(QColor(r, g, b, alpha), 1))
+            p.setBrush(Qt.NoBrush)
+            ex = i * 1.4
+            p.drawRoundedRect(
+                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
+                pill_r + ex, pill_r + ex
+            )
+        p.restore()
+
+        grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
+        grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
+        grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
+        p.setBrush(QBrush(grad))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
+
+        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        for i, lvl in enumerate(self._levels):
+            cx = i * cw
+            rect = QRectF(cx, 0, cw, h)
+            dist = abs(self._progress - i)
+            if lvl in self._disabled:
+                # заблокированный уровень — приглушённый серый, без hover
+                pen = QColor(70, 70, 78)
+            elif dist < 0.5:
+                cover = 1.0 - dist * 2.0
+                dark = QColor(20, 22, 28)
+                shade = int(140 + 20 * (1.0 - dist))
+                pale = QColor(shade, shade, shade + 4)
+                pen = QColor(
+                    int(pale.red()   + (dark.red()   - pale.red())   * cover),
+                    int(pale.green() + (dark.green() - pale.green()) * cover),
+                    int(pale.blue()  + (dark.blue()  - pale.blue())  * cover),
+                )
+            else:
+                lc = self._colors[lvl]
+                shade = 145
+                base = QColor(shade, shade, shade + 4)
+                hover = self._hover_alpha.get(i, 0.0)
+                pen = QColor(
+                    int(base.red()   + (lc[0] - base.red())   * hover),
+                    int(base.green() + (lc[1] - base.green()) * hover),
+                    int(base.blue()  + (lc[2] - base.blue())  * hover),
+                )
+            p.setPen(pen)
+            p.drawText(rect, Qt.AlignCenter, self._labels.get(lvl, lvl))
+
+        p.end()
+
+
+class OpenAIModelDialog(QDialog):
+    """Окно выбора модели и reasoning effort для Codex CLI (вкладка OpenAI).
+    Структура и стиль полностью повторяют ModelDialog: два ползунка + описания."""
+
+    applied = Signal(str, str)  # model, effort
+
+    def __init__(self, current_model="gpt-5.6-sol", parent=None, current_effort="low"):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setModal(True)
+        if current_model not in OPENAI_MODEL_ORDER:
+            current_model = "gpt-5.6-sol"
+        if current_effort not in OPENAI_EFFORT_LEVELS:
+            current_effort = "low"
+        # Клампим effort под ограничения выбранной модели ещё до создания UI,
+        # чтобы стартовое состояние сразу было валидным.
+        current_effort = _clamp_openai_effort(current_model, current_effort)
+        self._model = current_model
+        self._initial_model = current_model
+        self._effort = current_effort
+        self._initial_effort = current_effort
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 14)
+
+        container = DottedFrame()
+        container.setObjectName("openaiModelDialogContainer")
+        container.setStyleSheet("""
+            QFrame#openaiModelDialogContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        outer.addWidget(container)
+
+        shadow = QGraphicsDropShadowEffect(container)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 6)
+        container.setGraphicsEffect(shadow)
+
+        inner = QVBoxLayout(container)
+        inner.setContentsMargins(18, 12, 18, 16)
+        inner.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addSpacing(24)
+        head.addStretch()
+        title = QLabel(tr("Выбор модели"))
+        title.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        title.setStyleSheet("color: rgb(200, 200, 210); background: transparent; border: none;")
+        title.setAlignment(Qt.AlignCenter)
+        head.addWidget(title)
+        head.addStretch()
+        self.close_btn = _CloseButton(parent=container)
+        self.close_btn.setFixedSize(24, 24)
+        self.close_btn.clicked.connect(self.close)
+        head.addWidget(self.close_btn)
+        inner.addLayout(head)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        self.slider = OptionSlider(
+            OPENAI_MODEL_ORDER, OPENAI_MODEL_COLORS, OPENAI_MODEL_LABELS,
+            value=current_model,
+        )
+        self.slider.changed.connect(self._on_slider_changed)
+        row.addWidget(self.slider)
+        row.addStretch()
+        inner.addLayout(row)
+
+        self.desc_lbl = QLabel(self._desc_text(current_model))
+        self.desc_lbl.setFont(QFont("Segoe UI", 9))
+        self.desc_lbl.setAlignment(Qt.AlignCenter)
+        self._apply_desc_color(current_model)
+        self.desc_lbl.setWordWrap(True)
+        inner.addWidget(self.desc_lbl)
+
+        sep_lbl = QLabel(tr("Reasoning Effort"))
+        sep_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        sep_lbl.setAlignment(Qt.AlignCenter)
+        sep_lbl.setStyleSheet("color: rgb(180, 180, 190); background: transparent; border: none; margin-top: 6px;")
+        inner.addWidget(sep_lbl)
+
+        eff_row = QHBoxLayout()
+        eff_row.addStretch()
+        self.effort_slider = OptionSlider(
+            OPENAI_EFFORT_LEVELS, OPENAI_EFFORT_COLORS, OPENAI_EFFORT_LABELS,
+            value=current_effort,
+        )
+        self.effort_slider.set_disabled_levels(_openai_disabled_efforts(current_model))
+        self.effort_slider.changed.connect(self._on_effort_slider_changed)
+        eff_row.addWidget(self.effort_slider)
+        eff_row.addStretch()
+        inner.addLayout(eff_row)
+
+        self.effort_desc_lbl = QLabel(self._effort_desc_text(current_effort))
+        self.effort_desc_lbl.setFont(QFont("Segoe UI", 9))
+        self.effort_desc_lbl.setAlignment(Qt.AlignCenter)
+        self._apply_effort_desc_color(current_effort)
+        self.effort_desc_lbl.setWordWrap(True)
+        inner.addWidget(self.effort_desc_lbl)
+
+        self.setFixedWidth(560)
+        self.adjustSize()
+
+        self.setWindowOpacity(0.0)
+        self._fade_in = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_in.setDuration(220)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        self._closing = False
+
+    def _desc_text(self, model):
+        try:
+            if LANG is not None and LANG.lang == "en":
+                return OPENAI_MODEL_DESCRIPTIONS_EN.get(model, "")
+        except Exception:
+            pass
+        return OPENAI_MODEL_DESCRIPTIONS.get(model, "")
+
+    def _apply_desc_color(self, model):
+        r, g, b = OPENAI_MODEL_COLORS.get(model, (200, 200, 200))
+        self.desc_lbl.setStyleSheet(
+            f"color: rgb({r},{g},{b}); background: transparent; border: none;"
+        )
+
+    def _effort_desc_text(self, level):
+        try:
+            if LANG is not None and LANG.lang == "en":
+                return OPENAI_EFFORT_DESCRIPTIONS_EN.get(level, "")
+        except Exception:
+            pass
+        return OPENAI_EFFORT_DESCRIPTIONS.get(level, "")
+
+    def _apply_effort_desc_color(self, level):
+        r, g, b = OPENAI_EFFORT_COLORS.get(level, (200, 200, 200))
+        self.effort_desc_lbl.setStyleSheet(
+            f"color: rgb({r},{g},{b}); background: transparent; border: none;"
+        )
+
+    def _on_slider_changed(self, model):
+        self._model = model
+        self.desc_lbl.setText(self._desc_text(model))
+        self._apply_desc_color(model)
+        # обновляем список запрещённых effort'ов; если текущий effort
+        # оказался запрещён — OptionSlider сам сдвинет его и вызовет
+        # changed → _on_effort_slider_changed, что обновит self._effort/desc.
+        self.effort_slider.set_disabled_levels(_openai_disabled_efforts(model))
+
+    def _on_effort_slider_changed(self, level):
+        self._effort = level
+        self.effort_desc_lbl.setText(self._effort_desc_text(level))
+        self._apply_effort_desc_color(level)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_in.start()
+
+    def closeEvent(self, event):
+        if self._closing:
+            super().closeEvent(event)
+            return
+        self._closing = True
+        event.ignore()
+        if self._model != self._initial_model or self._effort != self._initial_effort:
+            try:
+                self.applied.emit(self._model, self._effort)
+            except Exception:
+                pass
+        fade = QPropertyAnimation(self, b"windowOpacity", self)
+        fade.setDuration(200)
+        fade.setStartValue(self.windowOpacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(self.close)
+        fade.start()
+        self._fade_out = fade
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        if event.key() == Qt.Key_Left:
+            i = OPENAI_MODEL_ORDER.index(self._model)
+            if i > 0:
+                new_m = OPENAI_MODEL_ORDER[i - 1]
+                self._on_slider_changed(new_m)
+                self.slider.set_value(new_m)
+            return
+        if event.key() == Qt.Key_Right:
+            i = OPENAI_MODEL_ORDER.index(self._model)
+            if i < len(OPENAI_MODEL_ORDER) - 1:
+                new_m = OPENAI_MODEL_ORDER[i + 1]
+                self._on_slider_changed(new_m)
+                self.slider.set_value(new_m)
+            return
+        super().keyPressEvent(event)
+
+
+class OpenAIModelPickerComboBox(PickerComboBox):
+    """PickerComboBox вкладки OpenAI: клик открывает OpenAIModelDialog
+    с ползунками модели и effort'а."""
+
+    modelEffortPicked = Signal(str, str)
+
+    def showPopup(self):
+        if self._picker_dlg is not None:
+            return
+        cur = self.currentText()
+        if cur not in OPENAI_MODEL_ORDER:
+            cur = "gpt-5.6-sol"
+        current_effort = "low"
+        try:
+            parent_win = self.window()
+            if parent_win is not None and hasattr(parent_win, "settings"):
+                eff = parent_win.settings.get("openai_effort", "low")
+                if eff in OPENAI_EFFORT_LEVELS:
+                    current_effort = eff
+        except Exception:
+            pass
+        dlg = OpenAIModelDialog(current_model=cur, parent=self.window(), current_effort=current_effort)
+        dlg.applied.connect(self._on_model_effort_picked)
+        dlg.destroyed.connect(self._on_picker_destroyed)
+        self._picker_dlg = dlg
+
+        def _show_and_position():
+            dlg.show()
+            dlg.adjustSize()
+            dw, dh = dlg.width(), dlg.height()
+            parent_win = self.window()
+            try:
+                if parent_win is not None:
+                    pg = parent_win.frameGeometry()
+                    center = pg.center()
+                    dlg.move(center.x() - dw // 2, center.y() - dh // 2)
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _show_and_position)
+
+    def _on_model_effort_picked(self, model, effort):
+        if model and model != self.currentText():
+            self.setCurrentText(model)
+        try:
+            self.modelEffortPicked.emit(model, effort)
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -8929,8 +9683,10 @@ class _CloseButton(QPushButton):
 class BaseUrlManagerDialog(QDialog):
     DEFAULT_URLS = ("https://cc.freemodel.dev",)
 
-    def __init__(self, urls, current, parent=None):
+    def __init__(self, urls, current, parent=None, default_urls=None):
         super().__init__(parent)
+        if default_urls is not None:
+            self.DEFAULT_URLS = tuple(default_urls)
         self.urls = list(urls)
         self.current = current
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
@@ -9690,12 +10446,13 @@ class ClaudeInstallProgressDialog(QDialog):
     """Показывает прогресс установки/обновления/удаления, ждёт закрытия PowerShell."""
 
     def __init__(self, is_update=False, old_version="", new_version="",
-                 is_uninstall=False, parent=None):
+                 is_uninstall=False, parent=None, product="Claude Code"):
         super().__init__(parent)
         self._is_update = is_update
         self._is_uninstall = is_uninstall
         self._old_version = old_version
         self._new_version = new_version
+        self._product = product
         self._finished = False
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
@@ -9704,16 +10461,16 @@ class ClaudeInstallProgressDialog(QDialog):
 
         if is_uninstall:
             self._accent = (235, 90, 90)   # красный
-            self._title_text = tr("Удаление Claude Code")
+            self._title_text = tr("Удаление") + f" {product}"
             # Не жёстко-русский action_word — берём готовый tr()-ключ
             self._status_running_text = tr("Идёт удаление…\nНе закрывайте окно PowerShell.")
         elif is_update:
             self._accent = (245, 180, 60)   # жёлто-оранжевый
-            self._title_text = tr("Обновление Claude Code")
+            self._title_text = tr("Обновление") + f" {product}"
             self._status_running_text = tr("Идёт обновление…\nНе закрывайте окно PowerShell.")
         else:
             self._accent = (52, 211, 153)  # зелёный
-            self._title_text = tr("Установка Claude Code")
+            self._title_text = tr("Установка") + f" {product}"
             self._status_running_text = tr("Идёт установка…\nНе закрывайте окно PowerShell.")
 
         main_layout = QVBoxLayout()
@@ -9840,14 +10597,14 @@ class ClaudeInstallProgressDialog(QDialog):
         self.spinner.hide()
         # Обновить тексты
         if self._is_uninstall:
-            self.title_lbl.setText(tr("Claude Code удалён ✓"))
+            self.title_lbl.setText(f"{self._product} " + tr("удалён ✓"))
             self.sub_lbl.setText("")
             self.status_lbl.setText(tr(
                 "Удаление завершено успешно."
             ))
         elif self._is_update:
             ver = actual_version or self._new_version
-            self.title_lbl.setText(tr("Claude Code обновлён ✓"))
+            self.title_lbl.setText(f"{self._product} " + tr("обновлён ✓"))
             if ver:
                 ver_fmt = f"v{ver}" if ver[0].isdigit() else ver
                 self.sub_lbl.setText(tr("Версия") + f" {ver_fmt}")
@@ -9856,10 +10613,12 @@ class ClaudeInstallProgressDialog(QDialog):
             self.status_lbl.setText(tr(
                 "Обновление завершено успешно.\n"
                 "Перезапустите Claude Code для применения изменений."
+            ) if self._product == "Claude Code" else tr(
+                "Обновление завершено успешно."
             ))
         else:
             ver = actual_version or self._new_version
-            self.title_lbl.setText(tr("Claude Code установлен ✓"))
+            self.title_lbl.setText(f"{self._product} " + tr("установлен ✓"))
             if ver:
                 ver_fmt = f"v{ver}" if ver[0].isdigit() else ver
                 self.sub_lbl.setText(tr("Версия") + f" {ver_fmt}")
@@ -9868,6 +10627,10 @@ class ClaudeInstallProgressDialog(QDialog):
             self.status_lbl.setText(tr(
                 "Установка завершена успешно.\n"
                 "Если команда claude не найдена — открой новое окно консоли\n"
+                "(npm обычно сам прописывает её в PATH)."
+            ) if self._product == "Claude Code" else tr(
+                "Установка завершена успешно.\n"
+                "Если команда codex не найдена — открой новое окно консоли\n"
                 "(npm обычно сам прописывает её в PATH)."
             ))
         self.btn_ok.show()
@@ -11151,6 +11914,8 @@ class ClaudeManager(QMainWindow):
     claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
     claude_install_finished = Signal(object)  # context dict
     claude_uninstall_finished = Signal(object)  # context dict (по образцу install)
+    codex_version_checked = Signal(str, str)  # local_version, latest_version
+    codex_install_finished = Signal(object)  # context dict (install/update/uninstall)
     _online_usage_polled = Signal(str, object)  # (key_id, data|Exception) — фоновый /api/usage
 
     def __init__(self):
@@ -11175,8 +11940,12 @@ class ClaudeManager(QMainWindow):
                 break
 
         self.settings = load_settings()
-        # На каждом старте принудительно открываем вкладку BaseURL
-        # (независимо от того, какая была выбрана в прошлый раз).
+        # На каждом старте открываем вкладку Anthropic или OpenAI (что было
+        # выбрано в прошлый раз); Omniroute принудительно не восстанавливаем.
+        _mode = self.settings.get("app_mode", "anthropic")
+        if _mode not in ("anthropic", "openai"):
+            _mode = "anthropic"
+        self.settings["app_mode"] = _mode
         self.settings["use_custom_token"] = True
         self.omniroute_process = None
 
@@ -11273,8 +12042,8 @@ class ClaudeManager(QMainWindow):
         # Переключатель режимов FreeModel ↔ Omniroute (под заголовком, по центру)
         mode_row = QHBoxLayout()
         mode_row.addStretch()
-        self.mode_toggle = ModeToggle(omniroute_mode=not self.settings.get("use_custom_token", False))
-        self.mode_toggle.toggled.connect(self._on_mode_changed)
+        self.mode_toggle = ModeToggle(mode=self.settings.get("app_mode", "anthropic"))
+        self.mode_toggle.modeChanged.connect(self._on_mode_changed)
         mode_row.addWidget(self.mode_toggle)
         mode_row.addStretch()
         main_layout.addLayout(mode_row)
@@ -11319,6 +12088,21 @@ class ClaudeManager(QMainWindow):
         self.btn_fix_claude.set_hover_color(235, 90, 90)  # красный hover — это «лечебное» действие
         self.btn_fix_claude.clicked.connect(self._on_fix_claude_button_clicked)
         install_row.addWidget(self.btn_fix_claude)
+
+        # Кнопки вкладки OpenAI — установка/удаление Codex CLI. Показываются
+        # только в режиме openai (в _apply_app_mode), клодовские тогда прячутся.
+        self.btn_install_codex = StyledButton(tr("Установить Codex CLI"))
+        self.btn_install_codex.setFixedHeight(34)
+        self.btn_install_codex.clicked.connect(self._install_codex_cli)
+        self.btn_install_codex.hide()
+        install_row.addWidget(self.btn_install_codex)
+
+        self.btn_uninstall_codex = StyledButton(tr("Удалить Codex CLI"))
+        self.btn_uninstall_codex.setFixedHeight(34)
+        self.btn_uninstall_codex.set_hover_color(235, 90, 90)  # красный hover
+        self.btn_uninstall_codex.clicked.connect(self._uninstall_codex_cli)
+        self.btn_uninstall_codex.hide()
+        install_row.addWidget(self.btn_uninstall_codex)
 
         install_row.addStretch()
         main_layout.addLayout(install_row)
@@ -11455,6 +12239,37 @@ class ClaudeManager(QMainWindow):
         claude_header_inner.addWidget(self.autoupdate_toggle)
 
         claude_layout.addWidget(claude_header_chip)
+        self.claude_header_chip = claude_header_chip
+
+        # Чип Codex CLI — зеркальный клодовскому, для вкладки OpenAI.
+        codex_header_chip = QFrame()
+        codex_header_chip.setObjectName("codex_header_chip")
+        codex_header_chip.setStyleSheet(
+            "QFrame#codex_header_chip { background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; }"
+        )
+        codex_header_inner = QHBoxLayout(codex_header_chip)
+        codex_header_inner.setContentsMargins(10, 4, 10, 4)
+        codex_header_inner.setSpacing(8)
+
+        codex_label = QLabel("Codex CLI")
+        codex_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        codex_label.setStyleSheet("color: rgb(200, 200, 200); background: transparent; border: none;")
+        codex_header_inner.addWidget(codex_label)
+
+        self.codex_install_indicator = StatusIndicator()
+        codex_header_inner.addWidget(self.codex_install_indicator)
+
+        self.codex_install_status_label = QLabel(tr("Не установлен"))
+        self.codex_install_status_label.setFont(QFont("Segoe UI", 10))
+        self.codex_install_status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        codex_header_inner.addWidget(self.codex_install_status_label)
+
+        codex_header_inner.addStretch()
+
+        codex_header_chip.hide()
+        claude_layout.addWidget(codex_header_chip)
+        self.codex_header_chip = codex_header_chip
 
         # Выбор модели — обёрнут в контейнер чтобы можно было скрыть целиком
         self.model_section_widget = QWidget()
@@ -11796,7 +12611,7 @@ class ClaudeManager(QMainWindow):
         self._fm_effort_colors = fm_effort_colors
         self.fm_effort_combo.set_picker(
             colors=fm_effort_colors,
-            title="Reasoning Effort"
+            title=tr("Reasoning Effort")
         )
         # Начальный цвет текста и рамки под выбранный effort
         if saved_fm_effort in fm_effort_colors:
@@ -11815,8 +12630,156 @@ class ClaudeManager(QMainWindow):
 
         claude_layout.addWidget(self.freemodel_section_widget)
 
+        # ── Секция OpenAI (Codex CLI) — Base URL / общий ключ / модель+effort ──
+        self.openai_section_widget = QWidget()
+        openai_layout = QVBoxLayout(self.openai_section_widget)
+        openai_layout.setContentsMargins(0, 0, 0, 0)
+        openai_layout.setSpacing(8)
+
+        oa_url_row = QHBoxLayout()
+        oa_url_lbl = QLabel("Base URL:")
+        oa_url_lbl.setFont(QFont("Segoe UI", 10))
+        oa_url_lbl.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
+        oa_url_lbl.setFixedWidth(90)
+        oa_url_row.addWidget(oa_url_lbl)
+
+        self.oa_url_combo = PickerComboBox()
+        self.oa_url_combo.setFont(QFont("Segoe UI", 9))
+        self.oa_url_combo.setMaxVisibleItems(4)
+        self.oa_url_combo.addItems(self.settings.get("openai_base_urls", []))
+        if self.settings.get("openai_base_url"):
+            self.oa_url_combo.setCurrentText(self.settings["openai_base_url"])
+        self.oa_url_combo.set_picker(title=tr("Выбор Base URL"))
+        self.oa_url_combo.currentTextChanged.connect(self._oa_url_changed)
+        oa_url_row.addWidget(self.oa_url_combo, 1)
+
+        self.oa_btn_manage_urls = StyledButton(tr("Управление"))
+        self.oa_btn_manage_urls.setMinimumHeight(0)
+        self.oa_btn_manage_urls.setFixedHeight(36)
+        self.oa_btn_manage_urls.setFixedWidth(130)
+        self.oa_btn_manage_urls.clicked.connect(self._oa_manage_urls)
+        oa_url_row.addWidget(self.oa_btn_manage_urls)
+        openai_layout.addLayout(oa_url_row)
+
+        oa_key_row = QHBoxLayout()
+        oa_key_lbl = QLabel(tr("API ключ:"))
+        oa_key_lbl.setFont(QFont("Segoe UI", 10))
+        oa_key_lbl.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
+        oa_key_lbl.setFixedWidth(90)
+        self._track_tr(oa_key_lbl, "API ключ:")
+        oa_key_row.addWidget(oa_key_lbl)
+
+        # Ключи ОБЩИЕ с вкладкой Anthropic: то же read-only поле активного
+        # ключа и то же окно «Управление».
+        self.oa_key_input = QLineEdit()
+        self.oa_key_input.setPlaceholderText(tr("Ключи не добавлены — откройте «Управление»"))
+        self.oa_key_input.setText(self.settings.get("custom_api_key", ""))
+        self.oa_key_input.setEchoMode(QLineEdit.Password)
+        self.oa_key_input.setFont(QFont("Segoe UI", 9))
+        self.oa_key_input.setReadOnly(True)
+        self.oa_key_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        oa_key_row.addWidget(self.oa_key_input, 1)
+
+        self.oa_btn_toggle_key = EyeToggleButton()
+        self.oa_btn_toggle_key.clicked.connect(self._oa_toggle_key)
+        oa_key_row.addWidget(self.oa_btn_toggle_key)
+
+        self.oa_btn_manage_keys = StyledButton(tr("Управление"))
+        self.oa_btn_manage_keys.setMinimumHeight(0)
+        self.oa_btn_manage_keys.setFixedHeight(36)
+        self.oa_btn_manage_keys.setFixedWidth(130)
+        self.oa_btn_manage_keys.clicked.connect(self._fm_manage_keys)
+        oa_key_row.addWidget(self.oa_btn_manage_keys)
+        openai_layout.addLayout(oa_key_row)
+
+        oa_model_row = QHBoxLayout()
+        oa_model_lbl = QLabel(tr("Модель:"))
+        oa_model_lbl.setFont(QFont("Segoe UI", 10))
+        oa_model_lbl.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
+        self._track_tr(oa_model_lbl, "Модель:")
+        oa_model_lbl.setFixedWidth(90)
+        oa_model_row.addWidget(oa_model_lbl)
+
+        self.oa_model_combo = OpenAIModelPickerComboBox()
+        self.oa_model_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.oa_model_combo.setMaxVisibleItems(len(OPENAI_MODEL_ORDER))
+        self.oa_model_combo.addItems(OPENAI_MODEL_ORDER)
+        oa_model_colors = {m: QColor(*OPENAI_MODEL_COLORS[m]) for m in OPENAI_MODEL_ORDER}
+        self._oa_model_colors = oa_model_colors
+        for i in range(self.oa_model_combo.count()):
+            txt = self.oa_model_combo.itemText(i)
+            if txt in oa_model_colors:
+                self.oa_model_combo.setItemData(i, oa_model_colors[txt], Qt.ForegroundRole)
+        self.oa_model_combo.set_picker(colors=oa_model_colors, title=tr("Выбор модели"))
+        saved_oa_model = self.settings.get("openai_model") or "gpt-5.6-sol"
+        if saved_oa_model not in OPENAI_MODEL_ORDER:
+            saved_oa_model = "gpt-5.6-sol"
+        self.oa_model_combo.setCurrentText(saved_oa_model)
+        if saved_oa_model in oa_model_colors:
+            self.oa_model_combo.setTextColor(oa_model_colors[saved_oa_model])
+            self.oa_model_combo.setAccentColor(oa_model_colors[saved_oa_model])
+        if self.settings.get("openai_model") != saved_oa_model:
+            self.settings["openai_model"] = saved_oa_model
+        self.oa_model_combo.currentTextChanged.connect(self._oa_model_changed)
+        try:
+            self.oa_model_combo.modelEffortPicked.connect(self._on_oa_model_effort_picked)
+        except Exception:
+            pass
+        oa_model_row.addWidget(self.oa_model_combo, 1)
+
+        self.oa_effort_combo = EffortPickerComboBox()
+        self.oa_effort_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.oa_effort_combo.setMinimumWidth(120)
+        self.oa_effort_combo.addItems(list(OPENAI_EFFORT_LEVELS))
+        saved_oa_effort = self.settings.get("openai_effort", "low")
+        if saved_oa_effort not in OPENAI_EFFORT_LEVELS:
+            saved_oa_effort = "low"
+        # клампим effort к ограничениям выбранной модели: если пользователь
+        # раньше выбирал max для 5.2, при смене на 5.6 max останется, но
+        # обратный сценарий (max для 5.6, потом старт с 5.2) должен сдвинуть
+        # effort вниз до xhigh.
+        clamped_oa_effort = _clamp_openai_effort(saved_oa_model, saved_oa_effort)
+        if clamped_oa_effort != saved_oa_effort:
+            self.settings["openai_effort"] = clamped_oa_effort
+            saved_oa_effort = clamped_oa_effort
+        self.oa_effort_combo.setCurrentText(saved_oa_effort)
+        self.oa_effort_combo.setMaxVisibleItems(len(OPENAI_EFFORT_LEVELS))
+        oa_effort_colors = {k: QColor(*v) for k, v in OPENAI_EFFORT_COLORS.items()}
+        self._oa_effort_colors = oa_effort_colors
+        self.oa_effort_combo.set_picker(
+            colors=oa_effort_colors,
+            title=tr("Reasoning Effort"),
+            disabled=_openai_disabled_efforts(saved_oa_model),
+        )
+        if saved_oa_effort in oa_effort_colors:
+            self.oa_effort_combo.setTextColor(oa_effort_colors[saved_oa_effort])
+            self.oa_effort_combo.setAccentColor(oa_effort_colors[saved_oa_effort])
+        oa_model_row.addWidget(self.oa_effort_combo, 0)
+
+        openai_layout.addLayout(oa_model_row)
+
+        self.openai_section_widget.hide()
+        claude_layout.addWidget(self.openai_section_widget)
+
         # Применяем начальное состояние видимости секций
-        self.toggle_custom_token_fields()
+        self._apply_app_mode()
 
         # Выбор рабочей директории
         dir_layout = QHBoxLayout()
@@ -11969,20 +12932,85 @@ class ClaudeManager(QMainWindow):
         # именно так и сделано.
         main_layout.addStretch(1)
 
-        # Футер
+        # Футер: текст + кликабельная ссылка на официальный сайт
+        footer_row = QWidget()
+        footer_layout = QHBoxLayout(footer_row)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(0)
+
         footer = QLabel(
             f"© 2026 Claude Code Manager v{APP_VERSION}   •   "
-            f"by {AUTHOR_NAME}   •   Discord: {AUTHOR_DISCORD}"
+            f"by {AUTHOR_NAME}   •   Discord: {AUTHOR_DISCORD}   •   "
         )
         footer.setFont(QFont("Segoe UI", 8))
-        footer.setAlignment(Qt.AlignCenter)
         footer.setStyleSheet("color: rgb(100, 100, 100);")
         footer.setToolTip(
             f"Автор: {AUTHOR_NAME}\n"
             f"Discord: {AUTHOR_DISCORD}\n"
             f"GitHub: {AUTHOR_GITHUB}"
         )
-        main_layout.addWidget(footer)
+
+        # При наведении плавно подсвечивается мягким оранжевым,
+        # по клику открывает официальный сайт в браузере.
+        class _SiteLinkLabel(QLabel):
+            SITE_URL = "https://claude-code-manager.netlify.app"
+            COLOR_IDLE = QColor(100, 100, 100)
+            COLOR_HOVER = QColor(224, 152, 62)  # мягкий оранжевый, не яркий
+
+            def __init__(self, text):
+                super().__init__(text)
+                self._color = QColor(self.COLOR_IDLE)
+                self._anim = None
+                self.setFont(QFont("Segoe UI", 8))
+                self.setCursor(Qt.PointingHandCursor)
+                self.setToolTip(self.SITE_URL)
+                self._apply_color()
+
+            def _apply_color(self):
+                c = self._color
+                self.setStyleSheet(
+                    f"color: rgb({c.red()}, {c.green()}, {c.blue()});"
+                )
+
+            def _animate_to(self, target):
+                from PySide6.QtCore import QVariantAnimation
+                if self._anim is not None:
+                    self._anim.stop()
+                anim = QVariantAnimation(self)
+                anim.setStartValue(QColor(self._color))
+                anim.setEndValue(QColor(target))
+                anim.setDuration(220)
+                anim.setEasingCurve(QEasingCurve.InOutQuad)
+
+                def _on_value(value):
+                    self._color = QColor(value)
+                    self._apply_color()
+
+                anim.valueChanged.connect(_on_value)
+                anim.start()
+                self._anim = anim
+
+            def enterEvent(self, event):
+                self._animate_to(self.COLOR_HOVER)
+                super().enterEvent(event)
+
+            def leaveEvent(self, event):
+                self._animate_to(self.COLOR_IDLE)
+                super().leaveEvent(event)
+
+            def mousePressEvent(self, event):
+                if event.button() == Qt.LeftButton:
+                    from PySide6.QtGui import QDesktopServices
+                    QDesktopServices.openUrl(QUrl(self.SITE_URL))
+                super().mousePressEvent(event)
+
+        self.site_link = _SiteLinkLabel("Claude Code Manager Website")
+
+        footer_layout.addStretch(1)
+        footer_layout.addWidget(footer)
+        footer_layout.addWidget(self.site_link)
+        footer_layout.addStretch(1)
+        main_layout.addWidget(footer_row)
 
         # Стиль окна
         self.setStyleSheet("QMainWindow { background-color: rgb(20, 20, 25); }")
@@ -11998,6 +13026,19 @@ class ClaudeManager(QMainWindow):
         self._claude_latest_version = ""
         self._claude_latest_date = ""
         self.claude_version_checked.connect(self._on_claude_version_checked)
+
+        # Состояние версии Codex CLI (вкладка OpenAI)
+        self._codex_local_version = ""
+        self._codex_latest_version = ""
+        self.codex_version_checked.connect(self._on_codex_version_checked)
+        self._codex_signal_ready = True
+        # Стартовая проверка codex — только если открыта вкладка OpenAI
+        # (иначе лениво при первом входе на вкладку, см. _apply_app_mode)
+        if self.settings.get("app_mode") == "openai":
+            self._codex_version_checked_once = True
+            threading.Thread(target=self._check_codex_version, daemon=True).start()
+        # Периодическое обновление состояния codex-кнопок (детект внешних установок)
+        self._update_codex_button_state()
 
         # Стартовая проверка состояния кнопки Установить Claude
         self._update_install_button_state()
@@ -12365,9 +13406,9 @@ class ClaudeManager(QMainWindow):
             self.token_input.setEchoMode(QLineEdit.Password)
             self.btn_toggle_token.setRevealed(False)
 
-    def _on_mode_changed(self, is_omniroute):
-        """Обработчик переключателя режимов в шапке (Omniroute ↔ FreeModel)"""
-        self.toggle_custom_token_fields(is_custom=not is_omniroute)
+    def _on_mode_changed(self, mode):
+        """Обработчик переключателя режимов в шапке (Anthropic / Omniroute / OpenAI)"""
+        self._apply_app_mode(mode)
 
     def _on_language_toggled(self, code):
         """Клик по LanguageToggle — обновляем глобальный LANG."""
@@ -12405,6 +13446,7 @@ class ClaudeManager(QMainWindow):
         # Форсируем перерисовку самонарисованных виджетов
         for attr in ("freemodel_brand",
                      "status_indicator", "claude_install_indicator",
+                     "codex_install_indicator",
                      "title", "mode_toggle", "language_toggle"):
             try:
                 w = getattr(self, attr, None)
@@ -12434,7 +13476,21 @@ class ClaudeManager(QMainWindow):
             if hasattr(self, "btn_start_omniroute"):
                 self.btn_start_omniroute.setText(tr("Запустить Omniroute"))
             if hasattr(self, "btn_claude"):
-                self.btn_claude.setText(tr("Запустить Claude Code"))
+                is_oa = self.settings.get("app_mode", "anthropic") == "openai"
+                self.btn_claude.setText(tr("Запустить Codex CLI") if is_oa
+                                        else tr("Запустить Claude Code"))
+            if hasattr(self, "btn_uninstall_codex"):
+                self.btn_uninstall_codex.setText(tr("Удалить Codex CLI"))
+            if hasattr(self, "oa_btn_manage_urls"):
+                self.oa_btn_manage_urls.setText(tr("Управление"))
+            if hasattr(self, "oa_btn_manage_keys"):
+                self.oa_btn_manage_keys.setText(tr("Управление"))
+            if hasattr(self, "oa_key_input"):
+                self.oa_key_input.setPlaceholderText(tr("Ключи не добавлены — откройте «Управление»"))
+            if hasattr(self, "oa_model_combo"):
+                self.oa_model_combo._pick_title = tr("Выбор модели")
+            if hasattr(self, "oa_url_combo"):
+                self.oa_url_combo._pick_title = tr("Выбор Base URL")
             if hasattr(self, "btn_add_model"):
                 self.btn_add_model.setText(tr("Добавить модель"))
             if hasattr(self, "btn_remove_model"):
@@ -12474,6 +13530,11 @@ class ClaudeManager(QMainWindow):
             if hasattr(self, "_update_install_button_state"):
                 try:
                     self._update_install_button_state()
+                except Exception:
+                    pass
+            if hasattr(self, "_update_codex_button_state"):
+                try:
+                    self._update_codex_button_state()
                 except Exception:
                     pass
             if hasattr(self, "_last_status"):
@@ -12546,9 +13607,14 @@ class ClaudeManager(QMainWindow):
         кастомного URL бейдж скрывается, чтобы не вводить в заблуждение —
         статус сервиса freemodel.dev не имеет отношения к чужому эндпоинту."""
         try:
-            use_custom = self.settings.get("use_custom_token", False)
-            url = self.settings.get("custom_base_url", "")
-            visible = bool(use_custom) and self._is_freemodel_endpoint(url)
+            mode = self.settings.get("app_mode", "anthropic")
+            if mode == "openai":
+                url = self.settings.get("openai_base_url", "")
+                visible = self._is_freemodel_endpoint(url)
+            else:
+                use_custom = self.settings.get("use_custom_token", False)
+                url = self.settings.get("custom_base_url", "")
+                visible = bool(use_custom) and self._is_freemodel_endpoint(url)
             if hasattr(self, "freemodel_brand"):
                 self.freemodel_brand.setVisible(visible)
         except Exception:
@@ -12571,8 +13637,11 @@ class ClaudeManager(QMainWindow):
                     self.fm_model_combo.setAccentColor(self._fm_model_colors[prev])
                 return
         if new_model:
+            prev_saved = self.settings.get("custom_model")
             self.settings["custom_model"] = new_model
             save_settings(self.settings)
+            if prev_saved != new_model:
+                self.log(f"{tr('Модель изменена на')}: {new_model}", "info")
             # Опус 4.6 и Sonnet 4.6 не поддерживают ultracode — если сейчас
             # выставлен ultracode, тихо понижаем до max и обновляем combo effort.
             if (new_model in MODELS_WITHOUT_ULTRACODE
@@ -12794,6 +13863,12 @@ class ClaudeManager(QMainWindow):
             self.fm_key_input.setText(val)
         if hasattr(self, "fm_btn_toggle_key") and hasattr(self.fm_btn_toggle_key, "setRevealed"):
             self.fm_btn_toggle_key.setRevealed(False)
+        # Ключи общие — зеркалим и в поле вкладки OpenAI
+        if hasattr(self, "oa_key_input"):
+            self.oa_key_input.setEchoMode(QLineEdit.Password)
+            self.oa_key_input.setText(val)
+        if hasattr(self, "oa_btn_toggle_key") and hasattr(self.oa_btn_toggle_key, "setRevealed"):
+            self.oa_btn_toggle_key.setRevealed(False)
 
     def _fm_manage_urls(self):
         """Открывает окно управления Base URL"""
@@ -12815,6 +13890,101 @@ class ClaudeManager(QMainWindow):
             # вручную обновляем видимость бейджа freemodel.dev (если удалили текущий
             # URL и фолбэкнулись на freemodel, бейдж должен вернуться).
             self._refresh_freemodel_brand_visibility()
+
+    # ── Обработчики вкладки OpenAI ──────────────────────────────
+
+    def _oa_url_changed(self, new_url):
+        """Сохраняет выбранный Base URL вкладки OpenAI"""
+        if new_url:
+            prev = self.settings.get("openai_base_url", "")
+            self.settings["openai_base_url"] = new_url
+            save_settings(self.settings)
+            if prev != new_url:
+                self.log(f"Base URL {new_url} сохранён", "success")
+            self._refresh_freemodel_brand_visibility()
+
+    def _oa_manage_urls(self):
+        """Окно управления Base URL для вкладки OpenAI (отдельный список)."""
+        urls = self.settings.get("openai_base_urls", [])
+        current = self.oa_url_combo.currentText()
+        dialog = BaseUrlManagerDialog(urls, current, self,
+                                      default_urls=("https://api.freemodel.dev",))
+        if dialog.exec() == QDialog.Accepted:
+            new_urls, new_current = dialog.get_result()
+            self.settings["openai_base_urls"] = list(new_urls)
+            self.settings["openai_base_url"] = new_current
+            save_settings(self.settings)
+            self.oa_url_combo.blockSignals(True)
+            self.oa_url_combo.clear()
+            self.oa_url_combo.addItems(new_urls)
+            if new_current in new_urls:
+                self.oa_url_combo.setCurrentText(new_current)
+            self.oa_url_combo.blockSignals(False)
+            self._refresh_freemodel_brand_visibility()
+
+    def _oa_toggle_key(self):
+        """Показать/скрыть API ключ на вкладке OpenAI"""
+        if self.oa_key_input.echoMode() == QLineEdit.Password:
+            self.oa_key_input.setEchoMode(QLineEdit.Normal)
+            self.oa_btn_toggle_key.setRevealed(True)
+        else:
+            self.oa_key_input.setEchoMode(QLineEdit.Password)
+            self.oa_btn_toggle_key.setRevealed(False)
+
+    def _oa_model_changed(self, new_model):
+        """Сохраняет выбранную модель OpenAI и перекрашивает комбо. Заодно
+        обновляет список disabled-эффортов и клампит текущий effort, если он
+        оказался выше нового потолка модели."""
+        if new_model:
+            self.settings["openai_model"] = new_model
+            save_settings(self.settings)
+            self.log(f"{tr('Модель изменена на')}: {new_model}", "info")
+        if hasattr(self, "oa_model_combo") and hasattr(self, "_oa_model_colors"):
+            if new_model in self._oa_model_colors:
+                self.oa_model_combo.setTextColor(self._oa_model_colors[new_model])
+                self.oa_model_combo.setAccentColor(self._oa_model_colors[new_model])
+        # Пересчитать disabled в popup effort'а и подтянуть значение вниз, если надо.
+        if hasattr(self, "oa_effort_combo") and new_model in OPENAI_MODEL_ORDER:
+            disabled = _openai_disabled_efforts(new_model)
+            try:
+                self.oa_effort_combo.set_picker(disabled=disabled)
+            except Exception:
+                pass
+            cur_effort = self.settings.get("openai_effort", "low")
+            clamped = _clamp_openai_effort(new_model, cur_effort)
+            if clamped != cur_effort:
+                self._oa_effort_changed(clamped)
+
+    def _on_oa_model_effort_picked(self, model, effort):
+        """OpenAIModelDialog закрылся — модель уже применена через
+        currentTextChanged, здесь применяем effort (с защитным клампом
+        на случай, если пришло значение, недопустимое для модели)."""
+        if effort not in OPENAI_EFFORT_LEVELS:
+            return
+        cur_model = self.settings.get("openai_model", model)
+        effort = _clamp_openai_effort(cur_model, effort)
+        if self.settings.get("openai_effort") == effort:
+            return
+        self._oa_effort_changed(effort)
+
+    def _oa_effort_changed(self, effort):
+        """Сохраняет reasoning effort вкладки OpenAI и обновляет комбо.
+        Клампит значение под ограничения текущей модели."""
+        if effort not in OPENAI_EFFORT_LEVELS:
+            return
+        cur_model = self.settings.get("openai_model", "gpt-5.6-sol")
+        effort = _clamp_openai_effort(cur_model, effort)
+        self.settings["openai_effort"] = effort
+        save_settings(self.settings)
+        self.log(f"{tr('Reasoning effort изменён на')}: {effort}", "info")
+        if hasattr(self, "oa_effort_combo") and hasattr(self, "_oa_effort_colors"):
+            if effort in self._oa_effort_colors:
+                if self.oa_effort_combo.currentText() != effort:
+                    self.oa_effort_combo.blockSignals(True)
+                    self.oa_effort_combo.setCurrentText(effort)
+                    self.oa_effort_combo.blockSignals(False)
+                self.oa_effort_combo.setTextColor(self._oa_effort_colors[effort])
+                self.oa_effort_combo.setAccentColor(self._oa_effort_colors[effort])
 
     def _animate_opacity(self, effect, target, duration=280):
         """Плавно анимирует opacity у QGraphicsOpacityEffect"""
@@ -12848,18 +14018,33 @@ class ClaudeManager(QMainWindow):
         self._resize_anim = anim
 
     def toggle_custom_token_fields(self, is_custom=None):
-        """Скрывает/показывает секции для соответствующего режима"""
+        """Совместимость: старый bool-переключатель BaseURL/Omniroute.
+        Теперь маппится на трёхрежимный _apply_app_mode."""
         if is_custom is None:
             is_custom = self.use_custom_token_checkbox.isChecked()
+        self._apply_app_mode("anthropic" if is_custom else "omniroute")
 
+    def _apply_app_mode(self, mode=None):
+        """Скрывает/показывает секции для режима anthropic / omniroute / openai."""
+        if mode is None:
+            mode = self.settings.get("app_mode", "anthropic")
+        if mode not in ("anthropic", "omniroute", "openai"):
+            mode = "anthropic"
+
+        is_custom = mode != "omniroute"  # оба кастомных режима работают без Omniroute
+        is_openai = mode == "openai"
+
+        self.settings["app_mode"] = mode
         self.settings["use_custom_token"] = is_custom
         save_settings(self.settings)
 
         # Синхронизируем оба переключателя
         if hasattr(self, "mode_toggle"):
-            self.mode_toggle.setOmniroute(not is_custom)
+            self.mode_toggle.setMode(mode)
         if self.use_custom_token_checkbox.isChecked() != is_custom:
+            self.use_custom_token_checkbox.blockSignals(True)
             self.use_custom_token_checkbox.setChecked(is_custom)
+            self.use_custom_token_checkbox.blockSignals(False)
 
         # Залочим текущую высоту, чтобы Qt не растянул окно при показе скрытых виджетов
         _was_initialized = getattr(self, "_height_initialized", False) and self.isVisible()
@@ -12870,24 +14055,45 @@ class ClaudeManager(QMainWindow):
 
         # Полностью скрываем/показываем секции
         if hasattr(self, "omniroute_frame"):
-            self.omniroute_frame.setVisible(not is_custom)
+            self.omniroute_frame.setVisible(mode == "omniroute")
         if hasattr(self, "model_section_widget"):
-            self.model_section_widget.setVisible(not is_custom)
+            self.model_section_widget.setVisible(mode == "omniroute")
         if hasattr(self, "token_section_widget"):
-            self.token_section_widget.setVisible(not is_custom)
+            self.token_section_widget.setVisible(mode == "omniroute")
         if hasattr(self, "freemodel_section_widget"):
-            self.freemodel_section_widget.setVisible(is_custom)
+            self.freemodel_section_widget.setVisible(mode == "anthropic")
+        if hasattr(self, "openai_section_widget"):
+            self.openai_section_widget.setVisible(is_openai)
+
+        # Верхний ряд кнопок: клодовские ↔ codex
+        for attr in ("btn_install_claude", "btn_uninstall_claude", "btn_add_to_path",
+                     "btn_install_statusline", "btn_fix_claude"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(not is_openai)
+        for attr in ("btn_install_codex", "btn_uninstall_codex"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(is_openai)
+
+        # Чип статуса установки: Claude Code ↔ Codex CLI
+        if hasattr(self, "claude_header_chip"):
+            self.claude_header_chip.setVisible(not is_openai)
+        if hasattr(self, "codex_header_chip"):
+            self.codex_header_chip.setVisible(is_openai)
 
         # Видимость бейджа freemodel.dev пересчитывается по реально выбранному
-        # URL и режиму (use_custom_token).
+        # URL и режиму.
         self._refresh_freemodel_brand_visibility()
 
         self.btn_configure_custom.setEnabled(is_custom)
 
-        # Кнопка запуска Claude доступна:
-        # - В BaseURL режиме — если сохранён API ключ
-        # - В Omniroute режиме — если Omniroute отвечает (last == True)
+        # Кнопка запуска:
+        # - Anthropic/OpenAI — если сохранён API ключ
+        # - Omniroute — если Omniroute отвечает (last == True)
         if hasattr(self, "btn_claude"):
+            self.btn_claude.setText(tr("Запустить Codex CLI") if is_openai
+                                    else tr("Запустить Claude Code"))
             if is_custom:
                 has_key = bool(self.settings.get("custom_api_key", ""))
                 self.btn_claude.setEnabled(has_key)
@@ -12906,8 +14112,17 @@ class ClaudeManager(QMainWindow):
             self.resize(self.width(), target_h)
             self._height_initialized = True
 
-        if not is_custom and hasattr(self, "status_timer"):
+        if mode == "omniroute" and hasattr(self, "status_timer"):
             self.check_status_async()
+        if is_openai:
+            self._update_codex_button_state()
+            # Ленивая проверка версии codex при первом входе на вкладку.
+            # До подключения сигнала (_codex_signal_ready) не запускаем —
+            # эмит из фонового потока потерялся бы.
+            if (getattr(self, "_codex_signal_ready", False)
+                    and not getattr(self, "_codex_version_checked_once", False)):
+                self._codex_version_checked_once = True
+                threading.Thread(target=self._check_codex_version, daemon=True).start()
 
     def open_custom_token_dialog(self):
         """Открывает диалог настройки кастомного токена"""
@@ -13043,6 +14258,10 @@ class ClaudeManager(QMainWindow):
 
     def launch_claude(self):
         """Запускает Claude Code с выбранной моделью"""
+        # Вкладка OpenAI живёт своей жизнью — там Codex CLI
+        if self.settings.get("app_mode", "anthropic") == "openai":
+            self.launch_codex()
+            return
         # Жёсткая проверка: установленная версия не должна быть выше REQUIRED_CLAUDE_VERSION.
         # Пропускаем её, если включены официальные обновления — там версия выше пина ожидаема.
         if not self.settings.get("auto_update_enabled", False):
@@ -13182,6 +14401,468 @@ class ClaudeManager(QMainWindow):
                 self.log(f"Claude Code запущен ({model})", "success")
         except Exception as e:
             self.log(f"Ошибка запуска: {e}", "error")
+
+    def _write_codex_config(self):
+        """Пишет ~/.codex/auth.json и config.toml под выбранные ключ/URL/модель/effort.
+        Возвращает True при успехе."""
+        try:
+            sync_custom_api_key(self.settings)
+            api_key = self.settings.get("custom_api_key", "")
+            if not api_key:
+                self.log("Нет активного API ключа — включите ключ в окне «Управление»", "error")
+                return False
+            base_url = self.settings.get("openai_base_url", "https://api.freemodel.dev")
+            model = self.settings.get("openai_model", "gpt-5.6-sol")
+            effort = self.settings.get("openai_effort", "low")
+
+            codex_dir = os.path.join(os.path.expanduser("~"), ".codex")
+            os.makedirs(codex_dir, exist_ok=True)
+
+            with open(os.path.join(codex_dir, "auth.json"), 'w', encoding='utf-8') as f:
+                json.dump({"OPENAI_API_KEY": api_key}, f, indent=2)
+
+            config = (
+                'model_provider = "freemodel"\n'
+                f'model = "{model}"\n'
+                f'model_reasoning_effort = "{effort}"\n'
+                'disable_response_storage = true\n'
+                'preferred_auth_method = "apikey"\n'
+                '\n'
+                '[model_providers.freemodel]\n'
+                'name = "freemodel"\n'
+                f'base_url = "{base_url}"\n'
+                'wire_api = "responses"\n'
+            )
+            with open(os.path.join(codex_dir, "config.toml"), 'w', encoding='utf-8') as f:
+                f.write(config)
+            return True
+        except Exception as e:
+            self.log(f"Не удалось записать конфиг Codex: {e}", "error")
+            return False
+
+    def launch_codex(self):
+        """Запускает Codex CLI с выбранной моделью и effort'ом (вкладка OpenAI)."""
+        working_dir = self.settings.get("working_directory", "")
+        if not working_dir:
+            working_dir = QFileDialog.getExistingDirectory(
+                self,
+                tr("Выберите рабочую директорию"),
+                os.path.expanduser("~"),
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+            )
+            if not working_dir:
+                self.log("Запуск отменен - директория не выбрана", "warning")
+                return
+
+        if not self._write_codex_config():
+            return
+
+        model = self.settings.get("openai_model", "gpt-5.6-sol")
+        self.log(f"Запуск Codex CLI ({model})...", "info")
+
+        env = os.environ.copy()
+        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+        try:
+            subprocess.Popen(
+                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; codex"],
+                env=env
+            )
+            self.log(f"Codex CLI запущен ({model})", "success")
+        except Exception as e:
+            self.log(f"Ошибка запуска: {e}", "error")
+
+    # ── Codex CLI: установка / удаление / версии ─────────────────
+
+    def _detect_codex_install_dirs(self):
+        """Папки, где может лежать codex (ставится только через npm)."""
+        candidates = [
+            os.path.join(os.environ.get("APPDATA", ""), "npm"),
+            os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
+        ]
+        return [d for d in candidates if os.path.isdir(d)]
+
+    def _is_codex_installed(self):
+        for d in self._detect_codex_install_dirs():
+            for name in ("codex.exe", "codex.cmd", "codex.bat", "codex.ps1", "codex"):
+                if os.path.isfile(os.path.join(d, name)):
+                    return True
+        return False
+
+    def _get_installed_codex_version(self):
+        """Версия установленного codex или пустая строка."""
+        codex_path = None
+        for d in self._detect_codex_install_dirs():
+            for name in ("codex.exe", "codex.cmd", "codex.bat"):
+                p = os.path.join(d, name)
+                if os.path.isfile(p):
+                    codex_path = p
+                    break
+            if codex_path:
+                break
+        if not codex_path:
+            return ""
+        try:
+            result = subprocess.run(
+                [codex_path, "--version"],
+                capture_output=True, text=True, timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+            output = (result.stdout or "") + (result.stderr or "")
+            import re
+            m = re.search(r"(\d+\.\d+\.\d+)", output)
+            return m.group(1) if m else ""
+        except Exception:
+            return ""
+
+    def _check_codex_version(self):
+        """Фоновая проверка: локальная и последняя npm-версия Codex CLI."""
+        if getattr(self, "_codex_version_check_running", False):
+            return
+        self._codex_version_check_running = True
+        try:
+            local = self._get_installed_codex_version()
+            latest = check_codex_latest_version()
+            try:
+                self.codex_version_checked.emit(local, latest)
+            except Exception:
+                pass
+        finally:
+            self._codex_version_check_running = False
+
+    def _on_codex_version_checked(self, local, latest):
+        self._codex_local_version = local
+        self._codex_latest_version = latest
+        self._update_codex_button_state()
+
+    def _update_codex_button_state(self):
+        """Кнопки и индикатор Codex CLI (нет / установлен / доступно обновление)."""
+        installed = self._is_codex_installed()
+        local = getattr(self, "_codex_local_version", "")
+        latest = getattr(self, "_codex_latest_version", "")
+
+        update_available = False
+        if installed and local and latest:
+            try:
+                update_available = compare_versions(latest, local) > 0
+            except Exception:
+                update_available = False
+        version_unknown = installed and not local
+
+        if hasattr(self, "btn_install_codex"):
+            if not installed:
+                self.btn_install_codex.setEnabled(True)
+                self.btn_install_codex.setText(tr("Установить Codex CLI"))
+                self.btn_install_codex.set_hover_color(52, 211, 153)
+            elif update_available:
+                self.btn_install_codex.setEnabled(True)
+                self.btn_install_codex.setText(tr("Обновить Codex CLI"))
+                self.btn_install_codex.set_hover_color(245, 180, 60)
+            else:
+                self.btn_install_codex.setEnabled(False)
+                self.btn_install_codex.setText(tr("Установить Codex CLI"))
+
+        if hasattr(self, "btn_uninstall_codex"):
+            self.btn_uninstall_codex.setEnabled(installed)
+
+        if hasattr(self, "codex_install_indicator"):
+            if not installed:
+                self.codex_install_indicator.set_state("off")
+            elif version_unknown or update_available:
+                self.codex_install_indicator.set_state("warn")
+            else:
+                self.codex_install_indicator.set_state("on")
+
+        if hasattr(self, "codex_install_status_label"):
+            if not installed:
+                text = tr("Не установлен")
+                color = "rgb(255, 50, 50)"
+            elif version_unknown:
+                text = tr("Проверяю версию…")
+                color = "rgb(180, 180, 190)"
+            elif update_available:
+                text = tr("Доступно обновление") + (f" v{latest}" if latest else "")
+                color = "rgb(245, 180, 60)"
+            else:
+                text = tr("Установлена") + (f" v{local}" if local else "")
+                color = "rgb(52, 211, 153)"
+            self.codex_install_status_label.setText(text)
+            self.codex_install_status_label.setStyleSheet(
+                f"color: {color}; background: transparent; border: none;"
+            )
+
+    def _install_codex_cli(self):
+        """Ставит/обновляет Codex CLI (последняя версия) через npm в PowerShell."""
+        installed = self._is_codex_installed()
+        local = getattr(self, "_codex_local_version", "")
+        latest = getattr(self, "_codex_latest_version", "") or tr("последняя")
+
+        if installed:
+            title = tr("Обновление Codex CLI")
+            message = (
+                (tr("У тебя установлена") + f" v{local}. " if local else "") +
+                tr("npm установит последнюю версию Codex CLI.")
+            )
+            confirm_text = tr("Обновить")
+            icon = "↑"
+            icon_color = (245, 180, 60)
+        else:
+            title = tr("Установка Codex CLI")
+            message = tr(
+                "Будет установлен официальный Codex CLI (npm-пакет @openai/codex).\n\n"
+                "Откроется окно PowerShell, где пойдёт установка."
+            )
+            confirm_text = tr("Установить")
+            icon = "↓"
+            icon_color = (52, 211, 153)
+
+        dlg = ConfirmActionDialog(
+            title=title,
+            message=message,
+            detail="npm install -g @openai/codex",
+            confirm_text=confirm_text,
+            icon=icon,
+            icon_color=icon_color,
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            self.log("Операция отменена", "info")
+            return
+
+        if not self._is_npm_installed():
+            self._show_npm_missing_dialog()
+            return
+
+        self.log("Запускаю установку Codex CLI через npm...", "info")
+
+        progress_dlg = ClaudeInstallProgressDialog(
+            is_update=installed,
+            old_version=local,
+            new_version=latest if latest and latest[0].isdigit() else "",
+            parent=self,
+            product="Codex CLI",
+        )
+
+        try:
+            def _ps(s):
+                # экранируем одинарные кавычки для PowerShell-литералов
+                return tr(s).replace("'", "''")
+            popen = subprocess.Popen([
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                f"Write-Host '{_ps('Останавливаю запущенные процессы codex...')}' -ForegroundColor Cyan; "
+                "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 600; "
+                f"Write-Host '{_ps('Установка Codex CLI через npm...')}' -ForegroundColor Cyan; "
+                "npm install -g @openai/codex; "
+                f"Write-Host '`n{_ps('Готово. Проверь команду: codex -V')}' -ForegroundColor Green; "
+                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+            ])
+        except Exception as e:
+            self.log(f"Не удалось запустить установку: {e}", "error")
+            progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
+            progress_dlg.exec()
+            return
+
+        try:
+            self.codex_install_finished.disconnect(self._on_codex_install_done)
+        except Exception:
+            pass
+        self.codex_install_finished.connect(self._on_codex_install_done, Qt.QueuedConnection)
+        self._codex_install_dlg = progress_dlg
+
+        def _wait_and_emit():
+            try:
+                popen.wait()
+            except Exception:
+                pass
+            new_local = ""
+            try:
+                time.sleep(0.5)
+                new_local = self._get_installed_codex_version()
+            except Exception:
+                new_local = ""
+            try:
+                installed_now = self._is_codex_installed()
+            except Exception:
+                installed_now = False
+            ctx = {
+                "is_update": installed,
+                "is_uninstall": False,
+                "old_local": local,
+                "new_local": new_local,
+                "installed_now": installed_now,
+            }
+            try:
+                self.codex_install_finished.emit(ctx)
+            except Exception:
+                pass
+
+        threading.Thread(target=_wait_and_emit, daemon=True).start()
+        progress_dlg.exec()
+
+    def _uninstall_codex_cli(self):
+        """Удаляет Codex CLI через npm uninstall с подтверждением."""
+        if not self._is_codex_installed():
+            self.log("Codex CLI не установлен", "info")
+            return
+
+        local = getattr(self, "_codex_local_version", "") or self._get_installed_codex_version()
+        version_part = f" v{local}" if local else ""
+
+        dlg = ConfirmActionDialog(
+            title=tr("Удалить Codex CLI"),
+            message=(
+                tr("Будет удалён глобальный npm-пакет Codex CLI") + version_part + ". " +
+                tr("Настройки в %USERPROFILE%\\.codex не пострадают — удалится только бинарь.")
+            ),
+            detail="npm uninstall -g @openai/codex",
+            confirm_text=tr("Удалить"),
+            icon="×",
+            icon_color=(235, 90, 90),
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            self.log("Удаление отменено", "info")
+            return
+
+        if not self._is_npm_installed():
+            self._show_npm_missing_dialog()
+            return
+
+        self.log("Запускаю удаление Codex CLI через npm...", "info")
+
+        progress_dlg = ClaudeInstallProgressDialog(
+            is_uninstall=True,
+            old_version=local,
+            parent=self,
+            product="Codex CLI",
+        )
+
+        try:
+            def _ps(s):
+                # экранируем одинарные кавычки для PowerShell-литералов
+                return tr(s).replace("'", "''")
+            popen = subprocess.Popen([
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                f"Write-Host '{_ps('Останавливаю запущенные процессы codex...')}' -ForegroundColor Cyan; "
+                "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 600; "
+                f"Write-Host '{_ps('Удаление Codex CLI (npm)...')}' -ForegroundColor Cyan; "
+                "npm uninstall -g @openai/codex; "
+                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@openai\\codex'; "
+                "if (Test-Path $npmDir) { "
+                f"  Write-Host '`n{_ps('Повторная попытка (файл был залочен)...')}' -ForegroundColor Yellow; "
+                "  Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "  Start-Sleep -Seconds 2; "
+                "  npm uninstall -g @openai/codex; "
+                "} "
+                "if (Test-Path $npmDir) { "
+                f"  Write-Host '`n{_ps('NPM не смог удалить — удаляю папку напрямую...')}' -ForegroundColor Yellow; "
+                "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
+                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'codex*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
+                "if (Test-Path $npmDir) { "
+                f"  Write-Host '`n{_ps('Не всё удалось удалить — закрой все окна Codex и попробуй снова.')}' -ForegroundColor Red; "
+                "} else { "
+                f"  Write-Host '`n{_ps('Codex CLI полностью удалён.')}' -ForegroundColor Green; "
+                "} "
+                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+            ])
+        except Exception as e:
+            self.log(f"Не удалось запустить удаление: {e}", "error")
+            progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
+            progress_dlg.exec()
+            return
+
+        try:
+            self.codex_install_finished.disconnect(self._on_codex_install_done)
+        except Exception:
+            pass
+        self.codex_install_finished.connect(self._on_codex_install_done, Qt.QueuedConnection)
+        self._codex_install_dlg = progress_dlg
+
+        def _wait_and_emit():
+            try:
+                popen.wait()
+            except Exception:
+                pass
+            try:
+                time.sleep(0.5)
+                installed_now = self._is_codex_installed()
+            except Exception:
+                installed_now = True
+            new_local = ""
+            try:
+                new_local = self._get_installed_codex_version()
+            except Exception:
+                pass
+            ctx = {
+                "is_update": False,
+                "is_uninstall": True,
+                "old_local": local,
+                "new_local": new_local,
+                "installed_now": installed_now,
+            }
+            try:
+                self.codex_install_finished.emit(ctx)
+            except Exception:
+                pass
+
+        threading.Thread(target=_wait_and_emit, daemon=True).start()
+        progress_dlg.exec()
+
+    def _on_codex_install_done(self, ctx):
+        """PowerShell закрылся — обновляем окно прогресса и состояние кнопок."""
+        ctx = ctx or {}
+        new_local = ctx.get("new_local", "")
+        installed_now = ctx.get("installed_now", False)
+        is_uninstall = ctx.get("is_uninstall", False)
+        is_update = ctx.get("is_update", False)
+        old_local = ctx.get("old_local", "")
+
+        progress_dlg = getattr(self, "_codex_install_dlg", None)
+        dlg_alive = False
+        if progress_dlg is not None:
+            try:
+                from shiboken6 import isValid
+                dlg_alive = isValid(progress_dlg)
+            except Exception:
+                dlg_alive = True
+
+        self._codex_local_version = new_local
+
+        if dlg_alive:
+            try:
+                if is_uninstall:
+                    if not installed_now:
+                        progress_dlg.mark_finished()
+                        self.log(tr("Codex CLI удалён"), "success")
+                    else:
+                        progress_dlg.mark_cancelled()
+                elif is_update:
+                    if new_local and new_local != old_local:
+                        progress_dlg.mark_finished(actual_version=new_local)
+                        self.log(tr("Codex CLI обновлён до v{v}").format(v=new_local), "success")
+                    else:
+                        progress_dlg.mark_cancelled()
+                else:
+                    if installed_now and new_local:
+                        progress_dlg.mark_finished(actual_version=new_local)
+                        self.log(tr("Codex CLI установлен (v{v})").format(v=new_local), "success")
+                    else:
+                        progress_dlg.mark_cancelled()
+            except Exception:
+                pass
+
+        try:
+            self._update_codex_button_state()
+        except Exception:
+            pass
+        try:
+            threading.Thread(target=self._check_codex_version, daemon=True).start()
+        except Exception:
+            pass
 
     def _statusline_bash_command(self):
         """Возвращает строку для поля statusLine.command в settings.json.
@@ -14783,6 +16464,33 @@ class ClaudeManager(QMainWindow):
             if not getattr(self, "_version_check_running", False):
                 threading.Thread(target=self._check_claude_version, daemon=True).start()
         self._update_install_button_state()
+        # То же для codex (вкладка OpenAI): дёшево следим за бинарём по stat
+        try:
+            csig = self._compute_codex_binary_signature()
+        except Exception:
+            csig = ()
+        cprev = getattr(self, "_codex_binary_signature", None)
+        if csig != cprev:
+            self._codex_binary_signature = csig
+            if cprev is not None:
+                self._codex_local_version = ""
+                if not getattr(self, "_codex_version_check_running", False):
+                    threading.Thread(target=self._check_codex_version, daemon=True).start()
+        if self.settings.get("app_mode") == "openai":
+            self._update_codex_button_state()
+
+    def _compute_codex_binary_signature(self):
+        """Сигнатура установленного codex (путь + mtime + size) — как у claude."""
+        parts = []
+        for d in self._detect_codex_install_dirs():
+            for name in ("codex.exe", "codex.cmd", "codex.bat", "codex.ps1", "codex"):
+                p = os.path.join(d, name)
+                try:
+                    st = os.stat(p)
+                    parts.append((p, int(st.st_mtime), st.st_size))
+                except (FileNotFoundError, OSError):
+                    continue
+        return tuple(parts)
 
     def _check_claude_version(self):
         """Фоновая проверка локальной версии Claude Code. Целевая версия всегда жёстко зафиксирована."""
