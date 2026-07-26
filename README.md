@@ -488,5 +488,4 @@ Status line — это нижняя строка в окне Claude Code, в к�
 ---
 
 ## Лицензия
-
-Приватная утилита, без публичной лицензии.
+GNU GENERAL PUBLIC LICENSE
