@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.7.9"  # Для обновлений
+APP_VERSION = "5.8"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -808,6 +808,7 @@ TRANSLATIONS = {
     "мощный Opus — уверенно решает большинство задач": "powerful Opus — handles most tasks confidently",
     "усиленный Opus 4.7 — сложные многошаговые задачи": "amplified Opus 4.7 — complex multi-step tasks",
     "флагманский Opus 4.8 — максимум качества": "flagship Opus 4.8 — maximum quality",
+    "новый флагман Opus 5 — сильнее 4.8 во всём": "new flagship Opus 5 — stronger than 4.8 all around",
     "экспериментальная Fable 5 — необычные вопросы": "experimental Fable 5 — unusual questions",
     # ── EffortDialog: заголовок и подписи уровней
     "Reasoning Effort": "Reasoning Effort",
@@ -5009,7 +5010,11 @@ class EffortDialog(QDialog):
 # только позиций 6 и вместо пульсирующего свечения — фиолетовое подсвечение
 # на Fable 5 (флагманский платный уровень).
 
-MODEL_ORDER = ["Sonnet 4.6", "Sonnet 5", "Opus 4.6", "Opus 4.7", "Opus 4.8", "Fable 5"]
+MODEL_ORDER = ["Sonnet 4.6", "Sonnet 5", "Opus 4.6", "Opus 4.7", "Opus 4.8", "Opus 5", "Fable 5"]
+
+# Сколько ячеек помещается в первой строке ползунка. Всё, что не влезло,
+# уезжает во вторую строку — она короткая и прижата к левому краю.
+MODEL_ROW1_COUNT = 6
 
 MODEL_COLORS_MAP = {
     "Sonnet 4.6": (130, 220, 130),   # насыщенно-зелёный
@@ -5017,6 +5022,7 @@ MODEL_COLORS_MAP = {
     "Opus 4.6":   (230, 220, 130),
     "Opus 4.7":   (235, 180, 110),
     "Opus 4.8":   (235, 150, 130),
+    "Opus 5":     (238, 118, 108),   # чуть краснее Opus 4.8
     "Fable 5":    (235,  90,  90),
 }
 
@@ -5026,6 +5032,7 @@ MODEL_LABELS_SHORT = {
     "Opus 4.6":   "Opus 4.6",
     "Opus 4.7":   "Opus 4.7",
     "Opus 4.8":   "Opus 4.8",
+    "Opus 5":     "Opus 5",
     "Fable 5":    "Fable 5",
 }
 
@@ -5037,14 +5044,20 @@ MODELS_WITHOUT_ULTRACODE = {"Sonnet 4.6", "Opus 4.6"}
 
 
 class ModelSlider(QWidget):
-    """6-позиционный ползунок выбора модели. Копия EffortSlider,
-    подстроенная под MODEL_ORDER/MODEL_COLORS_MAP."""
+    """Ползунок выбора модели. Копия EffortSlider, но сетка двухстрочная:
+    первые MODEL_ROW1_COUNT моделей в верхней строке, остаток — в нижней,
+    прижатой к левому краю (одна ячейка под Fable 5). Строки не разделены —
+    это одна фигура-«ступенька» с общей рамкой, ячейки внутри разделены
+    такими же палочками, как в однострочном варианте."""
 
     changed = Signal(str)  # эмит с новым именем модели
 
+    ROW_H = 34
+
     def __init__(self, model="Opus 4.8", parent=None):
         super().__init__(parent)
-        self.setFixedSize(468, 34)
+        rows = 1 + (1 if len(MODEL_ORDER) > MODEL_ROW1_COUNT else 0)
+        self.setFixedSize(468, self.ROW_H * rows)
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
         if model not in MODEL_ORDER:
@@ -5052,6 +5065,9 @@ class ModelSlider(QWidget):
         self._model = model
         self._target = float(MODEL_ORDER.index(model))
         self._progress = self._target
+        # Позиция пилюли в координатах сетки (колонка, строка) — анимируется
+        # отдельно от _progress, чтобы переход между строками шёл по диагонали.
+        self._py, self._px = [float(v) for v in self._grid_pos(MODEL_ORDER.index(model))]
         self._hover_idx = -1
         self._hover_alpha = {i: 0.0 for i in range(len(MODEL_ORDER))}
         self._hover_target = {i: 0.0 for i in range(len(MODEL_ORDER))}
@@ -5061,27 +5077,75 @@ class ModelSlider(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
 
+    # ── сетка ────────────────────────────────────────────────
+    @staticmethod
+    def _grid_pos(i):
+        """Индекс модели → (строка, колонка)."""
+        if i < MODEL_ROW1_COUNT:
+            return 0, i
+        return 1, i - MODEL_ROW1_COUNT
+
+    @staticmethod
+    def _row_count(row):
+        """Сколько ячеек в строке."""
+        if row == 0:
+            return min(MODEL_ROW1_COUNT, len(MODEL_ORDER))
+        return max(0, len(MODEL_ORDER) - MODEL_ROW1_COUNT)
+
+    def _cell_width(self):
+        return self.width() / MODEL_ROW1_COUNT
+
+    def _row_top(self, row):
+        return row * self.ROW_H
+
+    def _nrows(self):
+        return 1 + (1 if len(MODEL_ORDER) > MODEL_ROW1_COUNT else 0)
+
+    def _shape(self, inset, radius):
+        """Контур-«ступенька»: широкая верхняя строка + короткая нижняя,
+        слитые в одну фигуру. Прямоугольник-перемычка гасит скругления на
+        стыке, поэтому переход между строками выглядит цельным."""
+        cw = self._cell_width()
+        rh = self.ROW_H
+        top = QRectF(inset, inset, self.width() - inset * 2, rh - inset)
+        path = QPainterPath()
+        path.addRoundedRect(top, radius, radius)
+        if self._nrows() > 1:
+            w2 = self._row_count(1) * cw
+            bottom = QRectF(inset, rh, w2 - inset * 2, rh - inset)
+            sub = QPainterPath()
+            sub.addRoundedRect(bottom, radius, radius)
+            path = path.united(sub)
+            bridge = QPainterPath()
+            bridge.addRect(QRectF(inset, rh - radius, w2 - inset * 2, radius * 2))
+            path = path.united(bridge)
+        return path
+
+    def _idx_from_pos(self, pos):
+        """Индекс ячейки под курсором или -1, если курсор мимо ячеек."""
+        cw = self._cell_width()
+        row = 1 if pos.y() > self.ROW_H else 0
+        ncols = self._row_count(row)
+        col = int(pos.x() // cw)
+        if col < 0 or col >= ncols:
+            return -1
+        return col if row == 0 else MODEL_ROW1_COUNT + col
+
     def set_model(self, model, animate=True):
         if model not in MODEL_ORDER:
             return
         if model == self._model:
             return
         self._model = model
-        self._target = float(MODEL_ORDER.index(model))
+        idx = MODEL_ORDER.index(model)
+        self._target = float(idx)
         if not animate:
             self._progress = self._target
+            self._py, self._px = [float(v) for v in self._grid_pos(idx)]
         self.update()
 
     def model(self):
         return self._model
-
-    def _cell_width(self):
-        return self.width() / len(MODEL_ORDER)
-
-    def _idx_from_x(self, x):
-        cw = self._cell_width()
-        idx = int(x // cw)
-        return max(0, min(len(MODEL_ORDER) - 1, idx))
 
     def _lerp_color(self, prog):
         n = len(MODEL_ORDER)
@@ -5107,6 +5171,16 @@ class ModelSlider(QWidget):
         elif self._progress != self._target:
             self._progress = self._target
             changed = True
+        trow, tcol = self._grid_pos(int(round(self._target)))
+        for attr, tgt in (("_px", float(tcol)), ("_py", float(trow))):
+            cur = getattr(self, attr)
+            d = tgt - cur
+            if abs(d) > 0.004:
+                setattr(self, attr, cur + d * 0.18)
+                changed = True
+            elif cur != tgt:
+                setattr(self, attr, tgt)
+                changed = True
         for i in range(len(MODEL_ORDER)):
             cur = self._hover_alpha[i]
             tgt = self._hover_target[i]
@@ -5124,16 +5198,19 @@ class ModelSlider(QWidget):
             self.update()
 
     def mousePressEvent(self, event):
-        idx = self._idx_from_x(event.pos().x())
+        idx = self._idx_from_pos(event.pos())
+        if idx < 0:
+            return
         new_model = MODEL_ORDER[idx]
         if new_model != self._model:
             self._model = new_model
             self._target = float(idx)
+            self._hover_target[idx] = 0.0
             self.changed.emit(new_model)
             self.update()
 
     def mouseMoveEvent(self, event):
-        idx = self._idx_from_x(event.pos().x())
+        idx = self._idx_from_pos(event.pos())
         cur_idx = MODEL_ORDER.index(self._model)
         for i in range(len(MODEL_ORDER)):
             self._hover_target[i] = (1.0 if (i == idx and i != cur_idx) else 0.0)
@@ -5149,32 +5226,41 @@ class ModelSlider(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        n = len(MODEL_ORDER)
-        cw = w / n
+        rh = self.ROW_H
+        cw = self._cell_width()
+        nrows = self._nrows()
 
         track_r = 8.0
         pill_r = 6.5
 
+        # ── дорожка: одна цельная фигура-«ступенька» с общей рамкой
         p.setBrush(QColor(28, 28, 33))
         p.setPen(QPen(QColor(60, 60, 65), 1.4))
-        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
+        p.drawPath(self._shape(0.7, track_r))
 
+        # ── разделители ячеек: вертикальные палочки внутри каждой строки
+        # плюс горизонтальная между строками — над «хвостом» второй строки
         p.setPen(QPen(QColor(52, 52, 58), 1.0))
-        for i in range(1, n):
-            x = i * cw
-            p.drawLine(QPointF(x, 4), QPointF(x, h - 4))
+        for row in range(nrows):
+            ncols = self._row_count(row)
+            top = self._row_top(row)
+            for i in range(1, ncols):
+                x = i * cw
+                p.drawLine(QPointF(x, top + 4), QPointF(x, top + rh - 4))
+        if nrows > 1:
+            w2 = self._row_count(1) * cw
+            p.drawLine(QPointF(4, rh), QPointF(w2 - 4, rh))
 
         r, g, b = self._lerp_color(self._progress)
         pad = 3.0
         pill_w = cw - pad * 1.4
-        pill_x = self._progress * cw + (cw - pill_w) / 2.0
+        pill_x = self._px * cw + (cw - pill_w) / 2.0
+        pill_y = self._py * rh + pad
+        pill_h = rh - pad * 2
 
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
         p.save()
-        p.setClipPath(clip)
-        is_fable = self._model == "Fable 5" or (self._progress > n - 1.5)
+        p.setClipPath(self._shape(1.4, track_r - 1))
+        is_fable = self._model == "Fable 5" or (self._progress > len(MODEL_ORDER) - 1.5)
         pulse_amp = (0.5 + 0.5 * math.sin(self._pulse)) if is_fable else 0.0
         glow_boost = 1.0 + 0.8 * pulse_amp
         for i in range(1, 4):
@@ -5184,23 +5270,23 @@ class ModelSlider(QWidget):
             p.setBrush(Qt.NoBrush)
             ex = i * 1.4
             p.drawRoundedRect(
-                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
+                QRectF(pill_x - ex, pill_y - ex, pill_w + ex * 2, pill_h + ex * 2),
                 pill_r + ex, pill_r + ex
             )
         p.restore()
 
-        grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
+        grad = QLinearGradient(QPointF(0, pill_y), QPointF(0, pill_y + pill_h))
         grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
         grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
         p.setBrush(QBrush(grad))
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
+        p.drawRoundedRect(QRectF(pill_x, pill_y, pill_w, pill_h), pill_r, pill_r)
 
         p.setFont(QFont("Segoe UI", 8, QFont.Bold))
         for i, name in enumerate(MODEL_ORDER):
-            cx = i * cw
-            rect = QRectF(cx, 0, cw, h)
-            dist = abs(self._progress - i)
+            row, col = self._grid_pos(i)
+            rect = QRectF(col * cw, self._row_top(row), cw, rh)
+            dist = math.hypot(self._px - col, self._py - row)
             if dist < 0.5:
                 cover = 1.0 - dist * 2.0
                 dark = QColor(20, 22, 28)
@@ -5241,6 +5327,7 @@ class ModelDialog(QDialog):
         "Opus 4.6":   "мощный Opus — уверенно решает большинство задач",
         "Opus 4.7":   "усиленный Opus 4.7 — сложные многошаговые задачи",
         "Opus 4.8":   "флагманский Opus 4.8 — максимум качества",
+        "Opus 5":     "новый флагман Opus 5 — сильнее 4.8 во всём",
         "Fable 5":    "экспериментальная Fable 5 — необычные вопросы",
     }
     LEVEL_DESCRIPTIONS_EN = {
@@ -5249,6 +5336,7 @@ class ModelDialog(QDialog):
         "Opus 4.6":   "powerful Opus — handles most tasks confidently",
         "Opus 4.7":   "amplified Opus 4.7 — complex multi-step tasks",
         "Opus 4.8":   "flagship Opus 4.8 — maximum quality",
+        "Opus 5":     "new flagship Opus 5 — stronger than 4.8 all around",
         "Fable 5":    "experimental Fable 5 — unusual questions",
     }
 
@@ -10008,7 +10096,7 @@ class CustomTokenDialog(QDialog):
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
-        models = ["Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6", "Sonnet 4"]
+        models = ["Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6", "Sonnet 4"]
         self.model_combo.addItems(models)
         # Цвета для каждой модели (от зелёного к красному)
         _sd_model_colors = {
@@ -10018,6 +10106,7 @@ class CustomTokenDialog(QDialog):
             "Opus 4.6":     QColor(230, 220, 130),
             "Opus 4.7":     QColor(235, 180, 110),
             "Opus 4.8":     QColor(235, 150, 130),
+            "Opus 5":       QColor(238, 118, 108),
             "Fable 5":   QColor(235, 90, 90),
         }
         for i in range(self.model_combo.count()):
@@ -10034,6 +10123,7 @@ class CustomTokenDialog(QDialog):
             "claude-sonnet-4-6": "Sonnet 4.6",
             "claude-opus-4-7": "Opus 4.7",
             "claude-opus-4-6": "Opus 4.6",
+            "claude-opus-5": "Opus 5",
             "claude-fable-5": "Fable 5",
         }
         # Пустая строка "" (старый дефолт) тоже должна раскрываться в Opus 4.8,
@@ -12501,7 +12591,7 @@ class ClaudeManager(QMainWindow):
         self.fm_model_combo = ModelPickerComboBox()
         self.fm_model_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
         self.fm_model_combo.setMaxVisibleItems(len(MODEL_ORDER))
-        fm_models = ["Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6"]
+        fm_models = ["Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6"]
         self.fm_model_combo.addItems(fm_models)
         # Цвета для каждой модели (от зелёного к красному — по «дороговизне»)
         model_colors = {
@@ -12511,6 +12601,7 @@ class ClaudeManager(QMainWindow):
             "Opus 4.6":     QColor(230, 220, 130),  # слегка жёлтый
             "Opus 4.7":     QColor(235, 180, 110),  # жёлтый с переходом в красноватый
             "Opus 4.8":     QColor(235, 150, 130),  # слабо красноватый
+            "Opus 5":       QColor(238, 118, 108),  # чуть краснее 4.8
             "Fable 5":   QColor(235, 90, 90),    # красный
         }
         self._fm_model_colors = model_colors
@@ -12538,6 +12629,7 @@ class ClaudeManager(QMainWindow):
             "claude-sonnet-4-6": "Sonnet 4.6",
             "claude-opus-4-7": "Opus 4.7",
             "claude-opus-4-6": "Opus 4.6",
+            "claude-opus-5": "Opus 5",
             "claude-fable-5": "Fable 5",
         }
         saved_m = remap.get(saved_m, saved_m)
@@ -14139,6 +14231,7 @@ class ClaudeManager(QMainWindow):
     MODEL_ID_MAP = {
         "Opus 4.8": "claude-opus-4-8",
         "Opus 4.8 (default)": "claude-opus-4-8",
+        "Opus 5": "claude-opus-5",
         "Fable 5": "claude-fable-5",
         "Sonnet 5": "claude-sonnet-5",
         "Sonnet 4.6": "claude-sonnet-4-6",
@@ -14151,7 +14244,7 @@ class ClaudeManager(QMainWindow):
     # если пользователь включил соответствующий тумблер.
     MODELS_WITH_1M_CONTEXT = {
         "Opus 4.8", "Opus 4.8 (default)",
-        "Opus 4.7", "Opus 4.6",
+        "Opus 4.7", "Opus 4.6", "Opus 5",
         "Sonnet 5", "Sonnet 4.6",
         "Fable 5",
     }
