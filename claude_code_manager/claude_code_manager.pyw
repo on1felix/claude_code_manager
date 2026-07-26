@@ -6,7 +6,7 @@
  Автор / Author: on1felix
    Discord:  on1felix
    GitHub:   https://github.com/on1felix/claude_code_manager
- © 2026 on1felix. Приватная утилита, без публичной лицензии.
+ © 2026 on1felix. Лицензия GNU GENERAL PUBLIC LICENSE v3
 =====================================================
 """
 
