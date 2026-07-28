@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.8.1"  # Для обновлений
+APP_VERSION = "5.8.2"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -14998,16 +14998,26 @@ class ClaudeManager(QMainWindow):
             return
 
         model = self.settings.get("openai_model", "gpt-5.6-sol")
+        effort = _clamp_openai_effort(model, self.settings.get("openai_effort", "low"))
         self.log(f"Запуск Codex CLI ({model})...", "info")
 
         env = os.environ.copy()
+        # Форсируем модель и effort CLI-флагами (как на вкладке Anthropic):
+        # config.toml перебивается настройками сохранённой сессии, поэтому при
+        # переходе в старый чат модель переключалась на ту, что была в нём.
+        # Флаги командной строки у codex имеют наивысший приоритет.
+        cli_cmd = (
+            f"codex --model {model} "
+            f'-c model="{model}" '
+            f'-c model_reasoning_effort="{effort}"'
+        )
         ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
         try:
             subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; codex"],
+                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
                 env=env
             )
-            self.log(f"Codex CLI запущен ({model})", "success")
+            self.log(f"Codex CLI запущен ({model}, effort={effort})", "success")
         except Exception as e:
             self.log(f"Ошибка запуска: {e}", "error")
 
