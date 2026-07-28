@@ -6,7 +6,7 @@
  Автор / Author: on1felix
    Discord:  on1felix
    GitHub:   https://github.com/on1felix/claude_code_manager
- © 2026 on1felix. Лицензия GNU GENERAL PUBLIC LICENSE v3
+ © 2026 on1felix. GNU GENERAL PUBLIC LICENSE v3
 =====================================================
 """
 
@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.8"  # Для обновлений
+APP_VERSION = "5.8.1"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -672,6 +672,10 @@ def migrate_api_keys(settings):
             "sub_is_pro": bool(k.get("sub_is_pro", False)),
             "sub_plan": (k.get("sub_plan") or "").strip(),
             "sub_fetched_at": _num("sub_fetched_at"),
+            # кредитный баланс аккаунта (/api/referral + /api/billing)
+            "credit_used_cents": _num("credit_used_cents"),
+            "credit_total_cents": _num("credit_total_cents"),
+            "credit_expires_at": _num("credit_expires_at"),
         })
     settings["api_keys"] = norm
     sync_custom_api_key(settings)
@@ -802,6 +806,11 @@ TRANSLATIONS = {
         "does not support ultracode — effort lowered to max",
     "не поддерживает ultracode — понижаю до max":
         "does not support ultracode — lowering to max",
+    # ── Официальный запуск (под-режим Claude двойной ячейки)
+    "ultracode недоступен в официальном режиме — понижаю до max":
+        "ultracode is unavailable in official mode — lowering to max",
+    "Запуск официального Claude Code...": "Launching official Claude Code...",
+    "Claude Code запущен (официальный режим)": "Claude Code launched (official mode)",
     # ── ModelDialog: подписи моделей (короткие описания)
     "быстрый и дешёвый — для простых задач": "fast and cheap — for simple tasks",
     "новый Sonnet — быстрее и умнее 4.6": "new Sonnet — faster and smarter than 4.6",
@@ -855,12 +864,13 @@ TRANSLATIONS = {
     "Да, выйти": "Yes, log out",
     "5 часов": "5 hours",
     "7 дней": "7 days",
+    "Баланс": "Balance",
     "Вход выполнен": "Logged in",
     "Вход не выполнен": "Not logged in",
     "нет данных": "no data",
     "Данные на": "Data as of",
-    "Метрики ещё не загружены": "Metrics not loaded yet",
-    "Обновляем метрики…": "Refreshing metrics…",
+    "Данные ещё не загружены": "Data not loaded yet",
+    "Обновляем данные…": "Refreshing data…",
     "Сначала войдите по коду с почты": "Log in by e-mail code first",
     "5ч лимит": "5h limit",
     "недельный лимит": "weekly limit",
@@ -886,7 +896,7 @@ TRANSLATIONS = {
     "Сессия недействительна — войдите по коду заново":
         "Session expired — log in by code again",
     "Нет соединения с freemodel.dev": "No connection to freemodel.dev",
-    "Ошибка загрузки метрик": "Failed to load metrics",
+    "Ошибка загрузки данных": "Failed to load data",
     # ── подписка Pro ──
     "Pro подписка кончилась": "Pro subscription ended",
     "Нет Pro-подписки": "No Pro subscription",
@@ -1081,6 +1091,21 @@ TRANSLATIONS = {
         "worth every token, but it spends them much faster.",
     "Выпущена Anthropic · 09 июня 2026": "Released by Anthropic · June 09, 2026",
     "Продолжить": "Continue",
+    # ── Official mode warning
+    "Официальный режим — только для подписчиков Anthropic": "Official mode — Anthropic subscribers only",
+    "Этот режим запускает Claude Code через ваш личный аккаунт Anthropic.\n\n"
+    "Он подходит только если у вас есть активная подписка на Anthropic\n"
+    "(Claude Pro, Max или корпоративный план).\n\n"
+    "Для работы с API-ключами сторонних провайдеров\n"
+    "используйте вкладку Anthropic — там можно указать\n"
+    "любой Base URL и ключ.":
+        "This mode launches Claude Code through your personal Anthropic account.\n\n"
+        "It only works if you have an active Anthropic subscription\n"
+        "(Claude Pro, Max, or a business plan).\n\n"
+        "To use API keys from third-party providers,\n"
+        "switch to the Anthropic tab — you can set\n"
+        "any Base URL and key there.",
+    "Больше не показывать": "Don't show again",
     # ── Admin warning
     "Сейчас приложение работает в обычном режиме и часть\n"
     "операций может завершаться ошибкой PermissionDenied.\n\n"
@@ -1530,6 +1555,7 @@ FREEMODEL_OTP_SEND_URL = FREEMODEL_ORIGIN + "/api/auth/send-otp"
 FREEMODEL_OTP_VERIFY_URL = FREEMODEL_ORIGIN + "/api/auth/verify-otp"
 FREEMODEL_USAGE_URL = FREEMODEL_ORIGIN + "/api/usage"
 FREEMODEL_BILLING_URL = FREEMODEL_ORIGIN + "/api/billing"
+FREEMODEL_REFERRAL_URL = FREEMODEL_ORIGIN + "/api/referral"
 
 def _fm_post_json(url, payload):
     """POST JSON на FreeModel. Возвращает (resp_headers, data_dict).
@@ -1670,15 +1696,24 @@ def _fm_usage_error_text(exc):
         pass
     if isinstance(exc, (URLError, OSError)):
         return tr("Нет соединения с freemodel.dev")
-    return tr("Ошибка загрузки метрик")
+    return tr("Ошибка загрузки данных")
 
 def fetch_account_billing(session_cookie):
     """GET /api/billing с сохранённой cookie. Возвращает распарсенный dict.
     Бросает исключение при ошибке (вызывающий делает best-effort)."""
+    return _fm_get_json(FREEMODEL_BILLING_URL, session_cookie)
+
+def fetch_account_referral(session_cookie):
+    """GET /api/referral — там реальный расход кредитного баланса (used, $).
+    Дашборд FreeModel считает полосу баланса именно из него: creditCents в
+    /api/billing сервер НЕ уменьшает при трате."""
+    return _fm_get_json(FREEMODEL_REFERRAL_URL, session_cookie)
+
+def _fm_get_json(url, session_cookie):
     cookie_header = fm_build_cookie_header(session_cookie)
     if not cookie_header:
         raise ValueError("no session cookie")
-    req = Request(FREEMODEL_BILLING_URL, headers={
+    req = Request(url, headers={
         "User-Agent": "ClaudeManager",
         "Accept": "application/json",
         "Cookie": cookie_header,
@@ -1739,17 +1774,33 @@ def fm_parse_billing(data):
         is_pro = ("pro" in plan_s or "plus" in plan_s or "premium" in plan_s
                   or status_s in ("active", "trialing")
                   or (exp > 0 and exp > time.time()))
+
+    # Стартовый кредит и срок его сгорания. ВАЖНО: creditCents в /api/billing
+    # сервер НЕ уменьшает при трате — реальный расход отдаёт /api/referral
+    # (поле used, в долларах); итог собирается в fm_fetch_account_state.
+    def _cents(*keys):
+        v = pick(*keys)
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    signup = _cents("signupCreditCents", "signup_credit_cents")
+    credit_exp = _fm_to_epoch(pick("signupExpiresAt", "signup_expires_at",
+                                   "creditExpiresAt", "credit_expires_at"))
     return {
         "sub_expires_at": exp,
         "sub_plan": str(plan),
         "sub_is_pro": bool(is_pro),
         "sub_fetched_at": time.time(),
+        "credit_signup_cents": signup,
+        "credit_expires_at": credit_exp,
     }
 
 def fm_fetch_account_state(session_cookie):
     """Единая точка сбора состояния аккаунта для online-ключа:
     • /api/usage (обязательно — метрики лимитов);
-    • /api/billing (best-effort — срок Pro-подписки).
+    • /api/billing (best-effort — срок Pro-подписки и стартовый кредит);
+    • /api/referral (best-effort — реальный расход кредитного баланса).
     Возвращает плоский dict полей кэша ключа. Бросает исключение, если
     /api/usage недоступен (сессия истекла / нет сети) — тогда online-статус
     остаётся на последних известных данных, а карточка покажет ошибку."""
@@ -1758,6 +1809,28 @@ def fm_fetch_account_state(session_cookie):
         fields.update(fm_parse_billing(fetch_account_billing(session_cookie)))
     except Exception:
         pass  # подписка опциональна — не роняем метрики из-за неё
+    # Баланс по формуле дашборда (страница Usage): всего = реферальные
+    # кредиты ($) + стартовый кредит + потрачено; расход = referral.used ($).
+    # ГОТЧА: сервер уменьшает signupCreditCents и считает referral.used с
+    # разным округлением — их сумма «дрожит» на центы ($199.90 вместо $200).
+    # Итог округляем до целого доллара, чтобы «/ $200.00» не плясал.
+    try:
+        ref = fetch_account_referral(session_cookie)
+        ref = ref if isinstance(ref, dict) else {}
+        used_c = float(ref.get("used") or 0) * 100.0
+        credits_c = float(ref.get("credits") or 0) * 100.0
+        signup_c = float(fields.get("credit_signup_cents") or 0)
+        fields["credit_used_cents"] = used_c
+        fields["credit_total_cents"] = round((credits_c + signup_c + used_c) / 100.0) * 100.0
+        # Реальный остаток — credits + signup. Когда баланс израсходован или
+        # сгорел, сервер отдаёт по нулям, но total из-за округления получается
+        # чуть больше used — и фиктивные центы «остатка» рисовали полную
+        # красную шкалу с долларами. Нет кредитов у сервера → остаток ровно 0.
+        if credits_c + signup_c <= 0:
+            fields["credit_used_cents"] = fields["credit_total_cents"]
+    except Exception:
+        pass  # баланс опционален — полоса покажет last-known / «нет данных»
+    fields.pop("credit_signup_cents", None)
     return fields
 
 def fm_sub_expired(key):
@@ -3463,6 +3536,154 @@ class Fable5WarningDialog(QDialog):
 
 
 # ============================================================
+# ОКНО-ПРЕДУПРЕЖДЕНИЕ «ОФИЦИАЛЬНЫЙ РЕЖИМ»
+# ============================================================
+
+class OfficialModeWarningDialog(QDialog):
+    """Предупреждение при первом переключении на вкладку Claude (official)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowModality(Qt.ApplicationModal)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = QFrame()
+        container.setObjectName("officialWarnContainer")
+        container.setStyleSheet("""
+            QFrame#officialWarnContainer {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(18, 14, 10, 0.99),
+                    stop:1 rgba(28, 20, 12, 0.99));
+                border: 2px solid rgba(217, 119, 87, 0.55);
+                border-radius: 18px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(32, 26, 32, 26)
+        layout.setSpacing(12)
+
+        icon_label = QLabel("!")
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("""
+            QLabel {
+                color: rgb(217, 119, 87);
+                font-size: 28px;
+                font-weight: bold;
+                background: rgba(217, 119, 87, 0.15);
+                border: 2px solid rgba(217, 119, 87, 0.4);
+                border-radius: 25px;
+                min-width: 50px; max-width: 50px;
+                min-height: 50px; max-height: 50px;
+            }
+        """)
+        ic = QHBoxLayout()
+        ic.addStretch(); ic.addWidget(icon_label); ic.addStretch()
+        layout.addLayout(ic)
+
+        title_label = QLabel(tr("Официальный режим — только для подписчиков Anthropic"))
+        title_label.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title_label.setStyleSheet("""
+            QLabel {
+                color: rgb(217, 119, 87);
+                background: transparent;
+                border: none;
+            }
+        """)
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: rgba(217,119,87,0.3); background: rgba(217,119,87,0.3); border: none; max-height: 1px;")
+        layout.addWidget(sep)
+
+        desc_label = QLabel(tr(
+            "Этот режим запускает Claude Code через ваш личный аккаунт Anthropic.\n\n"
+            "Он подходит только если у вас есть активная подписка на Anthropic\n"
+            "(Claude Pro, Max или корпоративный план).\n\n"
+            "Для работы с API-ключами сторонних провайдеров\n"
+            "используйте вкладку Anthropic — там можно указать\n"
+            "любой Base URL и ключ."
+        ))
+        desc_label.setFont(QFont("Segoe UI", 10))
+        desc_label.setStyleSheet("""
+            QLabel {
+                color: rgba(235, 220, 205, 0.92);
+                background: transparent;
+                border: none;
+            }
+        """)
+        desc_label.setAlignment(Qt.AlignCenter)
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        layout.addSpacing(4)
+
+        self.dont_show_cb = QCheckBox(tr("Больше не показывать"))
+        self.dont_show_cb.setStyleSheet("""
+            QCheckBox {
+                color: rgba(217, 119, 87, 0.8);
+                background: transparent;
+                border: none;
+                font-size: 10px;
+            }
+            QCheckBox::indicator {
+                width: 14px; height: 14px;
+                border: 1px solid rgba(217,119,87,0.5);
+                border-radius: 3px;
+                background: transparent;
+            }
+            QCheckBox::indicator:checked {
+                background: rgba(217,119,87,0.7);
+            }
+        """)
+        layout.addWidget(self.dont_show_cb, alignment=Qt.AlignCenter)
+
+        layout.addSpacing(4)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_ok = GlowDialogButton(tr("Понятно"),
+                                  base_rgb=(217, 119, 87),
+                                  hover_rgb=(230, 140, 100))
+        btn_ok.clicked.connect(self.accept)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_ok)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(460)
+
+        self.setWindowOpacity(0.0)
+        self.fade_in = QPropertyAnimation(self, b"windowOpacity")
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(180)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(OfficialModeWarningDialog, self).accept())
+        fade.start()
+        self._fade = fade
+
+
+# ============================================================
 # ОКНО-ПРЕДУПРЕЖДЕНИЕ «НЕТ ПРАВ АДМИНИСТРАТОРА»
 # ============================================================
 
@@ -3953,48 +4174,73 @@ class ToggleSwitch(QWidget):
 # ============================================================
 
 class ModeToggle(QWidget):
-    """Три вкладки-режима: Anthropic (оранжевый) / OpenAI (зелёный) / Omniroute (синий)."""
-    modeChanged = Signal(str)  # 'anthropic' | 'openai' | 'omniroute'
+    """Три ячейки-режима: Anthropic|Claude (двойная), OpenAI, Omniroute.
 
-    MODES = ["anthropic", "openai", "omniroute"]
+    Первая ячейка содержит два под-режима, разделённых палочкой «|»:
+    слева Anthropic (вход по ключам + Base URL, оранжевый), справа Claude
+    (официальный запуск через аккаунт Anthropic, коралловый). Выбранная
+    половинка горит ярче, а цвет пилюли плавно перетекает оранжевый ↔
+    коралловый при переключении половинок."""
+    modeChanged = Signal(str)  # 'anthropic' | 'official' | 'openai' | 'omniroute'
+
+    MODES = ["anthropic", "openai", "omniroute"]  # ячейки (official живёт в ячейке 0)
     LABELS = {"anthropic": "Anthropic", "omniroute": "Omniroute", "openai": "OpenAI"}
     COLORS = {
         "anthropic": (255, 170, 40),
+        "official":  (217, 119, 87),
         "omniroute": (100, 150, 255),
         "openai":    (52, 211, 153),
     }
 
     def __init__(self, mode="anthropic", parent=None):
         super().__init__(parent)
-        self.setFixedSize(390, 38)
+        # 440 вместо прежних 390: первая ячейка теперь несёт два лейбла
+        # («Anthropic | Claude»), им нужен воздух.
+        self.setFixedSize(440, 38)
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
-        if mode not in self.MODES:
+        if mode not in ("anthropic", "official", "openai", "omniroute"):
             mode = "anthropic"
         self._mode = mode
-        self._progress = float(self.MODES.index(mode))
+        self._progress = float(self._cell_of(mode))
         self._target = self._progress
+        # 0.0 = Anthropic, 1.0 = Claude (official) — положение внутри двойной ячейки
+        self._sub_target = 1.0 if mode == "official" else 0.0
+        self._sub_progress = self._sub_target
 
         # Hover-подсветка неактивных ячеек: буква плавно «загорается»
         # цветом соответствующей вкладки при наведении — как в OptionSlider.
         n = len(self.MODES)
         self._hover_alpha = {i: 0.0 for i in range(n)}
         self._hover_target = {i: 0.0 for i in range(n)}
+        # Отдельный hover для половинок двойной ячейки: [anthropic, official]
+        self._sub_hover_alpha = [0.0, 0.0]
+        self._sub_hover_target = [0.0, 0.0]
 
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)  # 60fps
 
+    @staticmethod
+    def _cell_of(mode):
+        """Индекс ячейки для режима: official делит ячейку 0 с anthropic."""
+        if mode in ("anthropic", "official"):
+            return 0
+        return ModeToggle.MODES.index(mode)
+
     def mode(self):
         return self._mode
 
     def setMode(self, mode, animate=True):
-        if mode not in self.MODES or mode == self._mode:
+        if mode not in ("anthropic", "official", "openai", "omniroute") or mode == self._mode:
             return
         self._mode = mode
-        self._target = float(self.MODES.index(mode))
+        self._target = float(self._cell_of(mode))
+        if mode in ("anthropic", "official"):
+            self._sub_target = 1.0 if mode == "official" else 0.0
         if not animate:
             self._progress = self._target
+            self._sub_progress = self._sub_target
         self.update()
 
     def _tick(self):
@@ -4005,6 +4251,14 @@ class ModeToggle(QWidget):
             changed = True
         elif self._progress != self._target:
             self._progress = self._target
+            changed = True
+        # Плавный переезд оранжевый ↔ коралловый внутри двойной ячейки
+        sdiff = self._sub_target - self._sub_progress
+        if abs(sdiff) > 0.004:
+            self._sub_progress += sdiff * 0.18
+            changed = True
+        elif self._sub_progress != self._sub_target:
+            self._sub_progress = self._sub_target
             changed = True
         # Hover-fade каждой ячейки: подтягиваем _hover_alpha к _hover_target
         # шагом 0.09 (~250 мс до 1.0), даёт мягкий «прогрев» цвета букв.
@@ -4018,8 +4272,31 @@ class ModeToggle(QWidget):
             elif cur != tgt:
                 self._hover_alpha[i] = tgt
                 changed = True
+        for i in range(2):
+            cur = self._sub_hover_alpha[i]
+            tgt = self._sub_hover_target[i]
+            d = tgt - cur
+            if abs(d) > 0.003:
+                self._sub_hover_alpha[i] = cur + d * 0.09
+                changed = True
+            elif cur != tgt:
+                self._sub_hover_alpha[i] = tgt
+                changed = True
         if changed:
             self.update()
+
+    def _cell_color(self, i):
+        """Цвет ячейки i; для двойной ячейки 0 — смесь Anthropic↔Claude по _sub_progress."""
+        if i == 0:
+            a = self.COLORS["anthropic"]
+            c = self.COLORS["official"]
+            s = self._sub_progress
+            return (
+                int(a[0] + (c[0] - a[0]) * s),
+                int(a[1] + (c[1] - a[1]) * s),
+                int(a[2] + (c[2] - a[2]) * s),
+            )
+        return self.COLORS[self.MODES[i]]
 
     def _lerp_color(self, prog):
         n = len(self.MODES)
@@ -4027,23 +4304,53 @@ class ModeToggle(QWidget):
         i = int(prog)
         f = prog - i
         if i >= n - 1:
-            return self.COLORS[self.MODES[-1]]
-        c0 = self.COLORS[self.MODES[i]]
-        c1 = self.COLORS[self.MODES[i + 1]]
+            return self._cell_color(n - 1)
+        c0 = self._cell_color(i)
+        c1 = self._cell_color(i + 1)
         return (
             int(c0[0] + (c1[0] - c0[0]) * f),
             int(c0[1] + (c1[1] - c0[1]) * f),
             int(c0[2] + (c1[2] - c0[2]) * f),
         )
 
+    def _cell0_layout(self):
+        """Геометрия двойной ячейки: подбирает размер шрифта так, чтобы
+        «Anthropic | Claude» гарантированно влезли в треть виджета (важно на
+        нестандартном DPI). Возвращает (xa, wa, xsep, xc, wc, pt) в
+        координатах виджета; pt — подобранный кегль."""
+        cw = self.width() / len(self.MODES)
+        gap = 7  # воздух вокруг палочки
+        # Начинаем с 10pt — тем же кеглем рисуются лейблы остальных ячеек,
+        # чтобы «Anthropic | Claude» не выглядели мельче соседей.
+        for pt in (10, 9, 8, 7, 6):
+            f = QFont("Segoe UI", pt, QFont.Bold)
+            fm = QFontMetrics(f)
+            wa = fm.horizontalAdvance("Anthropic")
+            wc = fm.horizontalAdvance("Claude")
+            total = wa + gap + 1 + gap + wc
+            if total <= cw - 8 or pt == 6:
+                break
+        xa = max(4.0, (cw - total) / 2)
+        xsep = xa + wa + gap
+        xc = xsep + 1 + gap
+        return xa, wa, xsep, xc, wc, pt
+
     def mousePressEvent(self, event):
         n = len(self.MODES)
         idx = int(event.pos().x() // (self.width() / n))
         idx = max(0, min(n - 1, idx))
-        new_mode = self.MODES[idx]
+        if idx == 0:
+            # какая половинка двойной ячейки: граница — палочка-разделитель
+            xsep = self._cell0_layout()[2]
+            new_mode = "anthropic" if event.pos().x() < xsep else "official"
+        else:
+            new_mode = self.MODES[idx]
         if new_mode != self._mode:
             self._mode = new_mode
             self._target = float(idx)
+            if idx == 0:
+                self._sub_target = 1.0 if new_mode == "official" else 0.0
+                self._sub_hover_target = [0.0, 0.0]
             # только что выбранная ячейка не должна «догорать» hover-цветом
             # поверх тёмного текста на пилюле
             self._hover_target[idx] = 0.0
@@ -4053,14 +4360,28 @@ class ModeToggle(QWidget):
         n = len(self.MODES)
         idx = int(event.pos().x() // (self.width() / n))
         idx = max(0, min(n - 1, idx))
-        cur_idx = self.MODES.index(self._mode)
+        cur_cell = self._cell_of(self._mode)
         for i in range(n):
-            self._hover_target[i] = (1.0 if (i == idx and i != cur_idx) else 0.0)
+            if i == 0:
+                self._hover_target[i] = 0.0  # у двойной ячейки — свой hover половинок
+            else:
+                self._hover_target[i] = (1.0 if (i == idx and i != cur_cell) else 0.0)
+        # Hover половинок: подсвечиваем ту, над которой курсор, если она
+        # не является текущим выбранным под-режимом.
+        sub_hover = [0.0, 0.0]
+        if idx == 0:
+            xsep = self._cell0_layout()[2]
+            half = 0 if event.pos().x() < xsep else 1
+            active_half = 1 if self._mode == "official" else (0 if self._mode == "anthropic" else -1)
+            if half != active_half:
+                sub_hover[half] = 1.0
+        self._sub_hover_target = sub_hover
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event):
         for i in range(len(self.MODES)):
             self._hover_target[i] = 0.0
+        self._sub_hover_target = [0.0, 0.0]
         super().leaveEvent(event)
 
     def paintEvent(self, event):
@@ -4108,11 +4429,16 @@ class ModeToggle(QWidget):
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(QRectF(pill_x, 2, pill_w, h - 4), 7, 7)
 
-        # Тексты: яркость каждой ячейки зависит от близости пилюли, а
+        # Двойная ячейка 0: Anthropic | Claude
+        self._paint_dual_cell(p, cw, h)
+
+        # Тексты остальных ячеек: яркость зависит от близости пилюли, а
         # для «неактивных» ячеек буква плавно загорается цветом вкладки
         # при наведении курсора (hover_alpha).
         p.setFont(QFont("Segoe UI", 10, QFont.Bold))
         for i, m in enumerate(self.MODES):
+            if i == 0:
+                continue
             dist = abs(self._progress - i)
             if dist < 0.5:
                 # под пилюлей — тёмный текст на цветном фоне
@@ -4131,6 +4457,50 @@ class ModeToggle(QWidget):
             p.drawText(QRectF(i * cw, 0, cw, h), Qt.AlignCenter, self.LABELS[m])
 
         p.end()
+
+    def _paint_dual_cell(self, p, cw, h):
+        """Рисует «Anthropic | Claude» в ячейке 0. Выбранная половинка ярче;
+        под пилюлей активная — тёмная и плотная, неактивная — полупрозрачная."""
+        xa, wa, xsep, xc, wc, pt = self._cell0_layout()
+        p.setFont(QFont("Segoe UI", pt, QFont.Bold))
+        dist = abs(self._progress - 0)
+        on_pill = dist < 0.5
+        sub = self._sub_progress  # 0 = Anthropic активен, 1 = Claude активен
+
+        if on_pill:
+            cover = 1.0 - dist * 2.0
+            shade = int(235 - 215 * cover)
+            # Активность половинок: чем «моя» доля sub ближе, тем плотнее текст
+            a_a = int(120 + 135 * (1.0 - sub))
+            a_c = int(120 + 135 * sub)
+            pen_a = QColor(shade, shade, shade, a_a)
+            pen_c = QColor(shade, shade, shade, a_c)
+            sep_pen = QColor(30, 30, 30, 110)
+        else:
+            base = 115
+            ca = self.COLORS["anthropic"]
+            cc = self.COLORS["official"]
+            ha = self._sub_hover_alpha[0]
+            hc = self._sub_hover_alpha[1]
+            pen_a = QColor(
+                int(base + (ca[0] - base) * ha),
+                int(base + (ca[1] - base) * ha),
+                int(base + (ca[2] - base) * ha),
+            )
+            pen_c = QColor(
+                int(base + (cc[0] - base) * hc),
+                int(base + (cc[1] - base) * hc),
+                int(base + (cc[2] - base) * hc),
+            )
+            sep_pen = QColor(72, 72, 78)
+
+        p.setPen(pen_a)
+        p.drawText(QRectF(xa, 0, wa, h), Qt.AlignCenter, "Anthropic")
+        p.setPen(pen_c)
+        p.drawText(QRectF(xc, 0, wc, h), Qt.AlignCenter, "Claude")
+        # Палочка-разделитель
+        p.setPen(QPen(sep_pen, 1.0))
+        p.drawLine(QPointF(xsep + 0.5, 11), QPointF(xsep + 0.5, h - 11))
 
 
 class LanguageToggle(QWidget):
@@ -6430,7 +6800,7 @@ class KeyCard(QFrame):
         self._MANUAL_H_BASE = self._TOP_H                  # без полосы таймера
         self._MANUAL_H_TIMER = self._TOP_H + self._EXP_H   # с ней
         self._MANUAL_H = self._MANUAL_H_BASE
-        self._ONLINE_H = 200  # высота раскрытой online-секции (аккаунт + кнопки + подписка + 2 полоски + подвал)
+        self._ONLINE_H = 224  # высота раскрытой online-секции (аккаунт + кнопки + подписка + 3 полоски + подвал)
         # Срок жизни ключа (дней) — отсчёт от created_at. Используется только
         # когда карточка НЕ подключена к живым метрикам (manual или online
         # без входа). Онлайн-карточка с логином показывает реальные лимиты.
@@ -6676,6 +7046,10 @@ class KeyCard(QFrame):
         v.addLayout(row5)
         roww, self.barw, self.barw_val = _bar_row(tr("7 дней"))
         v.addLayout(roww)
+        # Кредитный баланс аккаунта (стартовый кредит + пополнения) — та же
+        # полоса расхода, что у окон лимитов: заполняется потраченной долей.
+        rowb, self.barb, self.barb_val = _bar_row(tr("Баланс"))
+        v.addLayout(rowb)
 
         # Подвал: слева — «Данные на: …» / хинт ошибки, справа — статус ключа
         # (переезжает сюда, когда online-ползунок ВКЛЮЧЁН; в manual статус
@@ -6778,13 +7152,13 @@ class KeyCard(QFrame):
             self.usage_refresh_requested.emit(self.key.get("id", ""))
 
     def _begin_loading_metrics(self):
-        """Поднимает флаг + пишет «Обновляем метрики…» в подвал online-секции.
+        """Поднимает флаг + пишет «Обновляем данные…» в подвал online-секции.
         Флаг снимает refresh_online_view — то есть надпись висит от старта
         любого фетча (клик «Обновить», включение online-режима, вход по коду,
         первичный fetch при открытии окна) до реального ответа сервера."""
         self._loading_metrics = True
         if hasattr(self, "usage_foot"):
-            self.usage_foot.setText(tr("Обновляем метрики…"))
+            self.usage_foot.setText(tr("Обновляем данные…"))
             self.usage_foot.setStyleSheet(
                 "color: rgb(120,120,128); background: transparent; border: none;")
 
@@ -6818,7 +7192,8 @@ class KeyCard(QFrame):
                   "usage_5h_used", "usage_5h_limit", "usage_5h_reset",
                   "usage_week_used", "usage_week_limit", "usage_week_reset",
                   "usage_fetched_at", "usage_error",
-                  "sub_expires_at", "sub_plan", "sub_is_pro", "sub_fetched_at"):
+                  "sub_expires_at", "sub_plan", "sub_is_pro", "sub_fetched_at",
+                  "credit_used_cents", "credit_total_cents", "credit_expires_at"):
             if f in self.key:
                 self.key[f] = "" if isinstance(self.key.get(f), str) else 0
         self._update_online_metrics()
@@ -6988,10 +7363,34 @@ class KeyCard(QFrame):
               k.get("usage_5h_used", 0), k.get("usage_5h_limit", 0), k.get("usage_5h_reset", 0))
         _fill(self.barw, self.barw_val,
               k.get("usage_week_used", 0), k.get("usage_week_limit", 0), k.get("usage_week_reset", 0))
+        # Баланс: полоса и % — потраченная доля (как на дашборде), но цифрой
+        # слева показываем ОСТАТОК, просто убывающий от стартовых $200
+        # (пользователю привычнее «сколько осталось», чем «сколько потрачено»).
+        b_used = k.get("credit_used_cents", 0) or 0
+        b_total = k.get("credit_total_cents", 0) or 0
+        b_reset = k.get("credit_expires_at", 0) or 0
+        b_left = max(0.0, float(b_total) - float(b_used))
+        if b_total > 0 and (b_left <= 0 or (b_reset and b_reset <= now)):
+            # Кредит сгорел по сроку или потрачен до нуля. Кэш при этом может
+            # хранить старые цифры (сервер после сгорания перестаёт отдавать
+            # баланс, и обновить их нечем) — показываем честный ноль:
+            # пустая полоса и $0.00, без таймера.
+            self.barb.set_percent(0)
+            self.barb_val.setText("$0.00")
+        elif b_total > 0:
+            b_pct = fm_usage_percent(b_used, b_total)
+            self.barb.set_percent(b_pct)
+            money = f"{fm_cents_to_usd(b_left)} / {fm_cents_to_usd(b_total)}  ({b_pct:.0f}%)"
+            if b_reset > now:
+                money += "  ·  " + self._format_remaining(int(b_reset - now))
+            self.barb_val.setText(money)
+        else:
+            self.barb.set_percent(0)
+            self.barb_val.setText(tr("нет данных"))
 
         err = (k.get("usage_error") or "").strip()
         # Пока идёт refresh-запрос — не даём кэшированному «Данные на: …»
-        # перезатирать «Обновляем метрики…». Ошибку показываем всегда:
+        # перезатирать «Обновляем данные…». Ошибку показываем всегда:
         # если fetch провалился, флаг всё равно снимется в refresh_online_view,
         # но безопаснее пропускать ошибочные оверрайды тоже. Проще: пока флаг
         # стоит, подвал вообще не трогаем.
@@ -7006,13 +7405,13 @@ class KeyCard(QFrame):
                 self.usage_foot.setText(
                     tr("Данные на") + ": " + time.strftime("%H:%M:%S", time.localtime(fetched)))
             else:
-                self.usage_foot.setText(tr("Метрики ещё не загружены"))
+                self.usage_foot.setText(tr("Данные ещё не загружены"))
             self.usage_foot.setStyleSheet("color: rgb(120,120,128); background: transparent; border: none;")
 
     def refresh_online_view(self):
         """Внешний вызов (после сетевого fetch): перерисовать метрики и цвет."""
         # Данные пришли — снимаем флаг, чтобы _update_online_metrics ниже
-        # заменил «Обновляем метрики…» на реальное «Данные на: HH:MM:SS».
+        # заменил «Обновляем данные…» на реальное «Данные на: HH:MM:SS».
         self._loading_metrics = False
         state = key_color_state(self.key)
         if state != self._last_state:
@@ -9619,16 +10018,21 @@ class ApiKeyManagerDialog(QDialog):
     def _fetch_all_online(self):
         """Разово подтягивает метрики для всех online-ключей с cookie.
         На каждой карточке, для которой стартует запрос, поднимаем «loading»-
-        флаг и меняем подпись подвала на «Обновляем метрики…» — иначе при
+        флаг и меняем подпись подвала на «Обновляем данные…» — иначе при
         открытии окна кнопка «Обновить» не нажималась, а подпись висела
-        старым «Данные на: …» вплоть до ответа сервера."""
+        старым «Данные на: …» вплоть до ответа сервера.
+        Запросы по ключам разнесены на ~1.5 с, чтобы не бить по серверу
+        синхронным залпом с одного IP (см. _poll_online_keys)."""
+        idx = 0
         for k in self.keys:
             if k.get("mode") == "online" and (k.get("session_cookie") or "").strip():
                 key_id = k.get("id", "")
                 card = self._card_by_id(key_id)
                 if card is not None:
                     card._begin_loading_metrics()
-                self._fetch_usage_for_id(key_id)
+                QTimer.singleShot(idx * 1500 + random.randint(0, 500),
+                                  lambda kid=key_id: self._fetch_usage_for_id(kid))
+                idx += 1
 
     def _on_usage_fetched(self, key_id, result):
         """Слот usage_fetched (GUI-поток): пишет метрики в dict ключа,
@@ -12030,10 +12434,10 @@ class ClaudeManager(QMainWindow):
                 break
 
         self.settings = load_settings()
-        # На каждом старте открываем вкладку Anthropic или OpenAI (что было
-        # выбрано в прошлый раз); Omniroute принудительно не восстанавливаем.
+        # На каждом старте открываем вкладку Anthropic / Claude / OpenAI (что
+        # было выбрано в прошлый раз); Omniroute принудительно не восстанавливаем.
         _mode = self.settings.get("app_mode", "anthropic")
-        if _mode not in ("anthropic", "openai"):
+        if _mode not in ("anthropic", "official", "openai"):
             _mode = "anthropic"
         self.settings["app_mode"] = _mode
         self.settings["use_custom_token"] = True
@@ -12499,6 +12903,13 @@ class ClaudeManager(QMainWindow):
         freemodel_layout.setContentsMargins(0, 0, 0, 0)
         freemodel_layout.setSpacing(8)
 
+        # Base URL + API ключ обёрнуты в отдельный контейнер: в под-режиме
+        # Claude (официальный запуск) они скрываются, а модель/effort остаются.
+        self.fm_credentials_widget = QWidget()
+        fm_credentials_layout = QVBoxLayout(self.fm_credentials_widget)
+        fm_credentials_layout.setContentsMargins(0, 0, 0, 0)
+        fm_credentials_layout.setSpacing(8)
+
         # Base URL: label + combo + manage button
         url_row = QHBoxLayout()
         url_lbl = QLabel("Base URL:")
@@ -12526,7 +12937,7 @@ class ClaudeManager(QMainWindow):
         self.fm_btn_manage.setFixedWidth(130)
         self.fm_btn_manage.clicked.connect(self._fm_manage_urls)
         url_row.addWidget(self.fm_btn_manage)
-        freemodel_layout.addLayout(url_row)
+        fm_credentials_layout.addLayout(url_row)
 
         # API key: label + input + show/save
         key_row = QHBoxLayout()
@@ -12570,7 +12981,8 @@ class ClaudeManager(QMainWindow):
         self.fm_btn_manage_keys.setFixedWidth(130)
         self.fm_btn_manage_keys.clicked.connect(self._fm_manage_keys)
         key_row.addWidget(self.fm_btn_manage_keys)
-        freemodel_layout.addLayout(key_row)
+        fm_credentials_layout.addLayout(key_row)
+        freemodel_layout.addWidget(self.fm_credentials_widget)
 
         # Model: label + combo
         model_row = QHBoxLayout()
@@ -12958,6 +13370,9 @@ class ClaudeManager(QMainWindow):
         bar_layout.addStretch()
 
         self._console_msg_count = 0
+        # Флаг: предупреждение об official-режиме уже показано в этой сессии
+        # (или навсегда скрыто галочкой «больше не показывать»)
+        self._official_warning_shown = bool(self.settings.get("official_warning_dismissed", False))
         console_layout.addWidget(console_bar)
 
         # ── Тело консоли ──
@@ -13162,15 +13577,6 @@ class ClaudeManager(QMainWindow):
         )
         self._claude_version_timer.start(60 * 60 * 1000)  # 1 час
 
-        # ── Фоновый опрос online-ключей FreeModel (реальные метрики /api/usage) ──
-        # Держим авто-статус свежим даже когда окно управления ключами закрыто,
-        # чтобы балансир (first_active_key) учитывал реальный расход аккаунта.
-        self._online_usage_polled.connect(self._on_online_usage_polled)
-        self._online_poll_timer = QTimer(self)
-        self._online_poll_timer.timeout.connect(self._poll_online_keys)
-        self._online_poll_timer.start(60 * 1000)  # раз в 60 секунд
-        QTimer.singleShot(1500, self._poll_online_keys)
-
         # Первая проверка
         self._print_console_banner()
         self.check_status_async()
@@ -13178,51 +13584,6 @@ class ClaudeManager(QMainWindow):
         # Проверка наличия Node.js/npm — если нет, показываем окно с прямой ссылкой
         # на скачивание. Через singleShot, чтобы UI успел полностью отрисоваться.
         QTimer.singleShot(400, self._check_nodejs_on_startup)
-
-    def _poll_online_keys(self):
-        """Тянет /api/usage для всех online-ключей с cookie в фоновых потоках.
-        Результат приходит в GUI-поток через _online_usage_polled."""
-        try:
-            keys = self.settings.get("api_keys", [])
-        except Exception:
-            return
-        for k in keys:
-            if k.get("mode") != "online":
-                continue
-            cookie = (k.get("session_cookie") or "").strip()
-            if not cookie:
-                continue
-            kid = k.get("id", "")
-
-            def work(kid=kid, cookie=cookie):
-                try:
-                    fields = fm_fetch_account_state(cookie)  # usage + billing
-                    self._online_usage_polled.emit(kid, fields)
-                except Exception as e:
-                    self._online_usage_polled.emit(kid, e)
-
-            threading.Thread(target=work, daemon=True).start()
-
-    def _on_online_usage_polled(self, key_id, result):
-        """Слот _online_usage_polled (GUI-поток): пишет метрики в settings и
-        пересобирает активный ключ балансира по свежим данным."""
-        keys = self.settings.get("api_keys", [])
-        key = next((k for k in keys if k.get("id") == key_id), None)
-        if not key:
-            return
-        if isinstance(result, Exception):
-            key["usage_error"] = _fm_usage_error_text(result)
-            key["usage_fetched_at"] = time.time()
-        elif isinstance(result, dict):
-            key.update(result)  # уже распарсенные поля (usage + billing)
-        # Реальный расход мог перевести ключ в не-зелёный — обновляем выбор
-        # активного ключа и сохраняем кэш на диск.
-        sync_custom_api_key(self.settings)
-        save_settings(self.settings)
-        try:
-            self._refresh_active_key_display()
-        except Exception:
-            pass
 
     def _check_nodejs_on_startup(self):
         """Однократная проверка npm при старте. Если npm нет — показывает окно
@@ -13700,7 +14061,10 @@ class ClaudeManager(QMainWindow):
         статус сервиса freemodel.dev не имеет отношения к чужому эндпоинту."""
         try:
             mode = self.settings.get("app_mode", "anthropic")
-            if mode == "openai":
+            if mode == "official":
+                # Официальный запуск — freemodel-эндпоинт не используется вовсе
+                visible = False
+            elif mode == "openai":
                 url = self.settings.get("openai_base_url", "")
                 visible = self._is_freemodel_endpoint(url)
             else:
@@ -14117,14 +14481,17 @@ class ClaudeManager(QMainWindow):
         self._apply_app_mode("anthropic" if is_custom else "omniroute")
 
     def _apply_app_mode(self, mode=None):
-        """Скрывает/показывает секции для режима anthropic / omniroute / openai."""
+        """Скрывает/показывает секции для режима anthropic / official / omniroute / openai.
+        official — под-режим двойной ячейки Anthropic|Claude: та же секция
+        FreeModel, но без Base URL и ключей (официальный вход через аккаунт)."""
         if mode is None:
             mode = self.settings.get("app_mode", "anthropic")
-        if mode not in ("anthropic", "omniroute", "openai"):
+        if mode not in ("anthropic", "official", "omniroute", "openai"):
             mode = "anthropic"
 
-        is_custom = mode != "omniroute"  # оба кастомных режима работают без Omniroute
+        is_custom = mode != "omniroute"  # кастомные режимы работают без Omniroute
         is_openai = mode == "openai"
+        is_official = mode == "official"
 
         self.settings["app_mode"] = mode
         self.settings["use_custom_token"] = is_custom
@@ -14153,7 +14520,10 @@ class ClaudeManager(QMainWindow):
         if hasattr(self, "token_section_widget"):
             self.token_section_widget.setVisible(mode == "omniroute")
         if hasattr(self, "freemodel_section_widget"):
-            self.freemodel_section_widget.setVisible(mode == "anthropic")
+            self.freemodel_section_widget.setVisible(mode in ("anthropic", "official"))
+        if hasattr(self, "fm_credentials_widget"):
+            # Официальный режим: Base URL и ключи не нужны — вход через аккаунт
+            self.fm_credentials_widget.setVisible(mode == "anthropic")
         if hasattr(self, "openai_section_widget"):
             self.openai_section_widget.setVisible(is_openai)
 
@@ -14182,19 +14552,25 @@ class ClaudeManager(QMainWindow):
 
         # Кнопка запуска:
         # - Anthropic/OpenAI — если сохранён API ключ
+        # - Claude (official) — всегда: ключ не нужен, вход через аккаунт Anthropic
         # - Omniroute — если Omniroute отвечает (last == True)
         if hasattr(self, "btn_claude"):
             self.btn_claude.setText(tr("Запустить Codex CLI") if is_openai
                                     else tr("Запустить Claude Code"))
-            if is_custom:
+            if is_official:
+                self.btn_claude.setEnabled(True)
+            elif is_custom:
                 has_key = bool(self.settings.get("custom_api_key", ""))
                 self.btn_claude.setEnabled(has_key)
             else:
                 last = getattr(self, "_last_status", None)
                 self.btn_claude.setEnabled(bool(last))
 
-        # Подгоняем высоту окна
-        target_h = 750 if is_custom else 880
+        # Подгоняем высоту окна (official ниже — без рядов Base URL и ключа)
+        if is_official:
+            target_h = 650
+        else:
+            target_h = 750 if is_custom else 880
         if hasattr(self, "_height_initialized") and self._height_initialized and self.isVisible():
             self._animate_window_height(target_h)
         else:
@@ -14206,6 +14582,14 @@ class ClaudeManager(QMainWindow):
 
         if mode == "omniroute" and hasattr(self, "status_timer"):
             self.check_status_async()
+        if is_official and not getattr(self, "_official_warning_shown", False) and self.isVisible():
+            self._official_warning_shown = True
+            dlg = OfficialModeWarningDialog(self)
+            dlg.exec()
+            if dlg.dont_show_cb.isChecked():
+                self.settings["official_warning_dismissed"] = True
+                save_settings(self.settings)
+
         if is_openai:
             self._update_codex_button_state()
             # Ленивая проверка версии codex при первом входе на вкладку.
@@ -14355,6 +14739,10 @@ class ClaudeManager(QMainWindow):
         if self.settings.get("app_mode", "anthropic") == "openai":
             self.launch_codex()
             return
+        # Под-режим Claude (двойная ячейка) — официальный запуск без подмен
+        if self.settings.get("app_mode", "anthropic") == "official":
+            self._launch_claude_official()
+            return
         # Жёсткая проверка: установленная версия не должна быть выше REQUIRED_CLAUDE_VERSION.
         # Пропускаем её, если включены официальные обновления — там версия выше пина ожидаема.
         if not self.settings.get("auto_update_enabled", False):
@@ -14492,6 +14880,65 @@ class ClaudeManager(QMainWindow):
                     self.log(f"Claude Code запущен ({model_id or 'default'})", "success")
             else:
                 self.log(f"Claude Code запущен ({model})", "success")
+        except Exception as e:
+            self.log(f"Ошибка запуска: {e}", "error")
+
+    def _launch_claude_official(self):
+        """Официальный запуск Claude Code (под-режим Claude двойной ячейки).
+
+        Как будто пользователь сам набрал `claude` в терминале: окружение не
+        подменяется (никаких ANTHROPIC_API_KEY / BASE_URL / AUTH_TOKEN),
+        ~/.claude/settings.json не трогаем — логин в аккаунт Anthropic
+        сохраняется между запусками. Модель и effort передаются честными
+        CLI-флагами --model/--effort. Пин версии REQUIRED_CLAUDE_VERSION здесь
+        не проверяем: официальный запуск работает с любой версией."""
+        working_dir = self.settings.get("working_directory", "")
+        if not working_dir:
+            working_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Выберите рабочую директорию для Claude Code",
+                os.path.expanduser("~"),
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+            )
+            if not working_dir:
+                self.log("Запуск отменен - директория не выбрана", "warning")
+                return
+
+        model_choice = self.settings.get("custom_model", "")
+        model_id = self._resolve_model_id(model_choice)
+
+        effort = self.settings.get("reasoning_effort", "high")
+        if effort == "ultracode":
+            # ultracode требует записи в ~/.claude/settings.json, которую в
+            # официальном режиме мы принципиально не делаем — понижаем до max.
+            self.log(tr("ultracode недоступен в официальном режиме — понижаю до max"), "warning")
+            effort = "max"
+        if effort not in ("low", "medium", "high", "xhigh", "max"):
+            effort = "high"
+
+        cli_cmd = "claude"
+        if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
+            cli_cmd += f" --model {model_id}"
+        cli_cmd += f" --effort {effort}"
+
+        self.log(tr("Запуск официального Claude Code..."), "info")
+
+        # Окружение родителя как есть — ровно то, что увидел бы claude в
+        # обычном терминале этого пользователя.
+        env = os.environ.copy()
+
+        # Снимаем блок PowerShell ExecutionPolicy для этой сессии — как и в
+        # остальных режимах, Scope Process ничего не меняет глобально.
+        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+        try:
+            subprocess.Popen(
+                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
+                env=env
+            )
+            self.log(
+                tr("Claude Code запущен (официальный режим)") + f" ({model_id or 'default'}, effort={effort})",
+                "success"
+            )
         except Exception as e:
             self.log(f"Ошибка запуска: {e}", "error")
 
