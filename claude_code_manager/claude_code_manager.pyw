@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.8.2"  # Для обновлений
+APP_VERSION = "5.8.3"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
@@ -624,7 +624,7 @@ def migrate_api_keys(settings):
             resets_at = 0
 
         # ── Online-режим (FreeModel): реальные метрики /api/usage по cookie ──
-        # mode: "manual" (по умолчанию, ручной тумблер) | "online" (авто-статус
+        # mode: "manual" (по умолчанию, ручно     тумблер) | "online" (авто-статус
         # из /api/usage). session_cookie — полная cookie-строка (все Set-Cookie
         # из ответа /api/auth/verify-otp) либо «голый» bm_session-токен.
         mode = k.get("mode", "manual")
@@ -870,7 +870,7 @@ TRANSLATIONS = {
     "нет данных": "no data",
     "Данные на": "Data as of",
     "Данные ещё не загружены": "Data not loaded yet",
-    "Обновляем данные…": "Refreshing data…",
+    "Обновляем данные  ": "Refreshing data…",
     "Сначала войдите по коду с почты": "Log in by e-mail code first",
     "5ч лимит": "5h limit",
     "недельный лимит": "weekly limit",
@@ -1053,7 +1053,7 @@ TRANSLATIONS = {
         "Starting Claude Code removal via npm...",
     "Запускаю установку Node.js LTS через winget...":
         "Starting Node.js LTS installation via winget...",
-    "Node.js (npm) не найден — открываю окно с инструкцией":
+    "Node.js (npm) не найден — открываю окно с инст  укцией":
         "Node.js (npm) not found — opening the instruction dialog",
     "Текущая команда:": "Current command:",
     "Скрипт скопирован в ~/.claude/statusline-command.sh,\n"
@@ -1287,7 +1287,7 @@ TRANSLATIONS = {
     "В системе не найден npm — он входит в состав Node.js. "
     "Без npm Claude Code установить нельзя.\n\n"
     "На твоей системе нет winget, поэтому установить автоматически не получится. "
-    "Нажми «Скачать Node.js» — откроется официальная страница "
+    "Нажми «Скачать Node.js» — откроется офици  льная страница "
     "nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, "
     "поставь его и перезапусти это приложение.":
         "npm was not found on the system — it ships with Node.js. "
@@ -1313,7 +1313,7 @@ TRANSLATIONS = {
     "Вы действительно хотите удалить status line? "
     "Блок statusLine уйдёт из ~/.claude/settings.json, "
     "а файл ~/.claude/statusline-command.sh — будет стёрт. "
-    "Остальные настройки Claude Code останутся как есть.":
+    "Остальные настройки Claude Code останутся   ак есть.":
         "Are you sure you want to remove the status line? "
         "The statusLine block will be removed from ~/.claude/settings.json, "
         "and the file ~/.claude/statusline-command.sh will be erased. "
@@ -1359,7 +1359,7 @@ TRANSLATIONS = {
     "Добавить": "Add",
 
     # ── Safe-mode install / rollback / block-launch dialogs
-    "проверенная стабильная версия, на которой приложение работает всегда. "
+    "проверенная ст  бильная версия, на которой приложение работает всегда. "
     "Установщик поставит именно её. Настройки в %USERPROFILE%\\.claude не пострадают.":
         "the proven stable version the app always works on. "
         "The installer will pin exactly this version. Settings in %USERPROFILE%\\.claude are untouched.",
@@ -1547,7 +1547,7 @@ def check_app_update():
 # Вход: пользователь вводит e-mail → приходит код в письмо → вводит код →
 # сервер отдаёт Set-Cookie: bm_session=...; мы сохраняем ПОЛНУЮ cookie-строку
 # (все Set-Cookie, не только bm_session — там могут быть CSRF/device-токены,
-# критичные для долгоживущей сессии) и переиспользуем её в каждом запросе к
+# крити  ные для долгоживущей сессии) и переиспользуем её в каждом запросе к
 # /api/usage. Пароль код не видит вообще — только одноразовый код из письма.
 
 FREEMODEL_ORIGIN = "https://freemodel.dev"
@@ -1852,7 +1852,7 @@ def fm_sub_expired(key):
 def fm_usage_bar_color(pct):
     """Цвет полоски использования по проценту 0..100:
     мало → салатово-зелёный (заметно отличается от бирюзы рамки),
-    середина → жёлтый, много → красный."""
+    середина → ж  лтый, много → красный."""
     def _lerp(a, b, t):
         return (int(a[0] + (b[0] - a[0]) * t),
                 int(a[1] + (b[1] - a[1]) * t),
@@ -2605,7 +2605,7 @@ class StyledComboBox(QComboBox):
 
 
 # ============================================================
-# КАСТОМНЫЙ ПИКЕР: МОДАЛЬНОЕ ОКНО С КАРТОЧКАМИ ВМЕСТО DROPDOWN
+# КАСТОМНЫЙ ПИКЕР: МОДАЛЬНОЕ ОКНО С КАРТОЧКАМИ   МЕСТО DROPDOWN
 # ============================================================
 
 class PickerCard(QPushButton):
@@ -2970,7 +2970,7 @@ class EffortPickerComboBox(PickerComboBox):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Явно храним QColor текста — чтобы не парсить его каждый paintEvent.
+        # Явно храним QColor текста — чтобы не парсить его   аждый paintEvent.
         # Обновляется через setTextColor().
         self._text_qcolor = QColor(200, 200, 200)
         # Комбо на главной странице — display-only. Effort меняется теперь
@@ -3401,9 +3401,9 @@ class Fable5WarningDialog(QDialog):
         container.setStyleSheet("""
             QFrame#fable5Container {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(28, 12, 12, 0.99),
-                    stop:1 rgba(20, 8, 8, 0.99));
-                border: 2px solid rgba(235, 90, 90, 0.6);
+                    stop:0 rgba(24, 18, 38, 0.99),
+                    stop:1 rgba(16, 11, 27, 0.99));
+                border: 2px solid rgba(167, 139, 252, 0.6);
                 border-radius: 18px;
             }
         """)
@@ -3424,7 +3424,7 @@ class Fable5WarningDialog(QDialog):
         title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title_label.setStyleSheet("""
             QLabel {
-                color: rgb(235, 110, 110);
+                color: rgb(188, 166, 255);
                 background: transparent;
                 border: none;
             }
@@ -3435,7 +3435,7 @@ class Fable5WarningDialog(QDialog):
         # Разделитель
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: rgba(235, 90, 90, 0.3); background: rgba(235, 90, 90, 0.3); border: none; max-height: 1px;")
+        sep.setStyleSheet("color: rgba(167, 139, 252, 0.3); background: rgba(167, 139, 252, 0.3); border: none; max-height: 1px;")
         layout.addWidget(sep)
 
         # Основное описание
@@ -3454,7 +3454,7 @@ class Fable5WarningDialog(QDialog):
         desc_label.setFont(QFont("Segoe UI", 10))
         desc_label.setStyleSheet("""
             QLabel {
-                color: rgba(225, 205, 205, 0.92);
+                color: rgba(214, 208, 232, 0.92);
                 background: transparent;
                 border: none;
             }
@@ -3468,9 +3468,9 @@ class Fable5WarningDialog(QDialog):
         release_label.setFont(QFont("Segoe UI", 9))
         release_label.setStyleSheet("""
             QLabel {
-                color: rgba(235, 110, 110, 0.85);
-                background: rgba(235, 90, 90, 0.1);
-                border: 1px solid rgba(235, 90, 90, 0.28);
+                color: rgba(188, 166, 255, 0.85);
+                background: rgba(167, 139, 252, 0.1);
+                border: 1px solid rgba(167, 139, 252, 0.28);
                 border-radius: 6px;
                 padding: 6px 12px;
             }
@@ -3488,8 +3488,8 @@ class Fable5WarningDialog(QDialog):
                                       hover_rgb=(120, 120, 120))
         btn_cancel.clicked.connect(self.reject)
         btn_ok = GlowDialogButton(tr("Продолжить"),
-                                  base_rgb=(235, 90, 90),
-                                  hover_rgb=(235, 110, 110))
+                                  base_rgb=(167, 139, 252),
+                                  hover_rgb=(188, 166, 255))
         btn_ok.clicked.connect(self.accept)
         btn_row.addStretch()
         btn_row.addWidget(btn_cancel)
@@ -5336,7 +5336,7 @@ class EffortDialog(QDialog):
             return
         self._closing = True
         event.ignore()
-        # Применяем выбор ТОЛЬКО если он изменился — чтобы Esc/крестик без
+        # Применяем   ыбор ТОЛЬКО если он изменился — чтобы Esc/крестик без
         # перемещения ползунка не гнал лишний save.
         if self._level != self._initial_level:
             try:
@@ -5393,7 +5393,7 @@ MODEL_COLORS_MAP = {
     "Opus 4.7":   (235, 180, 110),
     "Opus 4.8":   (235, 150, 130),
     "Opus 5":     (238, 118, 108),   # чуть краснее Opus 4.8
-    "Fable 5":    (235,  90,  90),
+    "Fable 5":    (167, 139, 252),   # фиолетовый — флагман, как ultracode
 }
 
 MODEL_LABELS_SHORT = {
@@ -5441,7 +5441,7 @@ class ModelSlider(QWidget):
         self._hover_idx = -1
         self._hover_alpha = {i: 0.0 for i in range(len(MODEL_ORDER))}
         self._hover_target = {i: 0.0 for i in range(len(MODEL_ORDER))}
-        # Пульс для Fable 5 — красноватое свечение, как ultracode у effort
+        # Пульс для Fable 5 — фиолетовое свечение, как ultracode у effort
         self._pulse = 0.0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -6049,7 +6049,7 @@ class OptionSlider(QWidget):
         self._hover_alpha = {i: 0.0 for i in range(len(self._levels))}
         self._hover_target = {i: 0.0 for i in range(len(self._levels))}
         # Заблокированные уровни: клик по ним игнорируется, текст рисуется
-        # приглушённым и не подсвечивается hover'ом.
+        # приглушённ  м и не подсвечивается hover'ом.
         self._disabled = set()
         self._pulse = 0.0
         self._timer = QTimer(self)
@@ -6968,7 +6968,7 @@ class KeyCard(QFrame):
         self._exp_timer.timeout.connect(self._on_expiry_tick)
         self._exp_timer.start(1000)
 
-    # ── Online-секция ────────────────────────────────────────────────
+    # ── Online-с  кция ────────────────────────────────────────────────
     def _build_online_section(self):
         box = QWidget()
         box.setFixedHeight(self._ONLINE_H)
@@ -7616,7 +7616,7 @@ class KeyCard(QFrame):
                 self.toggle.set_on(True, animate=True)
                 self.toggle.blockSignals(False)
             self._retarget()
-            # Авто-сброс — тривиальная мутация (без .bakN), идёт по changed.
+            # Авто-сброс     тривиальная мутация (без .bakN), идёт по changed.
             self.changed.emit(self.key.get("id", ""))
         state = key_color_state(self.key)
         is_online = self.key.get("mode") == "online"
@@ -8341,8 +8341,8 @@ class KeyValidityDialog(QDialog):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
         self._valid_days = int(valid_days)
-        # Верхний предел спиннера дней — жёсткий лимит убран (юзер сам решает,
-        # сколько дней жизни навесить); держим разумный потолок в 999 дней,
+        # Верхний предел спиннера дней — жёсткий лимит убран (ю  ер сам решает,
+        # сколько дней жизни навесить); дер  им разумный потолок в 999 дней,
         # чтобы _NumberField не превратился в кассу с шестизначными числами.
         self._max_days = 999
         # Что показать в спиннерах при открытии:
@@ -9403,7 +9403,7 @@ class ApiKeyManagerDialog(QDialog):
     # Эмитим при любой мутации ключа (тумблер, авто-сброс таймера, обновление
     # метрик, reorder) — главное окно ловит и пишет settings.json БЕЗ бэкапа.
     state_changed = Signal()
-    # Эмитим ТОЛЬКО когда пользователь изменил важные пользовательские данные:
+    # Эмитим ТОЛЬКО когда пользователь   зменил важные пользовательские данные:
     # добавил ключ / удалил ключ / переименовал / поменял значение / вошёл-
     # переключил аккаунт. Главное окно ловит и делает .bakN-бэкап перед save.
     # Метрики /api/usage, toggle, mode, reorder сюда НЕ входят.
@@ -10511,7 +10511,7 @@ class CustomTokenDialog(QDialog):
             "Opus 4.7":     QColor(235, 180, 110),
             "Opus 4.8":     QColor(235, 150, 130),
             "Opus 5":       QColor(238, 118, 108),
-            "Fable 5":   QColor(235, 90, 90),
+            "Fable 5":   QColor(167, 139, 252),
         }
         for i in range(self.model_combo.count()):
             txt = self.model_combo.itemText(i)
@@ -13014,7 +13014,7 @@ class ClaudeManager(QMainWindow):
             "Opus 4.7":     QColor(235, 180, 110),  # жёлтый с переходом в красноватый
             "Opus 4.8":     QColor(235, 150, 130),  # слабо красноватый
             "Opus 5":       QColor(238, 118, 108),  # чуть краснее 4.8
-            "Fable 5":   QColor(235, 90, 90),    # красный
+            "Fable 5":   QColor(167, 139, 252),  # фиолетовый
         }
         self._fm_model_colors = model_colors
         model_tooltips = {}
@@ -13096,7 +13096,7 @@ class ClaudeManager(QMainWindow):
         QTimer.singleShot(0, self._reposition_ctx_toggle)
 
         # Effort — тот же кликабельный комбобокс что и раньше, но при клике
-        # открывается компактный EffortDialog с ползунком (вместо PickerDialog
+        # открывается компактный EffortDialog с ползунком (вмест   PickerDialog
         # со списком карточек).
         self.fm_effort_combo = EffortPickerComboBox()
         self.fm_effort_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
@@ -13282,7 +13282,7 @@ class ClaudeManager(QMainWindow):
         self.openai_section_widget.hide()
         claude_layout.addWidget(self.openai_section_widget)
 
-        # Применяем начальное состояние видимости секций
+        # Применяем начальное состояние   идимости секций
         self._apply_app_mode()
 
         # Выбор рабочей директории
@@ -14734,7 +14734,7 @@ class ClaudeManager(QMainWindow):
             self.log(f"Не удалось записать effort в настройки Claude: {e}", "warning")
 
     def launch_claude(self):
-        """Запускает Claude Code с выбранной моделью"""
+        """Запускает Claude Code с выбран  ой моделью"""
         # Вкладка OpenAI живёт своей жизнью — там Codex CLI
         if self.settings.get("app_mode", "anthropic") == "openai":
             self.launch_codex()
@@ -15024,7 +15024,7 @@ class ClaudeManager(QMainWindow):
     # ── Codex CLI: установка / удаление / версии ─────────────────
 
     def _detect_codex_install_dirs(self):
-        """Папки, где может лежать codex (ставится только через npm)."""
+        """П  пки, где может лежать codex (ставится только через npm)."""
         candidates = [
             os.path.join(os.environ.get("APPDATA", ""), "npm"),
             os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
@@ -17167,7 +17167,7 @@ class ClaudeManager(QMainWindow):
                 # 2) Основная попытка удаления npm-версии
                 "Write-Host 'Удаление Claude Code (npm)...' -ForegroundColor Cyan;"
                 "npm uninstall -g @anthropic-ai/claude-code; "
-                # 3) Если файл всё ещё залочен и остался — повторная попытка после паузы
+                # 3) Если файл   сё ещё залочен и остался — повторная попытка после паузы
                 "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@anthropic-ai\\claude-code'; "
                 "if (Test-Path $npmDir) { "
                 "  Write-Host '`nПовторная попытка (файл был залочен)...' -ForegroundColor Yellow; "
