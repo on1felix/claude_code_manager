@@ -870,7 +870,8 @@ TRANSLATIONS = {
     "нет данных": "no data",
     "Данные на": "Data as of",
     "Данные ещё не загружены": "Data not loaded yet",
-    "Обновляем данные  ": "Refreshing data…",
+    "Обновляем данные…": "Refreshing data…",
+    "Online-режим (реальные лимиты аккаунта)": "Online mode (real account limits)",
     "Сначала войдите по коду с почты": "Log in by e-mail code first",
     "5ч лимит": "5h limit",
     "недельный лимит": "weekly limit",
@@ -2093,31 +2094,6 @@ class UpdateIndicator(QWidget):
     def mouseReleaseEvent(self, event):
         self._press_scale = 1.0
         super().mouseReleaseEvent(event)
-
-        if self._is_active:
-            # Зелёное свечение с плавной пульсацией (уменьшил радиус)
-            glow_radius = 5.0 + 2.5 * pulse
-            glow_alpha = int(70 * pulse)
-            painter.setBrush(QColor(52, 211, 153, glow_alpha))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(center, glow_radius, glow_radius)
-
-            # Основная точка с плавной пульсацией яркости
-            t = 0.85 + 0.15 * pulse
-            painter.setBrush(QColor(int(52 * t), int(211 * t), int(153 * t)))
-            painter.drawEllipse(center, 4.5, 4.5)
-        else:
-            # Красная точка с плавной пульсацией
-            glow_radius = 5.0 + 2.5 * pulse
-            glow_alpha = int(50 * pulse)
-            painter.setBrush(QColor(255, 50, 50, glow_alpha))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(center, glow_radius, glow_radius)
-
-            # Основная красная точка с пульсацией яркости
-            brightness = int(180 + 75 * pulse)
-            painter.setBrush(QColor(brightness, 50, 50))
-            painter.drawEllipse(center, 4.5, 4.5)
 
 # ============================================================
 # КНОПКА С ЭФФЕКТОМ НАВЕДЕНИЯ
