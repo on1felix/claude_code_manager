@@ -1,7 +1,7 @@
 """
 =====================================================
- Claude Code Manager — PySide6 Edition
- Управление Omniroute и Claude Code
+ Claude Code Manager ― PySide6 Edition
+ ──────────── Управление Claude Code, opencode и Base URL
 -----------------------------------------------------
  Автор / Author: on1felix
    Discord:  on1felix
@@ -26,9 +26,8 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.8.4"  # Для обновлений
+APP_VERSION = "5.8.6"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
-OMNIROUTE_PORT = 20128
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -250,6 +249,7 @@ def load_settings():
             if not loaded.get("selected_model") or loaded["selected_model"] not in loaded["models"]:
                 loaded["selected_model"] = loaded["models"][0]
             migrate_api_keys(loaded)
+            migrate_oc_keys(loaded)
             return loaded
     return _default_settings()
 
@@ -259,10 +259,9 @@ def _default_settings():
             "kr/claude-sonnet-4.5"
         ],
         "selected_model": "kr/claude-sonnet-4.5",
-        "omniroute_path": "omniroute",
         "working_directory": "",
         "auth_token": "",
-        "use_custom_token": False,
+        "use_custom_token": True,
         "custom_api_key": "",
         "custom_base_url": "https://cc.freemodel.dev",
         "custom_base_urls": [
@@ -281,7 +280,12 @@ def _default_settings():
             "https://api.freemodel.dev"
         ],
         "openai_model": "gpt-5.6-sol",
-        "openai_effort": "low"
+        "openai_effort": "low",
+        "oc_base_url": "",
+        "oc_base_urls": [],
+        "oc_keys": [],
+        "oc_selected_key_id": "",
+        "oc_api_key": ""
     }
 
 DEFAULT_BASE_URLS = ["https://cc.freemodel.dev"]
@@ -493,16 +497,6 @@ def _online_color_state(key):
         return "yellow"
     return "green"
 
-def key_time_expired(key):
-    """True если ключ старше срока валидности (30 дней) от created_at.
-    Актуально только когда карточка НЕ подключена к живым метрикам —
-    для online-карточки с логином истечение считаем через /api/usage."""
-    created = key.get("created_at", 0) or 0
-    if not created:
-        return False
-    valid_seconds = 30 * 86400
-    return time.time() >= created + valid_seconds
-
 def key_color_state(key):
     """green / red / yellow — визуальное состояние ключа.
     - enabled=True                     → green (активен).
@@ -519,10 +513,7 @@ def key_color_state(key):
     # Online + реально залогинен → верим /api/usage; таймер жизни игнорируем.
     if key.get("mode") == "online" and (key.get("session_cookie") or "").strip():
         return _online_color_state(key)
-    # Manual или online-без-входа: единая логика.
-    # Таймер жизни ключа истёк (created_at + 30 дней) → сразу red.
-    if key_time_expired(key):
-        return "red"
+    # Manual или online-без-входа: единая логика на основе тумблера/лимита.
     if key.get("enabled", False):
         return "green"
     # Если таймер лимита уже истёк — визуально ключ уже активен.
@@ -540,32 +531,15 @@ def key_is_usable(key):
     - Зелёные (активные, без лимитов) — да.
     - Жёлтые/красные из-за лимита (5ч/недельный) — нет, ключ реально
       заблокирован окном, кидать на него запросы бесполезно.
-    - Исключение: если ключ «истёк» (созданный срок жизни ушёл, либо
-      Pro-подписка кончилась) — разрешаем выбирать, пусть пользователь
-      сам решает, использовать такую карточку или обновить."""
+    - Исключение: если истекла Pro-подписка — разрешаем выбирать, пусть
+      пользователь сам решает, использовать такую карточку или обновить."""
     if not key:
         return False
-    # Истёкший срок жизни / истёкшая Pro-подписка — исключение.
-    if key_time_expired(key) or fm_sub_expired(key):
+    # Истёкшая Pro-подписка — исключение.
+    if fm_sub_expired(key):
         return True
     # Всё остальное: только зелёные пригодны.
     return key_color_state(key) == "green"
-
-def first_active_key(settings):
-    """Активный ключ, который реально пойдёт в ANTHROPIC_API_KEY.
-    Приоритет: явно выбранный пользователем (selected_key_id), если он
-    пригоден; иначе — первый пригодный по порядку. «Пригодный» = зелёный
-    или online с истёкшей Pro-подпиской."""
-    keys = settings.get("api_keys", [])
-    sel_id = settings.get("selected_key_id") or ""
-    if sel_id:
-        for k in keys:
-            if k.get("id") == sel_id and key_is_usable(k):
-                return k
-    for k in keys:
-        if key_is_usable(k):
-            return k
-    return None
 
 def sync_custom_api_key(settings):
     """Зеркалирует значение активного ключа в custom_api_key
@@ -583,22 +557,48 @@ def sync_custom_api_key(settings):
         settings["selected_key_id"] = k.get("id", "")
     return settings
 
-def migrate_api_keys(settings):
-    """Приводит settings["api_keys"] к нормальному виду; при отсутствии списка
-    переносит старый одиночный custom_api_key как «Ключ 1»."""
-    keys = settings.get("api_keys")
-    if not isinstance(keys, list):
-        keys = []
-    if not keys:
-        legacy = (settings.get("custom_api_key") or "").strip()
-        if legacy:
-            keys = [{
-                "id": _new_key_id(),
-                "name": "Ключ 1",
-                "value": legacy,
-                "enabled": True,
-                "activated_at": time.time(),
-            }]
+def _first_active_key(keys, sel_id):
+    """Активный ключ из произвольного списка (Приоритет: выбранный по id)."""
+    if sel_id:
+        for k in keys:
+            if k.get("id") == sel_id and key_is_usable(k):
+                return k
+    for k in keys:
+        if key_is_usable(k):
+            return k
+    return None
+
+def first_active_key(settings):
+    """Активный ключ Anthropic/OpenAI, который реально пойдёт в ANTHROPIC_API_KEY.
+    Приоритет: явно выбранный пользователем (selected_key_id), если он
+    пригоден; иначе — первый пригодный по порядку. «Пригодный» = зелёный
+    или online с истёкшей Pro-подпиской."""
+    return _first_active_key(settings.get("api_keys", []),
+                             settings.get("selected_key_id") or "")
+
+def first_active_oc_key(settings):
+    """Активный ключ вкладки Custom URL (отдельное хранилище oc_keys).
+    Та же логика приоритета, но по своему selected_key_id."""
+    return _first_active_key(settings.get("oc_keys", []),
+                             settings.get("oc_selected_key_id") or "")
+
+def sync_oc_api_key(settings):
+    """Зеркалирует значение активного ключа вкладки Custom URL в oc_api_key
+    (код запуска opencode читает именно oc_api_key). Заодно чистит
+    устаревший oc_selected_key_id, если такого ключа больше нет."""
+    keys = settings.get("oc_keys", [])
+    ids = {k.get("id") for k in keys}
+    if settings.get("oc_selected_key_id") and settings["oc_selected_key_id"] not in ids:
+        settings["oc_selected_key_id"] = ""
+    k = first_active_oc_key(settings)
+    settings["oc_api_key"] = k.get("value", "") if k else ""
+    if k and not settings.get("oc_selected_key_id"):
+        settings["oc_selected_key_id"] = k.get("id", "")
+    return settings
+
+def _normalize_key_list(keys):
+    """Приводит список сырых ключей к нормальному dict-виду (общий для
+    migrate_api_keys и migrate_oc_keys)."""
     norm = []
     for k in keys:
         if not isinstance(k, dict):
@@ -646,11 +646,8 @@ def migrate_api_keys(settings):
             "value": val,
             "enabled": enabled,
             "activated_at": k.get("activated_at", 0) or 0,
-            # created_at — дата «создания» ключа (эпоха). Отсчёт 30 дней в
-            # manual/logged-out режиме идёт от неё; пользователь может править
-            # её вручную через KeyEditDialog. Для старых записей без поля —
-            # берём activated_at, иначе now, чтобы не показывать «срок истёк»
-            # сразу после апдейта приложения.
+            # created_at — дата «создания» ключа (эпоха). Только информативная,
+            # никакого таймера/срока жизни к ней не привязано.
             "created_at": _num("created_at") or _num("activated_at") or time.time(),
             "limit_type": limit_type if not enabled else "",
             "resets_at": resets_at if not enabled else 0,
@@ -677,8 +674,36 @@ def migrate_api_keys(settings):
             "credit_total_cents": _num("credit_total_cents"),
             "credit_expires_at": _num("credit_expires_at"),
         })
-    settings["api_keys"] = norm
+    return norm
+
+def migrate_api_keys(settings):
+    """Приводит settings["api_keys"] к нормальному виду; при отсутствии списка
+    переносит старый одиночный custom_api_key как «Ключ 1»."""
+    keys = settings.get("api_keys")
+    if not isinstance(keys, list):
+        keys = []
+    if not keys:
+        legacy = (settings.get("custom_api_key") or "").strip()
+        if legacy:
+            keys = [{
+                "id": _new_key_id(),
+                "name": "Ключ 1",
+                "value": legacy,
+                "enabled": True,
+                "activated_at": time.time(),
+            }]
+    settings["api_keys"] = _normalize_key_list(keys)
     sync_custom_api_key(settings)
+    return settings
+
+def migrate_oc_keys(settings):
+    """Приводит settings["oc_keys"] (отдельное хранилище ключей вкладки
+    Custom URL) к нормальному виду."""
+    keys = settings.get("oc_keys")
+    if not isinstance(keys, list):
+        keys = []
+    settings["oc_keys"] = _normalize_key_list(keys)
+    sync_oc_api_key(settings)
     return settings
 
 
@@ -740,15 +765,51 @@ TRANSLATIONS = {
     "Авто-обновление": "Auto-update",
     "Status line": "Status line",
     "Fix Claude": "Fix Claude",
-    "Запустить Omniroute": "Start Omniroute",
-    "Остановить Omniroute": "Stop Omniroute",
     "Запустить Claude Code": "Start Claude Code",
     "Остановить Claude Code": "Stop Claude Code",
     "Добавить модель": "Add model",
     "Удалить модель": "Remove model",
-    "Выбор модели Omniroute": "Select Omniroute model",
-    "Выбор Base URL": "Select Base URL",
     "Выбор модели": "Select model",
+    "Выбор Base URL": "Select Base URL",
+    "Установить opencode": "Install opencode",
+    "Удалить opencode": "Uninstall opencode",
+    "Обновить opencode": "Update opencode",
+    "Запустить opencode": "Start opencode",
+    "Установка opencode CLI": "Install opencode CLI",
+    "Обновление opencode CLI": "Update opencode CLI",
+    "Удалить opencode CLI": "Uninstall opencode CLI",
+    "npm установит последнюю версию opencode.": "npm will install the latest opencode version.",
+    "Будет установлен opencode CLI (npm-пакет opencode-ai).\n\nОткроется окно PowerShell, где пойдёт установка.": "opencode CLI (the opencode-ai npm package) will be installed.\n\nA PowerShell window will open where the install will run.",
+    "Установка opencode через npm...": "Installing opencode via npm...",
+    "Готово. Проверь команду: opencode -v": "Done. Check the command: opencode -v",
+    "Будет удалён глобальный npm-пакет opencode": "The global npm package opencode will be removed",
+    "Настройки в %USERPROFILE%\\.local\\share\\opencode не пострадают — удалится только бинарь.": "Settings in %USERPROFILE%\\.local\\share\\opencode will not be affected — only the binary will be removed.",
+    "Удаление opencode (npm)...": "Removing opencode (npm)...",
+    "opencode полностью удалён.": "opencode fully removed.",
+    "opencode удалён": "opencode removed",
+    "opencode обновлён до v{v}": "opencode updated to v{v}",
+    "opencode установлен (v{v})": "opencode installed (v{v})",
+    "Не задан": "Not set",
+    "Необязательно — откройте «Управление»": "Optional — open \"Manage\"",
+    "Custom URL (opencode)": "Custom URL (opencode)",
+    "Доступные модели": "Available Models",
+    "Модели провайдера": "Provider Models",
+    "Модели не найдены": "No models found",
+    "Как изменить модель": "How to change the model",
+    "В терминале opencode введите /model и выберите нужную вам модель из списка.\n\nСписок ниже обновляется автоматически при каждом открытии этого окна — если моделей добавили или убрали, здесь это отразится само.": "In the opencode terminal type /model and pick the model you need from the list.\n\nThe list below refreshes automatically every time you open this window — if models were added or removed, it will be reflected here on its own.",
+    "Какие модели доступны": "What models are available",
+    "Модели:": "Models:",
+    "моделей": "models",
+    "бесплатных": "free",
+    "{total} моделей": "{total} models",
+    "{total} моделей · {free} бесплатных": "{total} models · {free} free",
+    "Не удалось получить модели для Custom URL": "Failed to fetch models for Custom URL",
+    "Управление провайдерами": "Manage providers",
+    "Провайдеры opencode": "opencode providers",
+    "Провайдеры из конфига и auth.json. Удаление убирает и креду, и определение.": "Providers from config and auth.json. Deleting removes both the credential and the definition.",
+    "Провайдеров не найдено": "No providers found",
+    "Без Base URL и кредов": "No Base URL or credentials",
+    "Вы уверены, что хотите удалить провайдера? Будет удалена и креда (auth.json), и определение из конфига.": "Are you sure you want to delete this provider? Both the credential (auth.json) and the config definition will be removed.",
     # ── главное окно: подписи статусов
     "Не запущен": "Not running",
     "Подключен": "Connected",
@@ -761,6 +822,7 @@ TRANSLATIONS = {
     # ── метки секций
     "Модель:": "Model:",
     "API ключ:": "API key:",
+    "Base URL:": "Base URL:",
     "Директория:": "Directory:",
     "Не выбрана (будет запрошена)": "Not selected (will be prompted)",
     # ── общие кнопки
@@ -906,13 +968,6 @@ TRANSLATIONS = {
     "осталось": "left",
     "дн.": "days",
     "ч.": "h",
-    # ── срок жизни ключа ──
-    "срок ключа истёк": "key expired",
-    "Создан": "Created",
-    "Срок действия ключа": "Key validity period",
-    "Сколько ещё будет действовать ключ?": "How much longer will the key be valid?",
-    "Изменить срок действия ключа": "Change key validity period",
-    "Максимум": "Maximum",
     # ── подтверждение включения ключа с активным лимитом ──
     "Включить ключ?": "Enable the key?",
     "У ключа стоит лимит. Если включить его сейчас, лимит сбросится и ключ снова пойдёт в работу.":
@@ -920,7 +975,6 @@ TRANSLATIONS = {
     "Да, включить": "Yes, enable",
     # ── редактирование ключа ──
     "Изменить ключ": "Edit key",
-    "Изменить дату создания ключа": "Change key creation date",
     "API ключ": "API key",
     "Сохранить": "Save",
     "Подтвердить": "Confirm",
@@ -1006,9 +1060,8 @@ TRANSLATIONS = {
     "Удаление завершено успешно.": "Uninstall completed successfully.",
     # ── console banner
     "Приложение запущено": "Application started",
-    "Порт Omniroute:": "Omniroute port:",
     "Автор:": "Author:",
-    "Для работы с Base URL (freemodel и др.):": "To work with Base URL (freemodel etc.):",
+    "Для работы с Anthropic (freemodel и др.):": "To work with Anthropic (freemodel etc.):",
     "Если впервые — запустите Claude Code и введите /logout.":
         "On first run — launch Claude Code and type /logout.",
     "Это нужно сделать только один раз. Даже если вы":
@@ -1018,15 +1071,12 @@ TRANSLATIONS = {
     "Приложение автоматически подставит ключ и Base URL.":
         "The app will automatically inject the key and Base URL.",
     # ── console log messages
-    "Omniroute подключен": "Omniroute connected",
-    "Omniroute не запущен": "Omniroute is not running",
-    "Omniroute успешно подключен": "Omniroute connected successfully",
-    "Omniroute остановлен": "Omniroute stopped",
-    "Запуск Omniroute...": "Starting Omniroute...",
-    "Остановка Omniroute...": "Stopping Omniroute...",
-    "Ожидание подключения...": "Waiting for connection...",
-    "Таймаут ожидания подключения. Проверьте, что Omniroute установлен и путь к нему правильный.":
-        "Connection timeout. Make sure Omniroute is installed and the path is correct.",
+    "opencode CLI: установка/обновление через npm": "opencode CLI: install/update via npm",
+    "opencode установлен": "opencode installed",
+    "opencode не установлен": "opencode is not installed",
+    "opencode можно запускать без ключа и модели": "opencode can be launched without a key or model",
+    "Запуск opencode...": "Starting opencode...",
+    "opencode запущен": "opencode started",
     "Директория очищена": "Directory cleared",
     "API ключ не может быть пустым": "API key cannot be empty",
     "API ключ сохранен": "API key saved",
@@ -1219,13 +1269,13 @@ TRANSLATIONS = {
     "на которой приложение проверено целиком. Более новые версии могут работать "
     "нестабильно или вовсе не запускаться, а начиная с v2.1.181 Anthropic "
     "заблокировала сторонние Base URL и API ключи — все запросы уходят тол  ко "
-    "в официальный сервис Anthropic, и FreeModel / Omniroute / прокси не работают.\n\n"
+    "в официальный сервис Anthropic, и FreeModel / opencode / прокси не работают.\n\n"
     "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude "
     "не пострадают.":
         "the last stable version on which the app was fully tested. "
         "Newer versions may work unstably or not start at all, and starting from v2.1.181 "
         "Anthropic blocked third-party Base URLs and API keys — all requests now go only "
-        "to the official Anthropic service, and FreeModel / Omniroute / proxy don't work.\n\n"
+        "to the official Anthropic service, and FreeModel / opencode / proxy don't work.\n\n"
         "npm will reinstall the package to the required version. Settings in %USERPROFILE%\\.claude "
         "will not be affected.",
     "Будет установлена фиксированная": "A pinned version will be installed",
@@ -1256,10 +1306,10 @@ TRANSLATIONS = {
         "The tested and stable version that this app is guaranteed to work with is ",
     "На более старых версиях возможны "
     "несовместимости (изменения в формате settings.json, путях, флагах CLI), "
-    "из-за которых запуск через Omniroute / FreeModel может вести себя нестабильно.\n\n":
+    "из-за которых запуск через opencode / FreeModel может вести себя нестабильно.\n\n":
         "Older versions may have incompatibilities "
         "(changes in the settings.json format, paths, CLI flags) "
-        "that can make startup via Omniroute / FreeModel behave unreliably.\n\n",
+        "that can make startup via opencode / FreeModel behave unreliably.\n\n",
     "Рекомендуем обновить до": "We recommend updating to",
     "npm переустановит пакет, "
     "настройки в %USERPROFILE%\\.claude не пострадают.":
@@ -1416,7 +1466,7 @@ TRANSLATIONS = {
     "Переход в безопасный режим": "Switching to safe mode",
     "Приложение перестанет обновлять Claude Code и зафиксируется "
     f"на проверенной версии v{REQUIRED_CLAUDE_VERSION} — именно на ней "
-    "гарантированно работают FreeModel / Omniroute / любые сторонние "
+    "гарантированно работают FreeModel / opencode / любые сторонние "
     "Base URL и API-ключи.\n\n"
     "Встроенный автообновлятор Claude Code будет выключен "
     "(DISABLE_UPDATES=1, autoUpdates=false), чтобы CLI сам не "
@@ -1427,7 +1477,7 @@ TRANSLATIONS = {
     "на новой версии реально появились проблемы.":
         "The app will stop updating Claude Code and will pin to the proven "
         f"version v{REQUIRED_CLAUDE_VERSION} — the one that reliably works "
-        "with FreeModel / Omniroute / any third-party Base URLs and API keys.\n\n"
+        "with FreeModel / opencode / any third-party Base URLs and API keys.\n\n"
         "Claude Code's built-in auto-updater will be turned off "
         "(DISABLE_UPDATES=1, autoUpdates=false), so the CLI can't quietly "
         "pull in a newer version behind your back. If you currently have a "
@@ -1502,17 +1552,36 @@ def tr(ru_text):
     return TRANSLATIONS.get(ru_text, ru_text)
 
 
-def check_omniroute_status():
-    """Проверяет, запущен ли Omniroute"""
+def check_oc_latest_version():
+    """Возвращает последнюю версию opencode CLI из npm-реестра"""
     try:
-        # Проверка через socket - самый надежный способ
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.5)
-        result = sock.connect_ex(('127.0.0.1', OMNIROUTE_PORT))
-        sock.close()
-        return result == 0
-    except Exception as e:
-        return False
+        req = Request("https://registry.npmjs.org/opencode-ai/latest", headers={'User-Agent': 'ClaudeManager-Updater'})
+        with urlopen(req, timeout=10, context=_ssl_context) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        return data.get('version', '')
+    except Exception:
+        return ''
+
+def get_installed_oc_version():
+    """Возвращает установленную версию opencode CLI ('' если не установлен).
+
+    opencode — JS-пакет npm, в PATH только шимы opencode.cmd / opencode.ps1
+    (без .exe). Python 3.14 не запускает .cmd напрямую через CreateProcess,
+    поэтому гоним через `cmd /c <путь> --version`."""
+    try:
+        exe = shutil.which("opencode")
+        if not exe:
+            return ""
+        proc = subprocess.run(
+            ["cmd", "/c", exe, "--version"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        m = re.search(r"(\d+\.\d+(?:\.\d+)?)", output)
+        return m.group(1) if m else ""
+    except Exception:
+        return ''
 
 def check_app_update():
     """Проверяет наличие обновлений приложения через GitHub API"""
@@ -2163,6 +2232,79 @@ class StyledButton(QPushButton):
             }}
         """)
 
+class OcSpinner(QWidget):
+    """Вращающийся спиннер-загрузка. Рисуется через QPainter поверх кнопки,
+    поэтому не влияет на размеры/раскладку родителя. Цвет сероватый."""
+
+    def __init__(self, parent=None, size=18):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._rotate)
+        self._timer.start(50)
+
+    def _rotate(self):
+        self._angle = (self._angle + 30) % 360
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2.0, h / 2.0
+        r = min(w, h) / 2.0 - 2.0
+        p.setPen(Qt.NoPen)
+        # Траектория-дуга «догоняет» себя: хвост гаснет позади головы.
+        for i in range(8):
+            phase = (i / 8.0) * 360
+            a = self._angle - phase
+            alpha = 25 + int(225 * ((i / 8.0) ** 2))
+            pen = QPen(QColor(190, 190, 195, alpha), 2.4, Qt.SolidLine, Qt.RoundCap)
+            p.setPen(pen)
+            p.drawArc(QRectF(cx - r, cy - r, r * 2, r * 2), int(a * 16), int(38 * 16))
+        p.end()
+
+
+class OcModelInfoButton(StyledButton):
+    """Кнопка «Какие модели доступны» со встроенным спиннером загрузки.
+
+    Пока идёт обновление списка моделей эндпоинта кнопка некликабельна и
+    затемнена (стиль :disabled), а слева крутится серый спиннер. Спиннер — это
+    отдельный виджет поверх кнопки с абсолютной позицией: на размеры кнопки
+    он не влияет. Позиция пересчитывается при изменении размера и показе,
+    чтобы спиннер никогда не выходил за границы кнопки."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self._spinner = OcSpinner(self)
+        self._spinner.hide()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._place_spinner()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_spinner()
+
+    def _place_spinner(self):
+        if self._spinner is None:
+            return
+        # Всегда центрируем по вертикали и прижимаем к левому краю с отступом —
+        # независимо от текущего размера кнопки (не даём вылезти за границы).
+        self._spinner.move(12, (self.height() - self._spinner.height()) // 2)
+        self._spinner.raise_()
+
+    def set_loading(self, loading):
+        self.setEnabled(not loading)
+        if loading:
+            self._place_spinner()
+            self._spinner.show()
+        else:
+            self._spinner.hide()
+
 # ============================================================
 # КНОПКА С ЗЕЛЕНЫМ ЭФФЕКТОМ (ДЛЯ ЗАПУСКА)
 # ============================================================
@@ -2390,6 +2532,126 @@ class RedButton(QPushButton):
     def _update_style(self):
         base_r, base_g, base_b = 60, 60, 65
         hover_r, hover_g, hover_b = 200, 60, 60
+
+        r = int(base_r + (hover_r - base_r) * self._hover_progress)
+        g = int(base_g + (hover_g - base_g) * self._hover_progress)
+        b = int(base_b + (hover_b - base_b) * self._hover_progress)
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(40, 40, 45, 200);
+                color: rgb(200, 200, 200);
+                border: 2px solid rgb({r}, {g}, {b});
+                border-radius: 6px;
+                padding: 8px;
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(30, 30, 35, 200);
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(30, 30, 35, 150);
+                color: rgb(100, 100, 100);
+                border: 2px solid rgb(40, 40, 45);
+            }}
+        """)
+
+class YellowButton(QPushButton):
+    """Как RedButton, но с жёлтым hover — для кнопок «Обновить»."""
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.setMinimumHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover_progress = 0.0
+        self._hover_timer = QTimer()
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+        self._is_hovered = False
+        self.setMouseTracking(True)
+        self._update_style()
+        self.ensurePolished()
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        if self._is_hovered and self.isEnabled():
+            if self._hover_progress < 1.0:
+                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._update_style()
+        else:
+            if self._hover_progress > 0.0:
+                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._update_style()
+
+    def _update_style(self):
+        base_r, base_g, base_b = 60, 60, 65
+        hover_r, hover_g, hover_b = 245, 180, 60
+
+        r = int(base_r + (hover_r - base_r) * self._hover_progress)
+        g = int(base_g + (hover_g - base_g) * self._hover_progress)
+        b = int(base_b + (hover_b - base_b) * self._hover_progress)
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(40, 40, 45, 200);
+                color: rgb(200, 200, 200);
+                border: 2px solid rgb({r}, {g}, {b});
+                border-radius: 6px;
+                padding: 8px;
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(30, 30, 35, 200);
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(30, 30, 35, 150);
+                color: rgb(100, 100, 100);
+                border: 2px solid rgb(40, 40, 45);
+            }}
+        """)
+
+class OrangeButton(QPushButton):
+    """Как RedButton, но с оранжевым hover — для кнопок «Откатить»."""
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.setMinimumHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover_progress = 0.0
+        self._hover_timer = QTimer()
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+        self._is_hovered = False
+        self.setMouseTracking(True)
+        self._update_style()
+        self.ensurePolished()
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        if self._is_hovered and self.isEnabled():
+            if self._hover_progress < 1.0:
+                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._update_style()
+        else:
+            if self._hover_progress > 0.0:
+                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._update_style()
+
+    def _update_style(self):
+        base_r, base_g, base_b = 60, 60, 65
+        hover_r, hover_g, hover_b = 235, 150, 90
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -3246,7 +3508,7 @@ class AddModelDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        btn_cancel = RedButton(tr("Отмена"))
+        btn_cancel = GreenButton(tr("Отмена"))
         btn_cancel.setMinimumHeight(40)
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
@@ -3986,12 +4248,23 @@ class ConfirmActionDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
-        self.confirm_btn = GreenButton(confirm_text)
+        # Действие: «Обновить» — жёлтое, «Откатить» — оранжевое,
+        # «Удалить» — красное, остальное (Продолжить/Установить/Подтвердить
+        # и т.п.) — зелёное. Отмена всегда зелёная.
+        ctext = (confirm_text or "")
+        if "обнов" in ctext.lower():
+            self.confirm_btn = YellowButton(confirm_text)
+        elif "откат" in ctext.lower():
+            self.confirm_btn = OrangeButton(confirm_text)
+        elif "удал" in ctext.lower():
+            self.confirm_btn = RedButton(confirm_text)
+        else:
+            self.confirm_btn = GreenButton(confirm_text)
         self.confirm_btn.setMinimumHeight(40)
         self.confirm_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.confirm_btn)
@@ -4208,25 +4481,25 @@ class ToggleSwitch(QWidget):
         p.end()
 
 # ============================================================
-# ШИРОКИЙ ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМОВ (FreeModel ↔ Omniroute)
+# ШИРОКИЙ ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМОВ (Anthropic ↔ OpenAI ↔ Custom URL)
 # ============================================================
 
 class ModeToggle(QWidget):
-    """Три ячейки-режима: Anthropic|Claude (двойная), OpenAI, Omniroute.
+    """Три ячейки-режима: Anthropic|Claude (двойная), OpenAI, Custom URL.
 
     Первая ячейка содержит два под-режима, разделённых палочкой «|»:
     слева Anthropic (вход по ключам + Base URL, оранжевый), справа Claude
     (официальный запуск через аккаунт Anthropic, коралловый). Выбранная
     половинка горит ярче, а цвет пилюли плавно перетекает оранжевый ↔
     коралловый при переключении половинок."""
-    modeChanged = Signal(str)  # 'anthropic' | 'official' | 'openai' | 'omniroute'
+    modeChanged = Signal(str)  # 'anthropic' | 'official' | 'openai' | 'customurl'
 
-    MODES = ["anthropic", "openai", "omniroute"]  # ячейки (official живёт в ячейке 0)
-    LABELS = {"anthropic": "Anthropic", "omniroute": "Omniroute", "openai": "OpenAI"}
+    MODES = ["anthropic", "openai", "customurl"]  # ячейки (official живёт в ячейке 0)
+    LABELS = {"anthropic": "Anthropic", "customurl": "Custom URL", "openai": "OpenAI"}
     COLORS = {
         "anthropic": (255, 170, 40),
         "official":  (217, 119, 87),
-        "omniroute": (100, 150, 255),
+        "customurl": (100, 150, 255),
         "openai":    (52, 211, 153),
     }
 
@@ -4237,7 +4510,7 @@ class ModeToggle(QWidget):
         self.setFixedSize(440, 38)
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
-        if mode not in ("anthropic", "official", "openai", "omniroute"):
+        if mode not in ("anthropic", "official", "openai", "customurl"):
             mode = "anthropic"
         self._mode = mode
         self._progress = float(self._cell_of(mode))
@@ -4270,7 +4543,7 @@ class ModeToggle(QWidget):
         return self._mode
 
     def setMode(self, mode, animate=True):
-        if mode not in ("anthropic", "official", "openai", "omniroute") or mode == self._mode:
+        if mode not in ("anthropic", "official", "openai", "customurl") or mode == self._mode:
             return
         self._mode = mode
         self._target = float(self._cell_of(mode))
@@ -6296,6 +6569,382 @@ class OptionSlider(QWidget):
         p.end()
 
 
+_OC_MODEL_PALETTE = [
+    (220, 120, 150), (120, 190, 240), (160, 220, 130), (250, 200, 110),
+    (180, 150, 250), (120, 220, 200), (250, 150, 110), (150, 200, 250),
+    (230, 180, 120), (170, 220, 160), (220, 160, 200), (140, 190, 230),
+    (240, 190, 90),  (160, 210, 150), (210, 140, 180), (130, 200, 220),
+]
+
+
+def _oc_model_color(name):
+    """Стабильный цвет для модели по имени (для карточек каталога)."""
+    h = 0
+    for ch in name:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return _OC_MODEL_PALETTE[h % len(_OC_MODEL_PALETTE)]
+
+
+def _oc_short_label(name):
+    return name.replace("-contributor", "").replace("-free", "")
+
+
+class _OcInfoRow(QWidget):
+    """Строка-карточка с моделью в информационном окне: цветной бейдж с
+    первой буквой, имя модели подсвечено её цветом, внизу полное имя обычным
+    текстом. При наведении подсвечивается только рамка и слегка — цветное имя."""
+
+    def __init__(self, model_name, color, parent=None):
+        super().__init__(parent)
+        self._name = model_name
+        self._color = color
+        self._hover = 0.0
+        self._hover_target = 0.0
+        self._text_k = -1
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+        self.setMinimumHeight(52)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 6, 12, 6)
+        lay.setSpacing(12)
+
+        badge = QLabel((model_name[0] if model_name else "?").upper())
+        badge.setFixedSize(34, 34)
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        badge.setAttribute(Qt.WA_TranslucentBackground)
+        badge.setStyleSheet(
+            "color: rgb(%d,%d,%d); background: transparent; border: none;" % color
+        )
+        lay.addWidget(badge)
+
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        name_lbl = QLabel(_oc_short_label(model_name))
+        name_lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        name_lbl.setAttribute(Qt.WA_TranslucentBackground)
+        name_lbl.setStyleSheet(
+            "color: rgb(%d,%d,%d); background: transparent; border: none;" % color
+        )
+        self._name_lbl = name_lbl
+        col.addWidget(name_lbl)
+        sub_lbl = QLabel(model_name)
+        sub_lbl.setFont(QFont("Segoe UI", 9))
+        sub_lbl.setAttribute(Qt.WA_TranslucentBackground)
+        sub_lbl.setStyleSheet("color: rgb(135, 135, 145); background: transparent; border: none;")
+        col.addWidget(sub_lbl)
+        lay.addLayout(col, 1)
+
+    @property
+    def model_name(self):
+        return self._name
+
+    def _tick(self):
+        d = self._hover_target - self._hover
+        if abs(d) > 0.003:
+            self._hover += d * 0.3
+            self.update()
+        r, g, b = self._color
+        k = int(self._hover * 55)
+        if k != self._text_k:
+            self._text_k = k
+            if k:
+                self._name_lbl.setStyleSheet(
+                    "color: rgb(%d,%d,%d); background: transparent; border: none;"
+                    % (min(255, r + k), min(255, g + k), min(255, b + k))
+                )
+            else:
+                self._name_lbl.setStyleSheet(
+                    "color: rgb(%d,%d,%d); background: transparent; border: none;"
+                    % (r, g, b)
+                )
+
+    def enterEvent(self, event):
+        self._hover_target = 1.0
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_target = 0.0
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r, g, b = self._color
+        # Фон не подсвечивается — только рамка (нарастает при наведении).
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(r, g, b, 70 + int(120 * self._hover)), 1.2))
+        p.drawRoundedRect(QRectF(1.0, 1.0, w - 2.0, h - 2.0), 10, 10)
+        p.end()
+
+        # Прозрачный фон у дочерних виджетов, чтобы канва была видна.
+        for child in self.findChildren(QLabel):
+            child.setAttribute(Qt.WA_TranslucentBackground, True)
+
+
+class OcModelDialog(QDialog):
+    """Информационное окно для вкладки Custom URL (opencode).
+
+    Показывает, какие модели доступны:
+    - секция «Для вашего провайдера доступны модели» — модели эндпоинта
+      ({base_url}/models), названия подсвечены цветом;
+    - секция «UNLIMIT MODELS» — бесплатные модели opencode;
+    - внизу блок-инструкция: как сменить модель (через /model в opencode) и
+      что список обновляется автоматически при каждом открытии.
+
+    Чисто информационное: выбора моделей и effort'а нет. Кастомный тёмный
+    фон, контент в прокручиваемой области (при большом списке окно
+    расширяется и скроллится, а не убегает за экран)."""
+
+    MAX_W = 680
+    MAX_H = 660
+    MIN_W = 380
+
+    def __init__(self, endpoint_models, free_models, reasoning_map, provider_name="", parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setModal(True)
+        self._endpoint = list(endpoint_models or [])
+        self._free = [m for m in (free_models or []) if m not in self._endpoint]
+        self._provider_name = provider_name
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 14)
+
+        container = DottedFrame()
+        container.setObjectName("ocModelDialogContainer")
+        container.setStyleSheet("""
+            QFrame#ocModelDialogContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        outer.addWidget(container)
+
+        shadow = QGraphicsDropShadowEffect(container)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 6)
+        container.setGraphicsEffect(shadow)
+
+        inner = QVBoxLayout(container)
+        inner.setContentsMargins(18, 12, 18, 16)
+        inner.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addSpacing(22)
+        head.addStretch()
+        title = QLabel(tr("Доступные модели"))
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setStyleSheet("color: rgb(225, 225, 235); background: transparent; border: none;")
+        title.setTextFormat(Qt.PlainText)
+        title.setAlignment(Qt.AlignCenter)
+        head.addWidget(title)
+        head.addStretch()
+        self.close_btn = _CloseButton(parent=container)
+        self.close_btn.setFixedSize(24, 24)
+        self.close_btn.clicked.connect(self.close)
+        head.addWidget(self.close_btn)
+        inner.addLayout(head)
+
+        self._cards_host = QWidget()
+        self._cards_host.setStyleSheet("background: transparent; border: none;")
+        self._cards_layout = QVBoxLayout(self._cards_host)
+        self._cards_layout.setContentsMargins(0, 0, 4, 0)
+        self._cards_layout.setSpacing(6)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setWidget(self._cards_host)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setObjectName("ocModelScroll")
+        self._scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: none; }
+            QScrollArea > QWidget > QWidget { background: transparent; }
+            QScrollBar:vertical {
+                width: 4px;
+                background: transparent;
+                border-radius: 2px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(140, 140, 145, 160);
+                border-radius: 2px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:vertical:hover { background: rgba(170, 170, 175, 200); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+        inner.addWidget(self._scroll, 1)
+
+        self._build_sections()
+        self._build_instruction()
+
+        # Авто-подстройка размера: растёт под контент, но ограничен максимумами
+        # (при множестве моделей дальше работает скролл).
+        self.setMaximumWidth(self.MAX_W)
+        self.setMaximumHeight(self.MAX_H)
+        self.setMinimumWidth(self.MIN_W)
+        self._scroll.setMaximumHeight(self.MAX_H - 170)
+        self.adjustSize()
+
+        self.setWindowOpacity(0.0)
+        self._fade_in = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_in.setDuration(220)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        self._closing = False
+
+    def _add_section_header(self, text, margin=False):
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        lbl.setStyleSheet(
+            "color: rgb(170, 170, 182); background: transparent; border: none;"
+            + ("margin-top: 10px;" if margin else "")
+        )
+        lbl.setTextFormat(Qt.PlainText)
+        self._cards_layout.addWidget(lbl)
+
+    def _add_row(self, name, color):
+        row = _OcInfoRow(name, _oc_model_color(name))
+        self._cards_layout.addWidget(row)
+
+    def update_models(self, endpoint_models, free_models, provider_name=""):
+        """Перестраивает карточки моделей, когда фоновый loader принёс свежие
+        данные (установка/удаление/обновление opencode и т.п.). Старые рядки
+        удаляются, затем секции строятся заново."""
+        self._endpoint = list(endpoint_models or [])
+        self._free = [m for m in (free_models or []) if m not in self._endpoint]
+        self._provider_name = provider_name or ""
+        while self._cards_layout.count():
+            item = self._cards_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._build_sections()
+        self._build_instruction()
+        self.adjustSize()
+
+    def _add_provider_name(self):
+        """Имя провайдера под заголовком секции — обычным цветом."""
+        if not self._provider_name:
+            return
+        lbl = QLabel(self._provider_name)
+        lbl.setFont(QFont("Segoe UI", 9))
+        lbl.setStyleSheet("color: rgb(120, 120, 132); background: transparent; border: none;")
+        lbl.setTextFormat(Qt.PlainText)
+        self._cards_layout.addWidget(lbl)
+
+    def _build_sections(self):
+        combined = self._endpoint + self._free
+        if self._endpoint:
+            self._add_section_header(tr("Модели провайдера"), margin=True)
+            self._add_provider_name()
+            for m in self._endpoint:
+                self._add_row(m, _oc_model_color(m))
+        if self._free:
+            self._add_section_header("UNLIMIT MODELS", margin=self._endpoint is not None)
+            for m in self._free:
+                self._add_row(m, _oc_model_color(m))
+        if not combined:
+            lbl = QLabel(tr("Модели не найдены"))
+            lbl.setStyleSheet("color: rgb(120, 120, 130); background: transparent; border: none;")
+            lbl.setAlignment(Qt.AlignCenter)
+            self._cards_layout.addWidget(lbl)
+        self._cards_layout.addSpacing(6)
+
+    def _build_instruction(self):
+        """Блок-инструкция внизу: как сменить модель и что список авто-обновляется."""
+        frame = QFrame()
+        frame.setObjectName("ocInfoTip")
+        frame.setStyleSheet(
+            "QFrame#ocInfoTip { background-color: rgba(30, 30, 36, 200); "
+            "border: 1px solid rgb(60, 60, 68); border-radius: 10px; }"
+        )
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(5)
+
+        tip_lbl = QLabel(tr("Как изменить модель"))
+        tip_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        tip_lbl.setTextFormat(Qt.PlainText)
+        tip_lbl.setStyleSheet("color: rgb(225, 225, 235); background: transparent; border: none;")
+        lay.addWidget(tip_lbl)
+
+        text = QLabel(
+            tr("В терминале opencode введите /model и выберите нужную вам модель "
+               "из списка.\n\n"
+               "Список ниже обновляется автоматически при каждом открытии этого "
+               "окна — если моделей добавили или убрали, здесь это отразится "
+               "само.")
+        )
+        text.setWordWrap(True)
+        text.setFont(QFont("Segoe UI", 10))
+        text.setStyleSheet("color: rgb(180, 180, 192); background: transparent; border: none;")
+        lay.addWidget(text)
+        self._cards_layout.addWidget(frame)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, "_fade_in"):
+            self._fade_in.start()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+
+class _OcModelsLoader(QThread):
+    """Фоновая загрузка моделей вкладки Custom URL без блокировки UI:
+    HTTP {base_url}/models (список ID) + opencode models --verbose
+    (capabilities.reasoning для эндпоинта и для бесплатных моделей opencode).
+    Методы owner не трогают GUI, поэтому их вызов из потока безопасен."""
+
+    loaded = Signal(list, dict, list, dict)  # endpoint_ids, endpoint_reasoning, free_ids, free_reasoning
+
+    def __init__(self, owner, base_url, api_key, provider):
+        super().__init__()
+        self._owner = owner
+        self._base_url = base_url
+        self._api_key = api_key
+        self._provider = provider
+
+    def run(self):
+        model_ids = []
+        reasoning = {}
+        if self._base_url:
+            try:
+                model_ids = self._owner._oc_fetch_models(self._base_url, self._api_key)
+            except Exception:
+                model_ids = []
+            if model_ids:
+                try:
+                    cfg_path = self._owner._write_oc_provider_config(
+                        self._base_url, self._api_key, list(model_ids)
+                    )
+                    reasoning = self._owner._oc_fetch_capabilities(self._provider, cfg_path)
+                except Exception:
+                    reasoning = {}
+        free_ids, free_reasoning = [], {}
+        try:
+            free_ids, free_reasoning = self._owner._oc_fetch_free_catalog()
+        except Exception:
+            pass
+        self.loaded.emit(list(model_ids), reasoning, list(free_ids), free_reasoning)
+
+
 class OpenAIModelDialog(QDialog):
     """Окно выбора модели и reasoning effort для Codex CLI (вкладка OpenAI).
     Структура и стиль полностью повторяют ModelDialog: два ползунка + описания."""
@@ -6829,20 +7478,10 @@ class KeyCard(QFrame):
         # Для FreeModel-эндпоинтов окно лимита спрашивает точное время сброса
         # (UTC+8, AM/PM), как на дашборде; иначе — привычную длительность.
         self._is_freemodel = bool(is_freemodel)
-        # Верхний ряд с тумблером/именем/значением/режимом всегда фикс-высоты;
-        # строка «Создан … · осталось …» вынесена в отдельную полосу ПОД верхним
-        # рядом, чтобы занимать всю ширину карточки (иначе длинный текст не
-        # влезал в info-колонку и приходилось резать по elidedText).
+        # Верхний ряд с тумблером/именем/значением/режимом — фикс-высоты.
         self._TOP_H = 58
-        self._EXP_H = 18           # высота полосы «Создан … · осталось …»
-        self._MANUAL_H_BASE = self._TOP_H                  # без полосы таймера
-        self._MANUAL_H_TIMER = self._TOP_H + self._EXP_H   # с ней
-        self._MANUAL_H = self._MANUAL_H_BASE
+        self._MANUAL_H = self._TOP_H
         self._ONLINE_H = 224  # высота раскрытой online-секции (аккаунт + кнопки + подписка + 3 полоски + подвал)
-        # Срок жизни ключа (дней) — отсчёт от created_at. Используется только
-        # когда карточка НЕ подключена к живым метрикам (manual или online
-        # без входа). Онлайн-карточка с логином показывает реальные лимиты.
-        self._VALID_DAYS = 30
         self.setFixedHeight(self._MANUAL_H)
         self.setCursor(Qt.PointingHandCursor)
         state = key_color_state(key)
@@ -6930,27 +7569,6 @@ class KeyCard(QFrame):
         val_row.setSpacing(8)
         val_row.addWidget(self.val_lbl, 1)
         info.addLayout(val_row)
-        # Полоса «Создан 12.06.2026 · осталось 29д 23ч 59м 42с» / «срок ключа
-        # истёк» — БОЛЬШЕ НЕ живёт в info-колонке, иначе тесное место с именем
-        # и значением обрезало дату. Виджет создаётся здесь, а прикрепляется к
-        # root ниже top_row_w (см. root.addWidget(self.exp_row_w) дальше) —
-        # тогда полоса занимает всю ширину карточки и текст помещается целиком.
-        exp_row = QHBoxLayout()
-        exp_row.setContentsMargins(12, 0, 12, 4)
-        exp_row.setSpacing(4)
-        self.exp_lbl = QLabel("")
-        self.exp_lbl.setFont(QFont("Segoe UI", 8))
-        self.exp_lbl.setStyleSheet("color: rgb(150,150,158); background: transparent; border: none;")
-        exp_row.addWidget(self.exp_lbl, 0)
-        exp_row.addStretch(1)
-        self.exp_row_w = QWidget()
-        self.exp_row_w.setStyleSheet("background: transparent;")
-        self.exp_row_w.setLayout(exp_row)
-        self.exp_row_w.setFixedHeight(self._EXP_H)
-        # Кэш последнего цвета/текста — чтобы не пере-выставлять styleSheet
-        # каждую секунду (иначе Qt пересчитывает styleSheet и рамка моргает).
-        self._exp_last_col = "rgb(150,150,158)"
-        self._exp_last_text = ""
         lay.addLayout(info, 1)
 
         # Переключатель режима manual/online — только для FreeModel-эндпоинтов.
@@ -6986,9 +7604,6 @@ class KeyCard(QFrame):
         lay.addWidget(self.del_btn, 0, Qt.AlignVCenter)
 
         root.addWidget(self.top_row_w)
-        # Полоса срока — своя, во всю ширину карточки; висит между верхним
-        # рядом и online-секцией. Показ/скрытие делает _apply_mode_ui.
-        root.addWidget(self.exp_row_w)
 
         # ── Online-секция (реальные метрики /api/usage) ──
         self.online_box = self._build_online_section()
@@ -6999,12 +7614,6 @@ class KeyCard(QFrame):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
-        # Отдельный тик для строки таймера — раз в секунду. Внутри
-        # _update_expiry_text setStyleSheet вызывается только при смене
-        # цвета, а setText только при смене текста — карточка не моргает.
-        self._exp_timer = QTimer(self)
-        self._exp_timer.timeout.connect(self._on_expiry_tick)
-        self._exp_timer.start(1000)
 
     # ── Online-с  кция ────────────────────────────────────────────────
     def _build_online_section(self):
@@ -7110,32 +7719,20 @@ class KeyCard(QFrame):
         return box
 
     def _apply_mode_ui(self, initial=False):
-        """Показывает/прячет online-секцию и подгоняет высоту карточки.
-        Заодно включает/выключает строку срока жизни ключа: она видна,
-        когда карточка НЕ получает живых метрик (manual, либо online без
-        логина). Онлайн-карточка с логином показывает реальные лимиты,
-        таймер жизни ей не нужен."""
+        """Показывает/прячет online-секцию и подгоняет высоту карточки."""
         online = self._is_freemodel and self.key.get("mode") == "online"
         logged = bool((self.key.get("session_cookie") or "").strip())
-        # Полоса срока видна во всех случаях КРОМЕ online-с-логином:
-        # тогда карточка получает реальные метрики через /api/usage и таймер
-        # жизни ключа не нужен.
-        show_timer = not (online and logged)
         self.online_box.setVisible(online)
         # В online-режиме ручной тумблер лимита (и его статус под ним) не нужен —
         # реальный статус берётся из /api/usage и уезжает в правый нижний угол.
         self.toggle_col_w.setVisible(not online)
-        # Верхний ряд — всегда фикс-высоты; полоса срока — своя, отдельная.
-        self.exp_row_w.setVisible(show_timer)
-        self._MANUAL_H = self._MANUAL_H_TIMER if show_timer else self._MANUAL_H_BASE
+        # Верхний ряд — всегда фикс-высоты.
         self.top_row_w.setFixedHeight(self._TOP_H)
         self.setFixedHeight(self._MANUAL_H + (self._ONLINE_H if online else 0))
         # Статус ключа: в online — в правом нижнем углу online-секции;
         # в manual — под ползунком слева (внутри toggle_col_w).
         if hasattr(self, "status_lbl_bottom"):
             self.status_lbl_bottom.setVisible(online)
-        if show_timer:
-            self._update_expiry_text()
         if online:
             self._update_online_metrics()
         self._update_status_text()
@@ -7236,94 +7833,12 @@ class KeyCard(QFrame):
                 self.key[f] = "" if isinstance(self.key.get(f), str) else 0
         self._update_online_metrics()
         self._update_status_text()
-        # Логин ушёл → таймер жизни ключа снова актуален, высота карточки
-        # тоже могла измениться → полный пересчёт mode-UI.
+        # Логин ушёл → online-метрики пропали, высота карточки могла
+        # измениться → полный пересчёт mode-UI.
         self._apply_mode_ui()
-        # Цвет рамки может пересчитаться (если срок жизни истёк, красный).
         self._retarget()
         self.changed.emit(self.key.get("id", ""))
         # Данные входа изменились → бэкап настроек (.bakN)
-        self.data_changed.emit(self.key.get("id", ""))
-
-    def _update_expiry_text(self):
-        """Обновляет строку «осталось Nд Hч Mм Sс» / «срок ключа истёк».
-        В manual-режиме показываем только оставшееся время. В online-режиме
-        (без входа — иначе строка вообще скрыта) добавляем префикс
-        «Создан DD.MM.YYYY · …», чтобы была видна полная дата.
-        Полоса живёт своим рядом ПОД верхней строкой и получает всю ширину
-        карточки — обрезание больше не нужно.
-        Специально: setStyleSheet ставим ТОЛЬКО когда цвет меняется, а
-        setText — только когда текст правда другой. Иначе Qt каждую секунду
-        пере-парсит styleSheet и рамка карточки моргает."""
-        if not hasattr(self, "exp_lbl"):
-            return
-        created = self.key.get("created_at", 0) or 0
-        if not created:
-            created = self.key.get("activated_at", 0) or time.time()
-            self.key["created_at"] = created
-        valid_seconds = self._VALID_DAYS * 86400
-        expires = created + valid_seconds
-        now = time.time()
-        is_online = self.key.get("mode") == "online"
-        if now >= expires:
-            body = tr("срок ключа истёк")
-            col = "rgb(224,90,90)"
-        else:
-            remain = int(max(0, expires - now))
-            body = tr("осталось") + " " + self._format_remaining(remain, with_seconds=True)
-            days_left = remain // 86400
-            col = "rgb(235,200,90)" if days_left < 3 else "rgb(150,150,158)"
-        if is_online:
-            try:
-                created_str = time.strftime("%d.%m.%Y", time.localtime(created))
-            except Exception:
-                created_str = ""
-            text = (tr("Создан") + " " + created_str + " · " + body) if created_str else body
-        else:
-            text = body
-        if text != self._exp_last_text:
-            self.exp_lbl.setText(text)
-            self._exp_last_text = text
-        if col != self._exp_last_col:
-            self.exp_lbl.setStyleSheet(
-                f"color: {col}; background: transparent; border: none;")
-            self._exp_last_col = col
-
-    def _on_expiry_tick(self):
-        """Каждую секунду: если строка таймера видима — обновляем текст
-        (только сам QLabel; setStyleSheet — лишь при смене цвета, см.
-        _update_expiry_text). При переходе через ноль (истёк только что)
-        перекрашиваем рамку и обновляем статус — но один раз, а не каждый
-        тик, иначе весь ряд карточек моргает."""
-        if not self.exp_row_w.isVisible():
-            return
-        self._update_expiry_text()
-        expired_now = key_time_expired(self.key)
-        if expired_now != getattr(self, "_exp_was_expired", None):
-            self._exp_was_expired = expired_now
-            self._retarget()
-            self._update_status_text()
-
-    def _on_expiry_clicked(self):
-        """Больше не подключено к UI — правка created_at теперь живёт внутри
-        KeyEditDialog (кнопка «Изменить дату создания ключа»). Оставлено на
-        случай программного вызова из другого кода — держит ту же логику."""
-        created = self.key.get("created_at", 0) or time.time()
-        valid_seconds = self._VALID_DAYS * 86400
-        remain = max(0, int(created + valid_seconds - time.time()))
-        dlg = KeyValidityDialog(
-            remaining_seconds=remain,
-            valid_days=self._VALID_DAYS,
-            parent=self.window(),
-        )
-        if dlg.exec() != QDialog.Accepted or dlg.result_seconds is None:
-            return
-        new_created = time.time() + dlg.result_seconds - valid_seconds
-        self.key["created_at"] = new_created
-        self._update_expiry_text()
-        self._retarget()
-        self._update_status_text()
-        self.changed.emit(self.key.get("id", ""))
         self.data_changed.emit(self.key.get("id", ""))
 
     def _update_online_metrics(self):
@@ -7458,21 +7973,11 @@ class KeyCard(QFrame):
         self._update_status_text()
 
     def _on_edit_clicked(self):
-        """Редактирование имени и значения (API) ключа. Внутри диалога есть
-        кнопка «Изменить дату создания ключа» — если пользователь ей
-        воспользовался, dlg.result_seconds не None и мы применяем правку
-        created_at (то же самое, что раньше делал карандаш в exp_row).
-        Бэкап .bakN срабатывает если поменялось хоть что-то — имя, значение,
-        или дата создания."""
-        created = self.key.get("created_at", 0) or time.time()
-        valid_seconds = self._VALID_DAYS * 86400
-        remain = max(0, int(created + valid_seconds - time.time()))
+        """Редактирование имени и значения (API) ключа.
+        Бэкап .bakN срабатывает если поменялось имя или значение."""
         dlg = KeyEditDialog(
             self.key.get("name", ""),
             self.key.get("value", ""),
-            remaining_seconds=remain,
-            valid_days=self._VALID_DAYS,
-            parent=self.window(),
         )
         if dlg.exec() != QDialog.Accepted:
             return
@@ -7485,19 +7990,10 @@ class KeyCard(QFrame):
             self.name_lbl.setToolTip(self.key["name"])
             self._apply_value_text()
             changed_anything = True
-        # Дата создания — если пользователь нажимал «Изменить» и подтвердил.
-        # Пересчёт: срок должен истечь ровно через result_seconds → created_at
-        # = now + result_seconds − VALID_DAYS.
-        if dlg.result_seconds is not None:
-            self.key["created_at"] = time.time() + dlg.result_seconds - valid_seconds
-            self._update_expiry_text()
-            self._update_status_text()
-            self._retarget()
-            changed_anything = True
         if changed_anything:
             self.changed.emit(self.key.get("id", ""))
-            # Пользователь переименовал ключ / поменял значение / поменял
-            # дату создания — окну надо сделать .bakN бэкап настроек.
+            # Пользователь переименовал ключ / поменял значение — окну надо
+            # сделать .bakN бэкап настроек.
             self.data_changed.emit(self.key.get("id", ""))
 
     def _mask(self, v):
@@ -7662,15 +8158,9 @@ class KeyCard(QFrame):
         real_online = is_online and logged  # только тогда полагаемся на /api/usage
         # Флаг «это лимит» — если True, перед txt дорисуем «лимит » (юзер
         # попросил префикс для всех статусов кроме «активен»; для «Pro
-        # кончилась», «Нет Pro» и «срок ключа истёк» префикс не ставим —
-        # они не про лимит, а про смерть ключа/подписки).
+        # кончилась» и «Нет Pro» префикс не ставим — они не про лимит).
         prefix_limit = False
-        # Истёкший срок жизни ключа перекрывает любые прочие статусы —
-        # ключ реально дохлый, важно чтоб это было видно на карточке.
-        # (Кроме случая с реальными метриками — там свой источник истины.)
-        if key_time_expired(self.key) and not real_online:
-            txt = tr("срок ключа истёк")
-        elif real_online:
+        if real_online:
             # В online-с-логином статус короткий: активен / лимит окна / подписка.
             exp = self.key.get("sub_expires_at", 0) or 0
             fetched = self.key.get("sub_fetched_at", 0) or 0
@@ -7722,10 +8212,8 @@ class KeyCard(QFrame):
             lbl.setStyleSheet(css)
 
     @staticmethod
-    def _format_remaining(seconds, with_seconds=False):
-        """Красивый обратный отсчёт: 6д 12ч 05м, 3ч 12м 05с, 12м 05с, 05с.
-        with_seconds=True — принудительно добавляет секунды в дневной формат
-        (для строки срока жизни ключа, чтобы отсчёт шёл в реальном времени)."""
+    def _format_remaining(seconds):
+        """Красивый обратный отсчёт: 6д 12ч 05м, 3ч 12м 05с, 12м 05с, 05с."""
         seconds = max(0, int(seconds))
         d, r = divmod(seconds, 86400)
         h, r = divmod(r, 3600)
@@ -7735,8 +8223,6 @@ class KeyCard(QFrame):
             parts.append(f"{d}{tr('д')}")
             parts.append(f"{h}{tr('ч')}")
             parts.append(f"{m:02d}{tr('м')}")
-            if with_seconds:
-                parts.append(f"{s:02d}{tr('с')}")
         elif h > 0:
             parts.append(f"{h}{tr('ч')}")
             parts.append(f"{m:02d}{tr('м')}")
@@ -7988,7 +8474,7 @@ class KeyLimitTypeDialog(QDialog):
 
         cancel_row = QHBoxLayout()
         cancel_row.addStretch()
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(38)
         self.cancel_btn.setMinimumWidth(140)
         self.cancel_btn.clicked.connect(self.reject)
@@ -8292,7 +8778,7 @@ class KeyLimitDurationDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self.cancel_btn)
@@ -8365,157 +8851,6 @@ class KeyLimitDurationDialog(QDialog):
 
     def reject(self):
         self._fade_out_and(lambda: super(KeyLimitDurationDialog, self).reject())
-
-
-class KeyValidityDialog(QDialog):
-    """Правка срока жизни ключа: пользователь указывает СКОЛЬКО ОСТАЛОСЬ
-    (дни/часы/минуты), а мы пересчитываем created_at так, чтобы
-    created_at + VALID_DAYS попадал точно на now + remaining.
-    Стилистически как KeyLimitDurationDialog (жёлтый акцент, спиннеры,
-    кнопки, fade)."""
-    def __init__(self, remaining_seconds=None, valid_days=30, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setModal(True)
-        self._valid_days = int(valid_days)
-        # Верхний предел спиннера дней — жёсткий лимит убран (ю  ер сам решает,
-        # сколько дней жизни навесить); дер  им разумный потолок в 999 дней,
-        # чтобы _NumberField не превратился в кассу с шестизначными числами.
-        self._max_days = 999
-        # Что показать в спиннерах при открытии:
-        if remaining_seconds is None:
-            seed = int(valid_days) * 86400
-        else:
-            seed = max(0, int(remaining_seconds))
-        self.result_seconds = None
-
-        color = (110, 200, 235)  # приглушённый голубой — не путать с лимитом
-        title_txt = tr("Срок действия ключа")
-
-        main = QVBoxLayout()
-        main.setContentsMargins(0, 0, 0, 0)
-
-        container = DottedFrame()
-        container.setStyleSheet("""
-            QFrame {
-                background-color: rgb(20, 20, 25);
-                border: 2px solid rgb(60, 60, 65);
-                border-radius: 16px;
-            }
-        """)
-        lay = QVBoxLayout(container)
-        lay.setContentsMargins(26, 22, 26, 22)
-        lay.setSpacing(12)
-
-        title = QLabel(title_txt)
-        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet(
-            f"color: rgb({color[0]},{color[1]},{color[2]}); background: transparent; border: none;")
-        lay.addWidget(title)
-
-        subtitle = QLabel(tr("Сколько ещё будет действовать ключ?"))
-        subtitle.setFont(QFont("Segoe UI", 10))
-        subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet("color: #B5B5B5; background: transparent; border: none;")
-        subtitle.setWordWrap(True)
-        lay.addWidget(subtitle)
-
-        seed_d, r = divmod(seed, 86400)
-        seed_h, r = divmod(r, 3600)
-        seed_m = r // 60
-
-        row = QHBoxLayout()
-        row.setSpacing(14)
-        row.setContentsMargins(0, 4, 0, 4)
-        row.addStretch()
-
-        def _column(caption, spinner):
-            col = QVBoxLayout()
-            col.setSpacing(4)
-            col.setAlignment(Qt.AlignCenter)
-            cap = QLabel(caption)
-            cap.setFont(QFont("Segoe UI", 9))
-            cap.setAlignment(Qt.AlignCenter)
-            cap.setStyleSheet("color: rgb(150,150,155); background: transparent; border: none;")
-            col.addWidget(cap)
-            wrap = QHBoxLayout()
-            wrap.addStretch()
-            wrap.addWidget(spinner)
-            wrap.addStretch()
-            col.addLayout(wrap)
-            return col
-
-        self.sp_days = _NumberField(0, self._max_days, min(seed_d, self._max_days))
-        self.sp_hours = _NumberField(0, 23, seed_h, pad=True)
-        self.sp_minutes = _NumberField(0, 59, seed_m, pad=True)
-        row.addLayout(_column(tr("Дни"), self.sp_days))
-        row.addLayout(_column(tr("Часы"), self.sp_hours))
-        row.addLayout(_column(tr("Минуты"), self.sp_minutes))
-        row.addStretch()
-        lay.addLayout(row)
-
-        self.err_lbl = QLabel("")
-        self.err_lbl.setFont(QFont("Segoe UI", 9))
-        self.err_lbl.setAlignment(Qt.AlignCenter)
-        self.err_lbl.setStyleSheet("color: rgb(224, 90, 90); background: transparent; border: none;")
-        lay.addWidget(self.err_lbl)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(12)
-        self.cancel_btn = RedButton(tr("Отмена"))
-        self.cancel_btn.setMinimumHeight(40)
-        self.cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(self.cancel_btn)
-        self.confirm_btn = GreenButton(tr("Подтвердить"))
-        self.confirm_btn.setMinimumHeight(40)
-        self.confirm_btn.clicked.connect(self._on_confirm)
-        btn_row.addWidget(self.confirm_btn)
-        lay.addLayout(btn_row)
-
-        main.addWidget(container)
-        self.setLayout(main)
-        self.setMinimumWidth(440)
-
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self.opacity_effect)
-        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_in.setDuration(200)
-        self.fade_in.setStartValue(0.0)
-        self.fade_in.setEndValue(1.0)
-        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
-
-    def _total_seconds(self):
-        return (self.sp_days.value() * 86400
-                + self.sp_hours.value() * 3600
-                + self.sp_minutes.value() * 60)
-
-    def _on_confirm(self):
-        # Верхний предел мягкий (см. self._max_days) — не режем результат.
-        # Ноль тоже разрешён — «истёк прямо сейчас».
-        self.result_seconds = self._total_seconds()
-        self.accept()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.fade_in.start()
-
-    def _fade_out_and(self, done):
-        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade.setDuration(180)
-        fade.setStartValue(1.0)
-        fade.setEndValue(0.0)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(done)
-        fade.start()
-        self._fade = fade
-
-    def accept(self):
-        self._fade_out_and(lambda: super(KeyValidityDialog, self).accept())
-
-    def reject(self):
-        self._fade_out_and(lambda: super(KeyValidityDialog, self).reject())
 
 
 class _AmPmToggle(QWidget):
@@ -8905,7 +9240,7 @@ class FreemodelResetTimeDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self.cancel_btn)
@@ -9227,22 +9562,13 @@ class KeyEditDialog(QDialog):
     """Редактирование имени и значения (API-ключа). Поля предзаполнены текущими
     значениями — можно дописать/поменять. Возвращает result_name / result_value."""
 
-    def __init__(self, name="", value="", remaining_seconds=None,
-                 valid_days=30, parent=None):
+    def __init__(self, name="", value="", parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
         self.result_name = None
         self.result_value = None
-        # Правка срока (дата создания) — необязательная, живёт внутри этого
-        # диалога через отдельную кнопку. Если пользователь не открывал
-        # KeyValidityDialog — оставляем None и вызывающий код не трогает
-        # created_at.
-        self.result_seconds = None
-        self._valid_days = int(valid_days)
-        self._current_remaining = (None if remaining_seconds is None
-                                   else int(remaining_seconds))
 
         main = QVBoxLayout()
         main.setContentsMargins(0, 0, 0, 0)
@@ -9311,31 +9637,9 @@ class KeyEditDialog(QDialog):
         self.value_input.returnPressed.connect(self._on_save)
         lay.addWidget(self.value_input)
 
-        # Строка правки даты создания. Кнопка «Изменить» слева, пояснение
-        # справа. Клик по кнопке открывает KeyValidityDialog со спиннерами
-        # дни/часы/минуты — то же окно, что раньше открывал карандаш на
-        # самой карточке. Результат кладётся в self.result_seconds и
-        # применяется вызывающим кодом только если оно не None.
-        expiry_row = QHBoxLayout()
-        expiry_row.setContentsMargins(0, 6, 0, 0)
-        expiry_row.setSpacing(10)
-        self.expiry_btn = BlueButton(tr("Изменить"))
-        self.expiry_btn.setMinimumHeight(32)
-        self.expiry_btn.setAutoDefault(False)
-        self.expiry_btn.setDefault(False)
-        self.expiry_btn.clicked.connect(self._on_change_created)
-        expiry_row.addWidget(self.expiry_btn, 0)
-        self.expiry_hint = QLabel(tr("Изменить дату создания ключа"))
-        self.expiry_hint.setFont(QFont("Segoe UI", 9))
-        self.expiry_hint.setStyleSheet(
-            "color: rgb(180,180,188); background: transparent; border: none;")
-        self.expiry_hint.setAlignment(Qt.AlignVCenter)
-        expiry_row.addWidget(self.expiry_hint, 1)
-        lay.addLayout(expiry_row)
-
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.setAutoDefault(False)
         self.cancel_btn.setDefault(False)
@@ -9368,40 +9672,6 @@ class KeyEditDialog(QDialog):
         self.result_name = self.name_input.text().strip()
         self.result_value = val
         self.accept()
-
-    def _on_change_created(self):
-        """Клик по кнопке «Изменить» → закрывает это окно (KeyEditDialog) и
-        сразу открывает KeyValidityDialog. Пользователь явно попросил именно
-        такой флоу: одно окно ушло — второе появилось.
-
-        Чтобы не потерять правки имени/значения (пользователь мог поменять
-        поля, а потом нажать «Изменить»), пред-сохраняем их в result_*.
-        Родителем KeyValidityDialog делаем родителя KeyEditDialog — тогда он
-        живёт независимо от того, что этот диалог закрыт."""
-        val = self.value_input.text().strip()
-        if val:
-            self.result_name = self.name_input.text().strip()
-            self.result_value = val
-        seed = (self.result_seconds
-                if self.result_seconds is not None
-                else self._current_remaining)
-        # Родителем берём того же родителя, что и у нас (обычно — окно
-        # менеджера ключей). Если родителя нет — Qt повесит окно top-level.
-        parent = self.parent() if self.parent() is not None else None
-        # Прячем себя визуально до открытия суб-диалога; сам QDialog жив
-        # (иначе parent-цепочка суб-диалога развалится).
-        self.hide()
-        dlg = KeyValidityDialog(
-            remaining_seconds=seed,
-            valid_days=self._valid_days,
-            parent=parent,
-        )
-        if dlg.exec() == QDialog.Accepted and dlg.result_seconds is not None:
-            self.result_seconds = int(dlg.result_seconds)
-        # Закрываем KeyEditDialog — окно уже скрыто, fade не нужен, вызываем
-        # базовый accept() напрямую (иначе fade будет крутиться на невидимом
-        # виджете и добавит паузы перед применением изменений).
-        QDialog.accept(self)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -10433,6 +10703,351 @@ class BaseUrlManagerDialog(QDialog):
         return list(self.urls), (self.urls[0] if self.urls else "")
 
 # ============================================================
+# ДИАЛОГ ПРОВАЙДЕРОВ OPENCODE (auth.json + opencode.json/.jsonc)
+# ============================================================
+
+def _strip_jsonc_comments(text):
+    """Убирает // и /* */ комментарии из JSONC, не трогая их внутри строк."""
+    out = []
+    i = 0
+    n = len(text)
+    in_str = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _load_jsonc(path):
+    """Читает JSONC-файл: сначала как обычный JSON, затем с вырезанными
+    комментариями. Возвращает dict или {} при любых ошибках."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except Exception:
+        return {}
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    try:
+        return json.loads(_strip_jsonc_comments(raw))
+    except Exception:
+        return {}
+
+
+def _save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _backup_file(path):
+    """Одноуровневый бэкап рядом с файлом: .bak, .bak2, .bak3..."""
+    if not os.path.exists(path):
+        return
+    bak = path + ".bak"
+    i = 2
+    while os.path.exists(bak):
+        bak = f"{path}.bak.{i}"
+        i += 1
+    try:
+        shutil.copy2(path, bak)
+    except Exception:
+        pass
+
+
+class OpencodeProvidersDialog(QDialog):
+    """Показывает все провайдеры opencode (определения из ~/.config/opencode
+    и креды из ~/.local/share/opencode/auth.json) и позволяет их удалять.
+
+    Удаление затрагивает оба источника: креду из auth.json, определения из
+    opencode.json/.jsonc (сам блок + упоминание в disabled_providers /
+    enabled_providers)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        self.config_path = None
+        self.auth_path = os.path.join(
+            os.path.expanduser("~"), ".local", "share", "opencode", "auth.json"
+        )
+        cfg_dir = os.path.join(os.path.expanduser("~"), ".config", "opencode")
+        for fname in ("opencode.json", "opencode.jsonc"):
+            cand = os.path.join(cfg_dir, fname)
+            if os.path.exists(cand):
+                self.config_path = cand
+                break
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("ocProvidersContainer")
+        container.setStyleSheet("""
+            QFrame#ocProvidersContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(26, 18, 26, 22)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(28, 28)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(left_spacer)
+
+        title = QLabel(tr("Провайдеры opencode"))
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        title_row.addWidget(title, 1)
+
+        _close = _CloseButton(parent=container)
+        _close.clicked.connect(self.accept)
+        title_row.addWidget(_close)
+        layout.addLayout(title_row)
+
+        info = QLabel(tr("Провайдеры из конфига и auth.json. Удаление убирает и креду, и определение."))
+        info.setFont(QFont("Segoe UI", 9))
+        info.setAlignment(Qt.AlignCenter)
+        info.setWordWrap(True)
+        info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        layout.addWidget(info)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: 1px solid rgb(60, 60, 65); border-radius: 8px; }
+            QScrollArea > QWidget > QWidget { background: transparent; }
+            QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+            QScrollBar::handle:vertical { background: rgb(70, 70, 75); border-radius: 4px; min-height: 30px; }
+            QScrollBar::handle:vertical:hover { background: rgb(95, 95, 100); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+        self.list_widget = QWidget()
+        self.list_layout = QVBoxLayout(self.list_widget)
+        self.list_layout.setContentsMargins(8, 8, 12, 8)
+        self.list_layout.setSpacing(6)
+        self.scroll.setWidget(self.list_widget)
+        layout.addWidget(self.scroll, 1)
+
+        self.empty_label = QLabel(tr("Провайдеров не найдено"))
+        self.empty_label.setFont(QFont("Segoe UI", 10))
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        layout.addWidget(self.empty_label)
+        self.empty_label.hide()
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(620)
+        self.setFixedHeight(620)
+
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(220)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        self.refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_anim.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        fade.setDuration(220)
+        fade.setStartValue(self._opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(OpencodeProvidersDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        fade.setDuration(220)
+        fade.setStartValue(self._opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(OpencodeProvidersDialog, self).reject())
+        fade.start()
+        self._fade_out = fade
+
+    def _collect(self):
+        """Возвращает {provider_id: record} из кредов и конфига."""
+        records = {}
+        auth = _load_jsonc(self.auth_path) if os.path.exists(self.auth_path) else {}
+        cfg = _load_jsonc(self.config_path) if self.config_path else {}
+        providers = cfg.get("provider") or {}
+        disabled = set(cfg.get("disabled_providers") or [])
+        enabled = set(cfg.get("enabled_providers") or [])
+
+        for pid in set(list(auth.keys()) + list(providers.keys())):
+            cfg_block = providers.get(pid) or {}
+            opts = cfg_block.get("options") or {}
+            rec = {
+                "id": str(pid),
+                "name": (cfg_block.get("name") or str(pid)),
+                "base_url": (opts.get("baseURL") or ""),
+                "has_cred": pid in auth,
+                "in_config": pid in providers,
+                "disabled": pid in disabled,
+                "enabled": pid in enabled,
+            }
+            records[rec["id"]] = rec
+        return records
+
+    def refresh(self):
+        while self.list_layout.count():
+            item = self.list_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        records = self._collect()
+        if not records:
+            self.empty_label.show()
+            self.scroll.hide()
+            return
+        self.empty_label.hide()
+        self.scroll.show()
+        for pid in sorted(records.keys()):
+            self.list_layout.addWidget(self._build_row(records[pid]))
+        self.list_layout.addStretch(1)
+
+    def _build_row(self, rec):
+        row = QFrame()
+        row.setStyleSheet("""
+            QFrame { background-color: rgba(30, 30, 35, 200);
+                     border: 1px solid rgb(60, 60, 65); border-radius: 8px; }
+        """)
+        row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(8)
+
+        labels = QVBoxLayout()
+        labels.setSpacing(2)
+        name = QLabel(rec["name"])
+        name.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        name.setStyleSheet("color: rgb(220, 220, 220); background: transparent; border: none;")
+        name.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        labels.addWidget(name)
+
+        sub = []
+        if rec["base_url"]:
+            sub.append(rec["base_url"])
+        tags = []
+        if rec["has_cred"]:
+            tags.append("auth")
+        if rec["in_config"]:
+            tags.append("конфиг")
+        if rec["disabled"]:
+            tags.append("выключен")
+        if rec["enabled"]:
+            tags.append("включен")
+        if tags:
+            sub.append(f"[{', '.join(tags)}]")
+        sub_lbl = QLabel("  ".join(sub) if sub else tr("Без Base URL и кредов"))
+        sub_lbl.setFont(QFont("Segoe UI", 9))
+        sub_lbl.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        sub_lbl.setWordWrap(True)
+        sub_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        labels.addWidget(sub_lbl)
+        lay.addLayout(labels, 1)
+
+        del_btn = RedButton(tr("Удалить"))
+        del_btn.setMinimumHeight(30)
+        del_btn.setMaximumWidth(90)
+        del_btn.clicked.connect(lambda _, p=rec["id"]: self._delete_provider(p))
+        lay.addWidget(del_btn)
+        return row
+
+    def _delete_provider(self, pid):
+        confirm = ConfirmDeleteDialog(
+            pid,
+            self,
+            question_text=tr("Вы уверены, что хотите удалить провайдера? Будет удалена и креда (auth.json), и определение из конфига."),
+        )
+        if confirm.exec() != QDialog.Accepted:
+            return
+
+        # Удаляем креду
+        if os.path.exists(self.auth_path):
+            auth = _load_jsonc(self.auth_path)
+            if pid in auth:
+                _backup_file(self.auth_path)
+                del auth[pid]
+                try:
+                    _save_json(self.auth_path, auth)
+                except Exception:
+                    pass
+
+        # Удаляем определение из конфига
+        if self.config_path:
+            cfg = _load_jsonc(self.config_path)
+            changed = False
+            providers = cfg.get("provider")
+            if isinstance(providers, dict) and pid in providers:
+                del providers[pid]
+                changed = True
+            for key in ("disabled_providers", "enabled_providers"):
+                items = cfg.get(key)
+                if isinstance(items, list) and pid in items:
+                    items.remove(pid)
+                    changed = True
+            if changed:
+                _backup_file(self.config_path)
+                try:
+                    _save_json(self.config_path, cfg)
+                except Exception:
+                    pass
+
+        self.refresh()
+
+# ============================================================
 # ДИАЛОГ КАСТОМНЫХ НАСТРОЕК ТОКЕНА
 # ============================================================
 
@@ -10612,7 +11227,7 @@ class CustomTokenDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
 
-        btn_cancel = RedButton(tr("Отмена"))
+        btn_cancel = GreenButton(tr("Отмена"))
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
@@ -10798,7 +11413,7 @@ class UpdateAppDialog(QDialog):
         bl = QHBoxLayout()
         bl.setSpacing(12)
 
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.clicked.connect(self.reject_animated)
 
         self.update_btn = GreenButton(tr("Обновить"))
@@ -12472,13 +13087,14 @@ class DottedFrame(QFrame):
 
 
 class ClaudeManager(QMainWindow):
-    status_changed = Signal(bool)
     update_available = Signal(dict)  # Новый сигнал для обновлений
     claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
     claude_install_finished = Signal(object)  # context dict
     claude_uninstall_finished = Signal(object)  # context dict (по образцу install)
     codex_version_checked = Signal(str, str)  # local_version, latest_version
     codex_install_finished = Signal(object)  # context dict (install/update/uninstall)
+    oc_version_checked = Signal(str, str)  # local_version, latest_version (opencode)
+    oc_install_finished = Signal(object)  # context dict (install/update/uninstall opencode)
     _online_usage_polled = Signal(str, object)  # (key_id, data|Exception) — фоновый /api/usage
 
     def __init__(self):
@@ -12486,8 +13102,6 @@ class ClaudeManager(QMainWindow):
         self.setWindowTitle("Claude Code Manager")
         self.setFixedWidth(740)
         # Стартовая высота — зависит от сохранённого режима
-        _is_fm = self.settings.get("use_custom_token", False) if False else False
-        # Будет переустановлено в toggle_custom_token_fields()
         self.resize(740, 905)
 
         # Устанавливаем иконку - ищем в разных местах
@@ -12503,17 +13117,16 @@ class ClaudeManager(QMainWindow):
                 break
 
         self.settings = load_settings()
-        # На каждом старте открываем вкладку Anthropic / Claude / OpenAI (что
-        # было выбрано в прошлый раз); Omniroute принудительно не восстанавливаем.
+        # На каждом старте открываем вкладку Anthropic / Claude / OpenAI / Custom URL
+        # (что было выбрано в прошлый раз).
         _mode = self.settings.get("app_mode", "anthropic")
-        if _mode not in ("anthropic", "official", "openai"):
+        if _mode not in ("anthropic", "official", "openai", "customurl"):
             _mode = "anthropic"
         self.settings["app_mode"] = _mode
         self.settings["use_custom_token"] = True
-        self.omniroute_process = None
 
         # Подключаем сигналы к слотам
-        self.status_changed.connect(self.update_status)
+        self.update_available.connect(self._show_update_notification)
         self.update_available.connect(self._show_update_notification)
 
         # Центральный виджет — фон в крапинку
@@ -12591,7 +13204,7 @@ class ClaudeManager(QMainWindow):
         if not self.settings.get("auto_update_enabled", False):
             # Тихо подстраховываемся: дописываем env.DISABLE_UPDATES=1 в
             # ~/.claude/settings.json, если его там нет. Без этого Claude Code
-            # рано или поздно самообновится и сломает FreeModel/Omniroute.
+            # рано или поздно самообновится и сломает FreeModel/opencode.
             threading.Thread(target=self._ensure_disable_updates_in_settings, daemon=True).start()
 
             # Дублирующая подстраховка: дописываем autoUpdates=false в ~/.claude.json,
@@ -12602,7 +13215,7 @@ class ClaudeManager(QMainWindow):
 
         main_layout.addLayout(title_layout)
 
-        # Переключатель режимов FreeModel ↔ Omniroute (под заголовком, по центру)
+        # Переключатель режимов (под заголовком, по центру)
         mode_row = QHBoxLayout()
         mode_row.addStretch()
         self.mode_toggle = ModeToggle(mode=self.settings.get("app_mode", "anthropic"))
@@ -12667,6 +13280,22 @@ class ClaudeManager(QMainWindow):
         self.btn_uninstall_codex.hide()
         install_row.addWidget(self.btn_uninstall_codex)
 
+        # Кнопки вкладки Custom URL — установка/удаление/обновление opencode CLI.
+        # Показываются только в режиме customurl (в _apply_app_mode), остальные
+        # кнопки тогда прячутся.
+        self.btn_install_oc = StyledButton(tr("Установить opencode"))
+        self.btn_install_oc.setFixedHeight(34)
+        self.btn_install_oc.clicked.connect(self._install_oc_cli)
+        self.btn_install_oc.hide()
+        install_row.addWidget(self.btn_install_oc)
+
+        self.btn_uninstall_oc = StyledButton(tr("Удалить opencode"))
+        self.btn_uninstall_oc.setFixedHeight(34)
+        self.btn_uninstall_oc.set_hover_color(235, 90, 90)  # красный hover
+        self.btn_uninstall_oc.clicked.connect(self._uninstall_oc_cli)
+        self.btn_uninstall_oc.hide()
+        install_row.addWidget(self.btn_uninstall_oc)
+
         install_row.addStretch()
         main_layout.addLayout(install_row)
 
@@ -12694,64 +13323,6 @@ class ClaudeManager(QMainWindow):
         self.freemodel_brand.move(12, 22)
         self.freemodel_brand.raise_()
         QTimer.singleShot(0, self._refresh_freemodel_brand_visibility)
-
-        # Секция Omniroute
-        omniroute_frame = QFrame()
-        omniroute_frame.setObjectName("omniroute_frame")
-        self.omniroute_frame = omniroute_frame
-        omniroute_frame.setStyleSheet("""
-            QFrame#omniroute_frame {
-                background-color: rgba(30, 30, 35, 200);
-                border: 2px solid rgb(60, 60, 65);
-                border-radius: 8px;
-            }
-        """)
-        omniroute_layout = QVBoxLayout(omniroute_frame)
-
-        # Заголовок с индикатором
-        header_layout = QHBoxLayout()
-        omniroute_label = QLabel("Omniroute")
-        omniroute_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        omniroute_label.setStyleSheet(
-            "color: rgb(200, 200, 200); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 10px;"
-        )
-        header_layout.addWidget(omniroute_label)
-
-        self.status_indicator = StatusIndicator()
-        header_layout.addWidget(self.status_indicator)
-
-        self.status_label = QLabel(tr("Не запущен"))
-        self.status_label.setFont(QFont("Segoe UI", 10))
-        self.status_label.setStyleSheet("color: rgb(150, 150, 150);")
-        header_layout.addWidget(self.status_label)
-        header_layout.addStretch()
-
-        omniroute_layout.addLayout(header_layout)
-
-        # Кнопки управления Omniroute
-        omniroute_btn_layout = QHBoxLayout()
-
-        self.btn_start_omniroute = GreenButton(tr("Запустить Omniroute"))
-        self.btn_start_omniroute.clicked.connect(self.start_omniroute)
-        self._btn_start_omniroute_dim = QGraphicsOpacityEffect()
-        self._btn_start_omniroute_dim.setOpacity(1.0)
-        self.btn_start_omniroute.setGraphicsEffect(self._btn_start_omniroute_dim)
-        omniroute_btn_layout.addWidget(self.btn_start_omniroute)
-
-        self.btn_stop_omniroute = RedButton(tr("Остановить Omniroute"))
-        self.btn_stop_omniroute.clicked.connect(self.stop_omniroute)
-        self.btn_stop_omniroute.setEnabled(False)
-        omniroute_btn_layout.addWidget(self.btn_stop_omniroute)
-
-        omniroute_layout.addLayout(omniroute_btn_layout)
-
-        # Opacity-эффект на весь блок Omniroute (для плавного затемнения в FreeModel режиме)
-        self._omniroute_frame_dim = QGraphicsOpacityEffect()
-        self._omniroute_frame_dim.setOpacity(1.0)
-        omniroute_frame.setGraphicsEffect(self._omniroute_frame_dim)
-
-        main_layout.addWidget(omniroute_frame)
 
         # Секция Claude Code
         claude_frame = QFrame()
@@ -12834,137 +13405,155 @@ class ClaudeManager(QMainWindow):
         claude_layout.addWidget(codex_header_chip)
         self.codex_header_chip = codex_header_chip
 
-        # Выбор модели — обёрнут в контейнер чтобы можно было скрыть целиком
-        self.model_section_widget = QWidget()
-        model_section_layout = QVBoxLayout(self.model_section_widget)
-        model_section_layout.setContentsMargins(0, 0, 0, 0)
-        model_section_layout.setSpacing(8)
+        # Чип Custom URL — зеркальный клодовскому, для вкладки Custom URL (opencode).
+        oc_header_chip = QFrame()
+        oc_header_chip.setObjectName("oc_header_chip")
+        oc_header_chip.setStyleSheet(
+            "QFrame#oc_header_chip { background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; }"
+        )
+        oc_header_inner = QHBoxLayout(oc_header_chip)
+        oc_header_inner.setContentsMargins(10, 4, 10, 4)
+        oc_header_inner.setSpacing(8)
 
-        model_layout = QHBoxLayout()
-        model_label = QLabel(tr("Модель:"))
-        model_label.setFont(QFont("Segoe UI", 10))
-        model_label.setStyleSheet(
+        oc_label = QLabel(tr("Custom URL (opencode)"))
+        oc_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        oc_label.setStyleSheet("color: rgb(200, 200, 200); background: transparent; border: none;")
+        self._track_tr(oc_label, "Custom URL (opencode)")
+        oc_header_inner.addWidget(oc_label)
+
+        self.oc_install_indicator = StatusIndicator()
+        oc_header_inner.addWidget(self.oc_install_indicator)
+
+        self.oc_install_status_label = QLabel(tr("Не установлен"))
+        self.oc_install_status_label.setFont(QFont("Segoe UI", 10))
+        self.oc_install_status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        oc_header_inner.addWidget(self.oc_install_status_label)
+
+        oc_header_inner.addStretch()
+
+        oc_header_chip.hide()
+        claude_layout.addWidget(oc_header_chip)
+        self.oc_header_chip = oc_header_chip
+
+        # Секция Custom URL (opencode) — Base URL / общий ключ / модель
+        self.oc_section_widget = QWidget()
+        oc_layout = QVBoxLayout(self.oc_section_widget)
+        oc_layout.setContentsMargins(0, 0, 0, 0)
+        oc_layout.setSpacing(8)
+
+        oc_url_row = QHBoxLayout()
+        oc_url_lbl = QLabel(tr("Base URL:"))
+        oc_url_lbl.setFont(QFont("Segoe UI", 10))
+        oc_url_lbl.setStyleSheet(
             "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
             "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
         )
-        model_layout.addWidget(model_label)
-        self._track_tr(model_label, "Модель:")
+        self._track_tr(oc_url_lbl, "Base URL:")
+        oc_url_lbl.setFixedWidth(90)
+        oc_url_row.addWidget(oc_url_lbl)
 
-        self.model_combo = PickerComboBox()
-        self.model_list_model = ModelListModel(self.settings["models"])
-        self.model_combo.setModel(self.model_list_model)
-        self.model_combo.setCurrentText(self.settings["selected_model"])
-        self.model_combo.setMaxVisibleItems(4)
-        self.model_combo.set_picker(title=tr("Выбор модели Omniroute"))
-        model_layout.addWidget(self.model_combo, 1)
+        self.oc_url_combo = PickerComboBox()
+        self.oc_url_combo.setFont(QFont("Segoe UI", 9))
+        self.oc_url_combo.setMaxVisibleItems(4)
+        oc_urls = [u for u in (self.settings.get("oc_base_urls", []) or []) if u]
+        self.oc_url_combo.addItems(oc_urls)
+        if self.settings.get("oc_base_url") and self.settings["oc_base_url"] in oc_urls:
+            self.oc_url_combo.setCurrentText(self.settings["oc_base_url"])
+        if self.oc_url_combo.count() == 0:
+            self.oc_url_combo.addItem(tr("Не задан"))
+        self.oc_url_combo.set_picker(title=tr("Выбор Base URL"))
+        self.oc_url_combo.currentTextChanged.connect(self._oc_url_changed)
+        oc_url_row.addWidget(self.oc_url_combo, 1)
 
-        model_section_layout.addLayout(model_layout)
+        self.oc_btn_manage_urls = StyledButton(tr("Управление"))
+        self.oc_btn_manage_urls.setMinimumHeight(0)
+        self.oc_btn_manage_urls.setFixedHeight(36)
+        self.oc_btn_manage_urls.setFixedWidth(130)
+        self.oc_btn_manage_urls.clicked.connect(self._oc_manage_urls)
+        oc_url_row.addWidget(self.oc_btn_manage_urls)
+        oc_layout.addLayout(oc_url_row)
 
-        # Кнопки управления моделями
-        model_btn_layout = QHBoxLayout()
-
-        self.btn_add_model = GreenButton(tr("Добавить модель"))
-        self.btn_add_model.clicked.connect(self.add_model)
-        model_btn_layout.addWidget(self.btn_add_model)
-
-        self.btn_remove_model = RedButton(tr("Удалить модель"))
-        self.btn_remove_model.clicked.connect(self.remove_model)
-        model_btn_layout.addWidget(self.btn_remove_model)
-
-        model_section_layout.addLayout(model_btn_layout)
-        claude_layout.addWidget(self.model_section_widget)
-
-        # Opacity effects для модели (применяем к комбо и кнопкам)
-        self._model_combo_dim = QGraphicsOpacityEffect(); self._model_combo_dim.setOpacity(1.0)
-        self._btn_add_dim = QGraphicsOpacityEffect(); self._btn_add_dim.setOpacity(1.0)
-        self._btn_remove_dim = QGraphicsOpacityEffect(); self._btn_remove_dim.setOpacity(1.0)
-        self.model_combo.setGraphicsEffect(self._model_combo_dim)
-        self.btn_add_model.setGraphicsEffect(self._btn_add_dim)
-        self.btn_remove_model.setGraphicsEffect(self._btn_remove_dim)
-
-        # Токен авторизации — обёрнут в контейнер
-        self.token_section_widget = QWidget()
-        token_section_outer = QVBoxLayout(self.token_section_widget)
-        token_section_outer.setContentsMargins(0, 0, 0, 0)
-        token_section_outer.setSpacing(0)
-        self.token_layout = QHBoxLayout()
-
-        self.token_label = QLabel(tr("API ключ:"))
-        self.token_label.setFont(QFont("Segoe UI", 10))
-        self.token_label.setStyleSheet(
+        oc_key_row = QHBoxLayout()
+        oc_key_lbl = QLabel(tr("API ключ:"))
+        oc_key_lbl.setFont(QFont("Segoe UI", 10))
+        oc_key_lbl.setStyleSheet(
             "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
             "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
         )
-        self.token_layout.addWidget(self.token_label)
+        self._track_tr(oc_key_lbl, "API ключ:")
+        oc_key_lbl.setFixedWidth(90)
+        oc_key_row.addWidget(oc_key_lbl)
 
-        self.token_input = QLineEdit()
-        self.token_input.setPlaceholderText("sk-xxxxxxxx...")
-        self.token_input.setText(self.settings.get("auth_token", ""))
-        self.token_input.setEchoMode(QLineEdit.Password)
-        self.token_input.setFont(QFont("Segoe UI", 9))
-        # Если токен уже сохранен, делаем поле только для чтения
-        if self.settings.get("auth_token", ""):
-            self.token_input.setReadOnly(True)
-            self.token_input.setStyleSheet("""
-                QLineEdit {
-                    background-color: rgba(20, 20, 25, 200);
-                    color: rgb(200, 200, 200);
-                    border: 1px solid rgb(60, 60, 65);
-                    border-radius: 4px;
-                    padding: 6px;
-                }
-            """)
-        else:
-            self.token_input.setStyleSheet("""
-                QLineEdit {
-                    background-color: rgba(30, 30, 35, 200);
-                    color: rgb(200, 200, 200);
-                    border: 1px solid rgb(60, 60, 65);
-                    border-radius: 4px;
-                    padding: 6px;
-                }
-            """)
-        self.token_layout.addWidget(self.token_input, 1)
+        # Ключи вкладки Custom URL — ОТДЕЛЬНОЕ хранилище (oc_keys/oc_api_key),
+        # не общее с Anthropic/OpenAI. Поле read-only, добавление ключей —
+        # через окно «Управление».
+        self.oc_key_input = QLineEdit()
+        self.oc_key_input.setPlaceholderText(tr("Необязательно — откройте «Управление»"))
+        self.oc_key_input.setText(self.settings.get("oc_api_key", ""))
+        self.oc_key_input.setEchoMode(QLineEdit.Password)
+        self.oc_key_input.setFont(QFont("Segoe UI", 9))
+        self.oc_key_input.setReadOnly(True)
+        self.oc_key_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        oc_key_row.addWidget(self.oc_key_input, 1)
 
-        self.btn_toggle_token = EyeToggleButton()
-        self.btn_toggle_token.clicked.connect(self.toggle_token_visibility)
-        self.token_layout.addWidget(self.btn_toggle_token)
+        self.oc_btn_toggle_key = EyeToggleButton()
+        self.oc_btn_toggle_key.clicked.connect(self._oc_toggle_key)
+        oc_key_row.addWidget(self.oc_btn_toggle_key)
 
-        self.btn_save_token = StyledButton(tr("Сохранить"))
-        self.btn_save_token.setMaximumWidth(100)
-        self.btn_save_token.clicked.connect(self.save_token)
-        # Если токен уже сохранен, скрываем кнопку сохранить
-        if self.settings.get("auth_token", ""):
-            self.btn_save_token.hide()
-        self.token_layout.addWidget(self.btn_save_token)
+        self.oc_btn_manage_keys = StyledButton(tr("Управление"))
+        self.oc_btn_manage_keys.setMinimumHeight(0)
+        self.oc_btn_manage_keys.setFixedHeight(36)
+        self.oc_btn_manage_keys.setFixedWidth(130)
+        self.oc_btn_manage_keys.clicked.connect(self._oc_manage_keys)
+        oc_key_row.addWidget(self.oc_btn_manage_keys)
+        oc_layout.addLayout(oc_key_row)
 
-        self.btn_edit_token = StyledButton(tr("Изменить"))
-        self.btn_edit_token.setMaximumWidth(100)
-        self.btn_edit_token.clicked.connect(self.edit_token)
-        # Если токен не сохранен, скрываем кнопку изменить
-        if not self.settings.get("auth_token", ""):
-            self.btn_edit_token.hide()
-        self.token_layout.addWidget(self.btn_edit_token)
+        # Информация о доступных моделях (эндпоинт + бесплатные opencode).
+        # Выбора моделей и effort'а нет: клик по кнопке открывает
+        # информационное OcModelDialog (списки цветом + инструкция). Список
+        # моделей подтягивается заранее ({base_url}/models + capabilities
+        # из opencode) в фоне и авто-обновляется при открытии окна.
+        oc_model_row = QHBoxLayout()
+        oc_model_lbl = QLabel(tr("Модели:"))
+        oc_model_lbl.setFont(QFont("Segoe UI", 10))
+        oc_model_lbl.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
+        self._track_tr(oc_model_lbl, "Модели:")
+        oc_model_lbl.setFixedWidth(90)
+        oc_model_row.addWidget(oc_model_lbl)
 
-        token_section_outer.addLayout(self.token_layout)
-        claude_layout.addWidget(self.token_section_widget)
+        self.oc_info_btn = OcModelInfoButton(tr("Какие модели доступны"))
+        self.oc_info_btn.setObjectName("ocInfoButton")
+        self.oc_info_btn.setMinimumHeight(0)
+        self.oc_info_btn.setFixedHeight(36)
+        self.oc_info_btn.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.oc_info_btn.clicked.connect(self._oc_show_info)
+        oc_model_row.addWidget(self.oc_info_btn, 1)
 
-        # Opacity effects для токена
-        self._token_label_dim = QGraphicsOpacityEffect(); self._token_label_dim.setOpacity(1.0)
-        self._token_input_dim = QGraphicsOpacityEffect(); self._token_input_dim.setOpacity(1.0)
-        self._btn_toggle_token_dim = QGraphicsOpacityEffect(); self._btn_toggle_token_dim.setOpacity(1.0)
-        self._btn_save_token_dim = QGraphicsOpacityEffect(); self._btn_save_token_dim.setOpacity(1.0)
-        self._btn_edit_token_dim = QGraphicsOpacityEffect(); self._btn_edit_token_dim.setOpacity(1.0)
-        self.token_label.setGraphicsEffect(self._token_label_dim)
-        self.token_input.setGraphicsEffect(self._token_input_dim)
-        self.btn_toggle_token.setGraphicsEffect(self._btn_toggle_token_dim)
-        self.btn_save_token.setGraphicsEffect(self._btn_save_token_dim)
-        self.btn_edit_token.setGraphicsEffect(self._btn_edit_token_dim)
+        oc_layout.addLayout(oc_model_row)
 
-        # Скрытый старый toggle (для совместимости логики)
-        self.use_custom_token_checkbox = ToggleSwitch(checked=self.settings.get("use_custom_token", False))
-        self.use_custom_token_checkbox.toggled.connect(self.toggle_custom_token_fields)
-        self.use_custom_token_checkbox.hide()
+        # Менеджер провайдеров opencode (определения из конфига + креды auth.json)
+        oc_prov_row = QHBoxLayout()
+        self.btn_oc_manage_providers = StyledButton(tr("Управление провайдерами"))
+        self.btn_oc_manage_providers.setMinimumHeight(0)
+        self.btn_oc_manage_providers.setFixedHeight(36)
+        self.btn_oc_manage_providers.clicked.connect(self._oc_manage_providers)
+        oc_prov_row.addWidget(self.btn_oc_manage_providers, 1)
+        oc_layout.addLayout(oc_prov_row)
+
+        self.oc_section_widget.hide()
+        claude_layout.addWidget(self.oc_section_widget)
 
         # Секция FreeModel — все настройки inline
         self.freemodel_section_widget = QWidget()
@@ -13275,7 +13864,7 @@ class ClaudeManager(QMainWindow):
         self.oa_btn_manage_keys.setMinimumHeight(0)
         self.oa_btn_manage_keys.setFixedHeight(36)
         self.oa_btn_manage_keys.setFixedWidth(130)
-        self.oa_btn_manage_keys.clicked.connect(self._fm_manage_keys)
+        self.oa_btn_manage_keys.clicked.connect(self._oa_manage_keys)
         oa_key_row.addWidget(self.oa_btn_manage_keys)
         openai_layout.addLayout(oa_key_row)
 
@@ -13351,9 +13940,6 @@ class ClaudeManager(QMainWindow):
         self.openai_section_widget.hide()
         claude_layout.addWidget(self.openai_section_widget)
 
-        # Применяем начальное состояние   идимости секций
-        self._apply_app_mode()
-
         # Выбор рабочей директории
         dir_layout = QHBoxLayout()
 
@@ -13403,6 +13989,11 @@ class ClaudeManager(QMainWindow):
         claude_layout.addWidget(self.btn_claude)
 
         main_layout.addWidget(claude_frame)
+
+        # Применяем начальное состояние видимости секций (после создания всех
+        # виджетов, включая btn_claude, чтобы кнопка запуска Custom URL стала
+        # активной для текущего режима).
+        self._apply_app_mode()
 
         # ═══ Консоль ═══════════════════════════════════════════════
         console_frame = QFrame()
@@ -13501,7 +14092,7 @@ class ClaudeManager(QMainWindow):
         main_layout.addWidget(console_frame)
 
         # Именно addStretch(1), а не addSpacing(10). Пружина между консолью
-        # и футером поглощает разницу высот при переключении Omniroute↔BaseURL:
+        # и футером поглощает разницу высот при переключении режимов:
         # когда секции сверху скрываются, освободившееся место уходит СЮДА, а
         # не размазывается между stretch-факторами верхних виджетов — иначе те
         # видимо «прыгают» на промежуточные позиции. В эталонной версии окна
@@ -13591,12 +14182,6 @@ class ClaudeManager(QMainWindow):
         # Стиль окна
         self.setStyleSheet("QMainWindow { background-color: rgb(20, 20, 25); }")
 
-        # Таймер проверки статуса (в фоновом потоке)
-        self._last_status = None
-        self.status_timer = QTimer()
-        self.status_timer.timeout.connect(self.check_status_async)
-        self.status_timer.start(3000)
-
         # Состояние версии Claude Code (заполняется фоновой проверкой)
         self._claude_local_version = ""
         self._claude_latest_version = ""
@@ -13615,6 +14200,19 @@ class ClaudeManager(QMainWindow):
             threading.Thread(target=self._check_codex_version, daemon=True).start()
         # Периодическое обновление состояния codex-кнопок (детект внешних установок)
         self._update_codex_button_state()
+
+        # Состояние версии opencode CLI (вкладка Custom URL)
+        self._oc_local_version = ""
+        self._oc_latest_version = ""
+        self.oc_version_checked.connect(self._on_oc_version_checked)
+        self._oc_signal_ready = True
+        # Стартовая проверка opencode — только если открыта вкладка Custom URL
+        # (иначе лениво при первом входе на вкладку, см. _apply_app_mode)
+        if self.settings.get("app_mode") == "customurl":
+            self._oc_version_checked_once = True
+            threading.Thread(target=self._check_oc_version, daemon=True).start()
+        # Периодическое обновление состояния oc-кнопок (детект внешних установок)
+        self._update_oc_button_state()
 
         # Стартовая проверка состояния кнопки Установить Claude
         self._update_install_button_state()
@@ -13648,7 +14246,6 @@ class ClaudeManager(QMainWindow):
 
         # Первая проверка
         self._print_console_banner()
-        self.check_status_async()
 
         # Проверка наличия Node.js/npm — если нет, показываем окно с прямой ссылкой
         # на скачивание. Через singleShot, чтобы UI успел полностью отрисоваться.
@@ -13675,11 +14272,13 @@ class ClaudeManager(QMainWindow):
         """Стартовый баннер в консоль. Вынесено отдельно, чтобы перепечатать
         его на актуальном языке после смены EN/RU."""
         self.log(tr("Приложение запущено"), "info")
-        self.log(tr("Порт Omniroute:") + f" {OMNIROUTE_PORT}", "info")
         self.log(tr("Автор:") + f" {AUTHOR_NAME}  •  Discord: {AUTHOR_DISCORD}", "info")
         self.log(f"GitHub: {AUTHOR_GITHUB}", "info")
         self.log("─" * 50, "info")
-        self.log(tr("Для работы с Base URL (freemodel и др.):"), "warning")
+        self.log(tr("opencode CLI: установка/обновление через npm"), "info")
+        self.log(tr("opencode можно запускать без ключа и модели"), "info")
+        self.log("─" * 50, "info")
+        self.log(tr("Для работы с Anthropic (freemodel и др.):"), "warning")
         self.log(tr("Если впервые — запустите Claude Code и введите /logout."), "warning")
         self.log(tr("Это нужно сделать только один раз. Даже если вы"), "warning")
         self.log(tr("поменяете API ключ — повторно вводить /logout не нужно."), "warning")
@@ -13749,106 +14348,6 @@ class ClaudeManager(QMainWindow):
 
         self.title.setText(html)
 
-    def check_status_async(self):
-        """Проверяет статус в фоновом потоке"""
-        threading.Thread(target=self._check_and_update_status, daemon=True).start()
-
-    def _check_and_update_status(self):
-        """Проверяет статус и обновляет UI"""
-        is_running = check_omniroute_status()
-        # Отправляем сигнал в главный поток
-        self.status_changed.emit(is_running)
-
-    def update_status(self, is_running):
-        """Обновляет статус Omniroute"""
-        # Логируем только при изменении статуса
-        if not hasattr(self, '_last_status') or self._last_status != is_running:
-            if is_running:
-                self.log("Omniroute подключен", "success")
-            else:
-                self.log("Omniroute не запущен", "error")
-            self._last_status = is_running
-
-        self.status_indicator.set_active(is_running)
-
-        # Проверяем используется ли кастомный токен
-        use_custom = self.settings.get("use_custom_token", False)
-
-        if is_running:
-            self.status_label.setText(tr("Подключен"))
-            self.status_label.setStyleSheet("color: rgb(52, 211, 153);")
-            self.btn_start_omniroute.setEnabled(False)
-            self.btn_stop_omniroute.setEnabled(True)
-            self.btn_claude.setEnabled(True)
-        else:
-            self.status_label.setText(tr("Не запущен"))
-            self.status_label.setStyleSheet("color: rgb(255, 50, 50);")
-            # При кастомном токене кнопка запуска Omniroute заблокирована
-            self.btn_start_omniroute.setEnabled(not use_custom)
-            self.btn_stop_omniroute.setEnabled(False)
-            self.btn_claude.setEnabled(use_custom)
-
-    def start_omniroute(self):
-        """Запускает Omniroute"""
-        self.log("Запуск Omniroute...", "info")
-        try:
-            omniroute_path = self.settings.get("omniroute_path", "omniroute")
-
-            # Запускаем команду (если просто "omniroute", то через PATH)
-            self.omniroute_process = subprocess.Popen(
-                omniroute_path,
-                shell=True,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            self.log("Ожидание подключения...", "info")
-            # Ждем запуска в фоне
-            threading.Thread(target=self._wait_for_omniroute, daemon=True).start()
-        except Exception as e:
-            error_msg = f"Ошибка запуска: {e}"
-            self.log(error_msg, "error")
-
-    def stop_omniroute(self):
-        """Останавливает Omniroute"""
-        self.log("Остановка Omniroute...", "info")
-        try:
-            # Убиваем процесс по имени
-            subprocess.run(["taskkill", "/F", "/IM", "node.exe", "/FI", "WINDOWTITLE eq omniroute*"],
-                          capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            # Альтернативный способ - убить все node процессы с omniroute
-            subprocess.run(["taskkill", "/F", "/IM", "node.exe"],
-                          capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            self.omniroute_process = None
-            self.log("Omniroute остановлен", "success")
-            # Принудительная проверка статуса
-            time.sleep(0.5)
-            self.check_status_async()
-        except Exception as e:
-            self.log(f"Ошибка остановки: {e}", "error")
-
-    def _wait_for_omniroute(self):
-        """Ожидает запуска Omniroute"""
-        for i in range(60):  # Увеличили до 30 секунд
-            if check_omniroute_status():
-                QTimer.singleShot(0, lambda: self.log("Omniroute успешно подключен", "success"))
-                QTimer.singleShot(0, self._on_omniroute_connected)
-                return
-            time.sleep(0.5)
-        QTimer.singleShot(0, lambda: self.log("Таймаут ожидания подключения. Проверьте, что Omniroute установлен и путь к нему правильный.", "error"))
-
-    def _on_omniroute_connected(self):
-        """Вызывается когда Omniroute успешно подключен"""
-        # Обновляем UI
-        self.btn_start_omniroute.setEnabled(False)
-        self.btn_stop_omniroute.setEnabled(True)
-        self.btn_claude.setEnabled(True)
-
-        # Открываем браузер
-        try:
-            import webbrowser
-            webbrowser.open("http://localhost:20128")
-        except:
-            pass
-
     def browse_directory(self):
         """Открывает диалог выбора директории"""
         current_dir = self.settings.get("working_directory", "")
@@ -13872,64 +14371,8 @@ class ClaudeManager(QMainWindow):
         save_settings(self.settings)
         self.log("Директория очищена", "info")
 
-    def save_token(self):
-        """Сохраняет API ключ в настройки"""
-        token = self.token_input.text().strip()
-        if not token:
-            self.log("API ключ не может быть пустым", "warning")
-            return
-
-        self.settings["auth_token"] = token
-        save_settings(self.settings)
-        self.log("API ключ сохранен", "success")
-
-        # Делаем поле только для чтения, темнее и переключаем кнопки
-        self.token_input.setReadOnly(True)
-        self.token_input.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(20, 20, 25, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
-                padding: 6px;
-            }
-        """)
-        self.btn_save_token.hide()
-        self.btn_edit_token.show()
-
-        # После сохранения автоматически прячем значение, как просил пользователь
-        self.token_input.setEchoMode(QLineEdit.Password)
-        if hasattr(self, "btn_toggle_token") and hasattr(self.btn_toggle_token, "setRevealed"):
-            self.btn_toggle_token.setRevealed(False)
-
-    def edit_token(self):
-        """Разрешает редактирование API ключа"""
-        self.token_input.setReadOnly(False)
-        self.token_input.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
-                padding: 6px;
-            }
-        """)
-        self.token_input.setFocus()
-        self.btn_edit_token.hide()
-        self.btn_save_token.show()
-        self.log("Режим редактирования API ключа", "info")
-
-    def toggle_token_visibility(self):
-        """Переключает видимость API ключа"""
-        if self.token_input.echoMode() == QLineEdit.Password:
-            self.token_input.setEchoMode(QLineEdit.Normal)
-            self.btn_toggle_token.setRevealed(True)
-        else:
-            self.token_input.setEchoMode(QLineEdit.Password)
-            self.btn_toggle_token.setRevealed(False)
-
     def _on_mode_changed(self, mode):
-        """Обработчик переключателя режимов в шапке (Anthropic / Omniroute / OpenAI)"""
+        """Обработчик переключателя режимов в шапке (Anthropic / Claude / OpenAI / Custom URL)"""
         self._apply_app_mode(mode)
 
     def _on_language_toggled(self, code):
@@ -13967,7 +14410,7 @@ class ClaudeManager(QMainWindow):
             pass
         # Форсируем перерисовку самонарисованных виджетов
         for attr in ("freemodel_brand",
-                     "status_indicator", "claude_install_indicator",
+                     "claude_install_indicator", "oc_install_indicator",
                      "codex_install_indicator",
                      "title", "mode_toggle", "language_toggle"):
             try:
@@ -13993,16 +14436,19 @@ class ClaudeManager(QMainWindow):
                 self.btn_install_statusline.setText(tr("Status line"))
             if hasattr(self, "btn_fix_claude"):
                 self.btn_fix_claude.setText(tr("Fix Claude"))
-            if hasattr(self, "btn_stop_omniroute"):
-                self.btn_stop_omniroute.setText(tr("Остановить Omniroute"))
-            if hasattr(self, "btn_start_omniroute"):
-                self.btn_start_omniroute.setText(tr("Запустить Omniroute"))
             if hasattr(self, "btn_claude"):
-                is_oa = self.settings.get("app_mode", "anthropic") == "openai"
-                self.btn_claude.setText(tr("Запустить Codex CLI") if is_oa
-                                        else tr("Запустить Claude Code"))
+                mode = self.settings.get("app_mode", "anthropic")
+                label = {
+                    "openai": tr("Запустить Codex CLI"),
+                    "customurl": tr("Запустить opencode"),
+                }.get(mode, tr("Запустить Claude Code"))
+                self.btn_claude.setText(label)
             if hasattr(self, "btn_uninstall_codex"):
                 self.btn_uninstall_codex.setText(tr("Удалить Codex CLI"))
+            if hasattr(self, "btn_install_oc"):
+                self.btn_install_oc.setText(tr("Установить opencode"))
+            if hasattr(self, "btn_uninstall_oc"):
+                self.btn_uninstall_oc.setText(tr("Удалить opencode"))
             if hasattr(self, "oa_btn_manage_urls"):
                 self.oa_btn_manage_urls.setText(tr("Управление"))
             if hasattr(self, "oa_btn_manage_keys"):
@@ -14013,14 +14459,16 @@ class ClaudeManager(QMainWindow):
                 self.oa_model_combo._pick_title = tr("Выбор модели")
             if hasattr(self, "oa_url_combo"):
                 self.oa_url_combo._pick_title = tr("Выбор Base URL")
-            if hasattr(self, "btn_add_model"):
-                self.btn_add_model.setText(tr("Добавить модель"))
-            if hasattr(self, "btn_remove_model"):
-                self.btn_remove_model.setText(tr("Удалить модель"))
-            if hasattr(self, "btn_save_token"):
-                self.btn_save_token.setText(tr("Сохранить"))
-            if hasattr(self, "btn_edit_token"):
-                self.btn_edit_token.setText(tr("Изменить"))
+            if hasattr(self, "oc_btn_manage_urls"):
+                self.oc_btn_manage_urls.setText(tr("Управление"))
+            if hasattr(self, "oc_btn_manage_keys"):
+                self.oc_btn_manage_keys.setText(tr("Управление"))
+            if hasattr(self, "oc_key_input"):
+                self.oc_key_input.setPlaceholderText(tr("Необязательно — откройте «Управление»"))
+            if hasattr(self, "btn_oc_manage_providers"):
+                self.btn_oc_manage_providers.setText(tr("Управление провайдерами"))
+            if hasattr(self, "oc_url_combo"):
+                self.oc_url_combo._pick_title = tr("Выбор Base URL")
             if hasattr(self, "fm_btn_manage"):
                 self.fm_btn_manage.setText(tr("Управление"))
             if hasattr(self, "fm_btn_save_key"):
@@ -14040,15 +14488,19 @@ class ClaudeManager(QMainWindow):
                 self.fm_url_combo._pick_title = tr("Выбор Base URL")
             if hasattr(self, "btn_configure_custom"):
                 self.btn_configure_custom.setText(tr("Настроить"))
-            if hasattr(self, "token_label"):
-                self.token_label.setText(tr("API ключ:"))
             if hasattr(self, "dir_input"):
                 self.dir_input.setPlaceholderText(tr("Не выбрана (будет запрошена)"))
+            if hasattr(self, "oc_info_btn"):
+                try:
+                    self._oc_refresh_info_button_text()
+                except Exception:
+                    pass
             # Дочерние QLabel-ы по тексту через _tr_widgets (если был трекинг)
             self._retranslate_generic()
             # Прогоняем sync-методы, которые сами уже используют tr() —
-            # они закроют динамические лейблы (status_label, claude_install_status_label,
-            # btn_install_claude) с учётом ТЕКУЩЕГО реального состояния, а не дефолта.
+            # они закроют динамические лейблы (claude_install_status_label,
+            # codex_install_status_label, oc_install_status_label, btn_install_claude)
+            # с учётом ТЕКУЩЕГО реального состояния, а не дефолта.
             if hasattr(self, "_update_install_button_state"):
                 try:
                     self._update_install_button_state()
@@ -14059,10 +14511,9 @@ class ClaudeManager(QMainWindow):
                     self._update_codex_button_state()
                 except Exception:
                     pass
-            if hasattr(self, "_last_status"):
+            if hasattr(self, "_update_oc_button_state"):
                 try:
-                    # update_status сам перетянет тексты «Подключен / Не запущен»
-                    self.update_status(bool(self._last_status))
+                    self._update_oc_button_state()
                 except Exception:
                     pass
         except Exception:
@@ -14125,9 +14576,9 @@ class ClaudeManager(QMainWindow):
     def _refresh_freemodel_brand_visibility(self):
         """Показывает бейдж freemodel.dev только когда выбран соответствующий эндпоинт.
 
-        В режиме Omniroute (Anthropic / прокси не от freemodel) или при выборе
-        кастомного URL бейдж скрывается, чтобы не вводить в заблуждение —
-        статус сервиса freemodel.dev не имеет отношения к чужому эндпоинту."""
+        В режимах official / customurl (opencode) бейдж скрывается, чтобы не
+        вводить в заблуждение — статус сервиса freemodel.dev не имеет отношения
+        к чужому эндпоинту."""
         try:
             mode = self.settings.get("app_mode", "anthropic")
             if mode == "official":
@@ -14136,6 +14587,9 @@ class ClaudeManager(QMainWindow):
             elif mode == "openai":
                 url = self.settings.get("openai_base_url", "")
                 visible = self._is_freemodel_endpoint(url)
+            elif mode == "customurl":
+                # opencode — отдельный сервис, freemodel-прокси к нему не относится
+                visible = False
             else:
                 use_custom = self.settings.get("use_custom_token", False)
                 url = self.settings.get("custom_base_url", "")
@@ -14324,14 +14778,28 @@ class ClaudeManager(QMainWindow):
             self.fm_btn_toggle_key.setRevealed(False)
 
     def _fm_manage_keys(self):
-        """Открывает окно управления API-ключами (единственное место, где
-        можно добавлять/включать/выбирать ключи)."""
+        """Открывает окно управления API-ключами для основных вкладок
+        (Anthropic). Freemodel-логика (точное время сброса/online/OTP) активна
+        только когда выбранный Base URL принадлежит freemodel.dev; во всех
+        остальных случаях лимит ставится обратным отсчётом, как в Custom URL."""
+        self._open_shared_key_manager(self._is_freemodel_endpoint(
+            self.settings.get("custom_base_url", "")))
+
+    def _oa_manage_keys(self):
+        """То же окно управления, но для вкладки OpenAI: freemodel-логика
+        включается по СВОЕМУ openai_base_url (не путать с Anthropic-URL)."""
+        self._open_shared_key_manager(self._is_freemodel_endpoint(
+            self.settings.get("openai_base_url", "")))
+
+    def _open_shared_key_manager(self, is_freemodel):
+        """Общая реализация Для вкладок Anthropic/OpenAI: открывает
+        ApiKeyManagerDialog над общим хранилищем api_keys, пока диалог жив —
+        любое изменение сбрасывается на диск через _persist_key_state."""
         dlg = ApiKeyManagerDialog(
             self.settings.get("api_keys", []),
             selected_id=self.settings.get("selected_key_id", ""),
             parent=self,
-            is_freemodel=self._is_freemodel_endpoint(
-                self.settings.get("custom_base_url", "")),
+            is_freemodel=is_freemodel,
         )
         # Пока диалог открыт, любая мутация ключа (клик тумблера, авто-сброс
         # таймера лимита, обновление метрик) должна тут же сохраняться на диск,
@@ -14380,8 +14848,48 @@ class ClaudeManager(QMainWindow):
         except Exception as e:
             print(f"[_persist_key_state] Не удалось сохранить: {e}")
 
+    def _oc_manage_keys(self):
+        """Открывает окно управления API-ключами вкладки Custom URL
+        (отдельное хранилище oc_keys). opencode-ключи никогда не работают с
+        freemodel-логикой: is_freemodel=False → лимит всегда вводится как
+        ОБРАТНЫЙ ОТСЧЁТ (KeyLimitDurationDialog), без диалога и точного
+        времени сброса freemodel.dev и без режима online/OTP."""
+        dlg = ApiKeyManagerDialog(
+            self.settings.get("oc_keys", []),
+            selected_id=self.settings.get("oc_selected_key_id", ""),
+            parent=self,
+            is_freemodel=False,
+        )
+        dlg.state_changed.connect(lambda: self._persist_oc_key_state(dlg))
+        dlg.keys_data_changed.connect(lambda: self._persist_oc_key_state(dlg, with_backup=True))
+        dlg.exec()
+        keys, selected_id = dlg.get_result()
+        self.settings["oc_keys"] = keys
+        self.settings["oc_selected_key_id"] = selected_id
+        sync_oc_api_key(self.settings)
+        save_settings(self.settings)
+        self._refresh_active_key_display()
+
+    def _persist_oc_key_state(self, dlg, with_backup=False):
+        """Слот сигнала ApiKeyManagerDialog для вкладки Custom URL: пишет
+        oc_keys/oc_selected_key_id в settings.json, не дожидаясь закрытия окна.
+        с with_backup=True снимает .bakN бэкап, иначе — без бэкапа."""
+        try:
+            keys, selected_id = dlg.get_result()
+            self.settings["oc_keys"] = keys
+            self.settings["oc_selected_key_id"] = selected_id
+            sync_oc_api_key(self.settings)
+            if with_backup:
+                save_settings_with_backup(self.settings)
+            else:
+                save_settings(self.settings)
+            self._refresh_active_key_display()
+        except Exception as e:
+            print(f"[_persist_oc_key_state] Не удалось сохранить: {e}")
+
     def _refresh_active_key_display(self):
-        """Обновляет read-only поле активного ключа под текущий custom_api_key."""
+        """Обновляет read-only поля активных ключей под текущие хранилища:
+        custom_api_key для Anthropic/OpenAI и oc_api_key для Custom URL."""
         val = self.settings.get("custom_api_key", "")
         if hasattr(self, "fm_key_input"):
             self.fm_key_input.setEchoMode(QLineEdit.Password)
@@ -14394,6 +14902,13 @@ class ClaudeManager(QMainWindow):
             self.oa_key_input.setText(val)
         if hasattr(self, "oa_btn_toggle_key") and hasattr(self.oa_btn_toggle_key, "setRevealed"):
             self.oa_btn_toggle_key.setRevealed(False)
+        # Ключи вкладки Custom URL — отдельное хранилище (oc_api_key)
+        if hasattr(self, "oc_key_input"):
+            oc_val = self.settings.get("oc_api_key", "")
+            self.oc_key_input.setEchoMode(QLineEdit.Password)
+            self.oc_key_input.setText(oc_val)
+        if hasattr(self, "oc_btn_toggle_key") and hasattr(self.oc_btn_toggle_key, "setRevealed"):
+            self.oc_btn_toggle_key.setRevealed(False)
 
     def _fm_manage_urls(self):
         """Открывает окно управления Base URL"""
@@ -14455,6 +14970,289 @@ class ClaudeManager(QMainWindow):
         else:
             self.oa_key_input.setEchoMode(QLineEdit.Password)
             self.oa_btn_toggle_key.setRevealed(False)
+
+    # ── Обработчики вкладки Custom URL ─────────────────────────────
+
+    def _oc_url_changed(self, new_url):
+        """Сохраняет выбранный Base URL вкладки Custom URL."""
+        if new_url and new_url != tr("Не задан"):
+            prev = self.settings.get("oc_base_url", "")
+            self.settings["oc_base_url"] = new_url
+            save_settings(self.settings)
+            if prev != new_url:
+                self.log(f"Base URL {new_url} сохранён", "success")
+            # Сменился эндпоинт — перезагружаем список моделей и capabilities.
+            self._oc_refresh_models()
+
+    def _oc_manage_urls(self):
+        """Окно управления Base URL для вкладки Custom URL (отдельный список).
+        Здесь НЕТ «зарезервированных» дефолтов (в отличие от вкладки Claude
+        Code): любой введённый адрес, включая cc.freemodel.dev, можно удалить."""
+        urls = self.settings.get("oc_base_urls", [])
+        current = self.oc_url_combo.currentText()
+        if current == tr("Не задан"):
+            current = ""
+        dialog = BaseUrlManagerDialog(urls, current, self, default_urls=())
+        if dialog.exec() == QDialog.Accepted:
+            new_urls, new_current = dialog.get_result()
+            changed = new_current != current
+            self.settings["oc_base_urls"] = list(new_urls)
+            self.settings["oc_base_url"] = new_current
+            save_settings(self.settings)
+            self.oc_url_combo.blockSignals(True)
+            self.oc_url_combo.clear()
+            if new_urls:
+                self.oc_url_combo.addItems(new_urls)
+            else:
+                self.oc_url_combo.addItem(tr("Не задан"))
+            if new_current in new_urls:
+                self.oc_url_combo.setCurrentText(new_current)
+            self.oc_url_combo.blockSignals(False)
+            # Сигнал currentTextChanged тут заблокирован, поэтому обновляем
+            # список моделей вручную, если эндпоинт реально сменился.
+            if changed:
+                self._oc_refresh_models()
+
+    def _oc_manage_providers(self):
+        """Окно управления провайдерами opencode: определения из конфига +
+        креды из auth.json, с возможностью удаления."""
+        dialog = OpencodeProvidersDialog(self)
+        dialog.exec()
+
+    def _oc_toggle_key(self):
+        """Показать/скрыть API ключ вкладки Custom URL."""
+        if self.oc_key_input.echoMode() == QLineEdit.Password:
+            self.oc_key_input.setEchoMode(QLineEdit.Normal)
+            self.oc_btn_toggle_key.setRevealed(True)
+        else:
+            self.oc_key_input.setEchoMode(QLineEdit.Password)
+            self.oc_btn_toggle_key.setRevealed(False)
+
+    def _oc_refresh_models(self):
+        """Фоновая подгрузка моделей + capabilities.reasoning для текущего
+        Base URL вкладки Custom URL. Без эндпоинта тоже запускается — чтобы
+        наполнить список бесплатными моделями opencode (глобальный каталог)."""
+        if not hasattr(self, "_oc_model_ids"):
+            self._oc_model_ids = []
+            self._oc_free_ids = []
+            self._oc_reasoning = {}
+            self._oc_info_dlg = None
+            self._oc_provider_name = ""
+        if getattr(self, "_oc_models_loader", None) is not None:
+            try:
+                if self._oc_models_loader.isRunning():
+                    return
+            except Exception:
+                pass
+        base_url = (self.settings.get("oc_base_url", "") or "").strip()
+        host = re.sub(r"[^A-Za-z0-9]", "", (re.sub(r"^https?://", "", base_url).split("/")[0] or "")) or "custom"
+        self._oc_provider_name = host
+        api_key = self.settings.get("oc_api_key", "")
+        self._oc_loader_url = base_url
+        self._oc_models_loader = _OcModelsLoader(self, base_url, api_key, host)
+        self._oc_models_loader.loaded.connect(self._on_oc_models_loaded)
+        self._oc_models_loader.start()
+        # Загрузка началась — блокируем кнопку моделей и показываем спиннер.
+        self._oc_set_info_loading(True)
+
+    def _on_oc_models_loaded(self, model_ids, reasoning_map, free_ids, free_reasoning):
+        """Модели и capabilities пришли из фонового потока."""
+        if getattr(self, "_oc_loader_url", None) != (self.settings.get("oc_base_url", "") or "").strip():
+            return
+        self._oc_free_fetched_at = time.time()
+        self._oc_apply_models(model_ids, reasoning_map, free_ids, free_reasoning)
+        self._oc_set_info_loading(False)
+
+    def _oc_set_info_loading(self, loading):
+        """Включает/выключает состояние загрузки на кнопке «Какие модели
+        доступны»: блокирует её и запускает/гасит спиннер."""
+        btn = getattr(self, "oc_info_btn", None)
+        if btn is not None and hasattr(btn, "set_loading"):
+            btn.set_loading(bool(loading))
+
+    def _oc_apply_models(self, model_ids, reasoning_map, free_ids, free_reasoning):
+        """Сохраняет списки моделей эндпоинта и бесплатных opencode для
+        информационного окна. Модель пользователь не выбирает — окно только
+        показывает доступное."""
+        self._oc_model_ids = list(model_ids)
+        self._oc_free_ids = list(free_ids)
+        reasoning = dict(reasoning_map)
+        reasoning.update(free_reasoning)
+        self._oc_reasoning = reasoning
+        if hasattr(self, "oc_info_btn"):
+            self._oc_refresh_info_button_text()
+        # Свежие данные пришли асинхронно — перестраиваем уже открытое
+        # инфо-окно, чтобы пользователь сразу видел актуальный список
+        # (установка/удаление/обновление opencode и т.п.).
+        self._oc_refresh_open_info()
+        if not self._oc_model_ids and not self._oc_free_ids and self.settings.get("oc_base_url"):
+            self.log("Не удалось получить модели для Custom URL", "warning")
+
+    def _oc_refresh_open_info(self):
+        """Перестраивает открытое информационное окно моделей свежими данными
+        (если оно живо). Пустой кэш НЕ трогает — окно просто остаётся как есть."""
+        dlg = getattr(self, "_oc_info_dlg", None)
+        if dlg is None:
+            return
+        try:
+            from shiboken6 import isValid
+            if not isValid(dlg):
+                self._oc_info_dlg = None
+                return
+        except Exception:
+            pass
+        try:
+            dlg.update_models(list(self._oc_model_ids or []),
+                              list(self._oc_free_ids or []),
+                              getattr(self, "_oc_provider_name", "") or "")
+        except Exception:
+            pass
+
+    def _oc_refresh_info_button_text(self):
+        """Пересчитывает текст кнопки «Какие модели доступны» по текущему языку:
+        «N models · M free» / «N моделей · M бесплатных». Прямое ветвление по
+        LANG.lang — перевод не зависит от словаря TRANSLATIONS."""
+        btn = getattr(self, "oc_info_btn", None)
+        if btn is None or not getattr(self, "_oc_model_ids", None) and \
+                not getattr(self, "_oc_free_ids", None):
+            if btn is not None:
+                btn.setText(tr("Какие модели доступны"))
+            return
+        total = len(self._oc_model_ids) + len(self._oc_free_ids)
+        lang_en = LANG is not None and LANG.lang == "en"
+        if self._oc_free_ids:
+            if lang_en:
+                btn.setText(f"{total} models · {len(self._oc_free_ids)} free")
+            else:
+                btn.setText(f"{total} моделей · {len(self._oc_free_ids)} бесплатных")
+        else:
+            if lang_en:
+                btn.setText(f"{total} models")
+            else:
+                btn.setText(f"{total} моделей")
+
+    def _oc_show_info(self):
+        """Открывает информационное окно доступных моделей (клик по кнопке
+        «Какие модели доступны»). Названия моделей подсвечены цветом, текст
+        пояснений обычный; список авто-обновляется при каждом открытии."""
+        self._oc_maybe_refresh_catalog()
+        endpoint = list(getattr(self, "_oc_model_ids", []) or [])
+        free = list(getattr(self, "_oc_free_ids", []) or [])
+        reasoning = dict(getattr(self, "_oc_reasoning", {}) or {})
+        provider_name = getattr(self, "_oc_provider_name", "") or ""
+        dlg = OcModelDialog(endpoint, free, reasoning,
+                            provider_name=provider_name, parent=self)
+        dlg.destroyed.connect(self._on_oc_info_destroyed)
+        self._oc_info_dlg = dlg
+        # Окно строится из кэша мгновенно, а фоновый refresh (если запущен)
+        # дообновит его через _oc_refresh_open_info, как только свежие данные
+        # придут. Чтобы окно всегда было максимально свежим, принудительно
+        # запускаем refresh при каждом открытии (300с-кэш не блокирует).
+        self._oc_refresh_models()
+
+        def _show_and_position():
+            dlg.show()
+            dlg.adjustSize()
+            dw, dh = dlg.width(), dlg.height()
+            try:
+                pg = self.frameGeometry()
+                center = pg.center()
+                dlg.move(center.x() - dw // 2, center.y() - dh // 2)
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _show_and_position)
+
+    def _on_oc_info_destroyed(self):
+        if getattr(self, "_oc_info_dlg", None) is not None:
+            self._oc_info_dlg = None
+
+    def _oc_run_models_cmd(self, provider=None, config_path=None):
+        """Запускает `opencode models --verbose [provider]` и возвращает stdout.
+        Без provider — глобальный каталог всех провайдеров (включая бесплатные
+        opencode-модели). config_path прокидывается через OPENCODE_CONFIG."""
+        exe = shutil.which("opencode")
+        if not exe:
+            return ""
+        env = os.environ.copy()
+        if config_path:
+            env["OPENCODE_CONFIG"] = config_path
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        # npm-шимы на Windows — это .cmd/.ps1; subprocess не может их запустить
+        # напрямую, поэтому через cmd /c.
+        if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+            args = ["cmd", "/c", exe, "models", "--verbose"]
+        else:
+            args = [exe, "models", "--verbose"]
+        if provider:
+            args.append(provider)
+        try:
+            r = subprocess.run(
+                args,
+                capture_output=True, text=True, timeout=40, env=env, creationflags=flags,
+            )
+            return r.stdout or ""
+        except Exception:
+            return ""
+
+    def _parse_verbose_sections(self, out):
+        """Делит вывод `opencode models --verbose` на секции и возвращает список
+        (provider, short_name, reasoning). «Слоёный» текст: каждая модель
+        начинается неотступленной строкой 'provider/name', за которой идёт
+        JSON-объект, и всё подряд (без пустых строк между блоками)."""
+        sections = []
+        current = None
+        for ln in (out or "").splitlines():
+            if not ln[:1].isspace() and "/" in ln and not ln.strip().startswith("{"):
+                current = [ln]
+                sections.append(current)
+            elif current is not None:
+                current.append(ln)
+        parsed = []
+        for sec in sections:
+            provider, _, short = sec[0].partition("/")
+            try:
+                meta = json.loads("\n".join(sec[1:]))
+            except Exception:
+                meta = {}
+            c = meta.get("capabilities") or {}
+            parsed.append((provider, short, bool(c.get("reasoning", False))))
+        return parsed
+
+    def _oc_fetch_capabilities(self, provider, config_path):
+        """Запускает `opencode models --verbose <provider>` и извлекает
+        capabilities.reasoning для каждой модели провайдера."""
+        if not provider:
+            return {}
+        caps = {}
+        for prov, short, reasoning in self._parse_verbose_sections(self._oc_run_models_cmd(provider, config_path)):
+            if prov == provider:
+                caps[short] = reasoning
+        return caps
+
+    def _oc_fetch_free_catalog(self):
+        """Бесплатные модели opencode: `opencode models --verbose` БЕЗ
+        OPENCODE_CONFIG (глобальный каталог). Возвращает (free_ids,
+        free_reasoning) для провайдера 'opencode'."""
+        out = self._oc_run_models_cmd(None, None)
+        free_ids = []
+        free_reasoning = {}
+        for prov, short, reasoning in self._parse_verbose_sections(out):
+            if prov == "opencode":
+                free_ids.append(short)
+                free_reasoning[short] = reasoning
+        return free_ids, free_reasoning
+
+    def _oc_maybe_refresh_catalog(self):
+        """Фоновый refresh каталога моделей, если он давно не обновлялся
+        (>=300 c) — чтобы opencode подхватил добавленные/убранные бесплатные
+        модели. Вызывается при открытии окна выбора модели."""
+        now = time.time()
+        last = getattr(self, "_oc_free_fetched_at", 0)
+        if last and (now - last) < 300:
+            return
+        self._oc_free_fetched_at = now
+        self._oc_refresh_models()
 
     def _oa_model_changed(self, new_model):
         """Сохраняет выбранную модель OpenAI и перекрашивает комбо. Заодно
@@ -14542,37 +15340,27 @@ class ClaudeManager(QMainWindow):
         anim.start()
         self._resize_anim = anim
 
-    def toggle_custom_token_fields(self, is_custom=None):
-        """Совместимость: старый bool-переключатель BaseURL/Omniroute.
-        Теперь маппится на трёхрежимный _apply_app_mode."""
-        if is_custom is None:
-            is_custom = self.use_custom_token_checkbox.isChecked()
-        self._apply_app_mode("anthropic" if is_custom else "omniroute")
-
     def _apply_app_mode(self, mode=None):
-        """Скрывает/показывает секции для режима anthropic / official / omniroute / openai.
+        """Скрывает/показывает секции для режима anthropic / official / customurl / openai.
         official — под-режим двойной ячейки Anthropic|Claude: та же секция
-        FreeModel, но без Base URL и ключей (официальный вход через аккаунт)."""
+        FreeModel, но без Base URL и ключей (официальный вход через аккаунт).
+        customurl — вкладка Custom URL (opencode CLI)."""
         if mode is None:
             mode = self.settings.get("app_mode", "anthropic")
-        if mode not in ("anthropic", "official", "omniroute", "openai"):
+        if mode not in ("anthropic", "official", "customurl", "openai"):
             mode = "anthropic"
 
-        is_custom = mode != "omniroute"  # кастомные режимы работают без Omniroute
         is_openai = mode == "openai"
         is_official = mode == "official"
+        is_customurl = mode == "customurl"
 
         self.settings["app_mode"] = mode
-        self.settings["use_custom_token"] = is_custom
+        self.settings["use_custom_token"] = True
         save_settings(self.settings)
 
-        # Синхронизируем оба переключателя
+        # Синхронизируем переключатель
         if hasattr(self, "mode_toggle"):
             self.mode_toggle.setMode(mode)
-        if self.use_custom_token_checkbox.isChecked() != is_custom:
-            self.use_custom_token_checkbox.blockSignals(True)
-            self.use_custom_token_checkbox.setChecked(is_custom)
-            self.use_custom_token_checkbox.blockSignals(False)
 
         # Залочим текущую высоту, чтобы Qt не растянул окно при показе скрытых виджетов
         _was_initialized = getattr(self, "_height_initialized", False) and self.isVisible()
@@ -14582,12 +15370,6 @@ class ClaudeManager(QMainWindow):
             self.setMaximumHeight(_cur_h)
 
         # Полностью скрываем/показываем секции
-        if hasattr(self, "omniroute_frame"):
-            self.omniroute_frame.setVisible(mode == "omniroute")
-        if hasattr(self, "model_section_widget"):
-            self.model_section_widget.setVisible(mode == "omniroute")
-        if hasattr(self, "token_section_widget"):
-            self.token_section_widget.setVisible(mode == "omniroute")
         if hasattr(self, "freemodel_section_widget"):
             self.freemodel_section_widget.setVisible(mode in ("anthropic", "official"))
         if hasattr(self, "fm_credentials_widget"):
@@ -14595,51 +15377,64 @@ class ClaudeManager(QMainWindow):
             self.fm_credentials_widget.setVisible(mode == "anthropic")
         if hasattr(self, "openai_section_widget"):
             self.openai_section_widget.setVisible(is_openai)
+        if hasattr(self, "oc_section_widget"):
+            self.oc_section_widget.setVisible(is_customurl)
 
-        # Верхний ряд кнопок: клодовские ↔ codex
+        # Верхний ряд кнопок: клодовские ↔ codex ↔ opencode
         for attr in ("btn_install_claude", "btn_uninstall_claude", "btn_add_to_path",
                      "btn_install_statusline", "btn_fix_claude"):
             w = getattr(self, attr, None)
             if w is not None:
-                w.setVisible(not is_openai)
+                w.setVisible(not is_openai and not is_customurl)
         for attr in ("btn_install_codex", "btn_uninstall_codex"):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setVisible(is_openai)
+        for attr in ("btn_install_oc", "btn_uninstall_oc"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(is_customurl)
 
-        # Чип статуса установки: Claude Code ↔ Codex CLI
+        # Чип статуса установки: Claude Code / Codex CLI / Custom URL
         if hasattr(self, "claude_header_chip"):
-            self.claude_header_chip.setVisible(not is_openai)
+            self.claude_header_chip.setVisible(not is_openai and not is_customurl)
         if hasattr(self, "codex_header_chip"):
             self.codex_header_chip.setVisible(is_openai)
+        if hasattr(self, "oc_header_chip"):
+            self.oc_header_chip.setVisible(is_customurl)
 
         # Видимость бейджа freemodel.dev пересчитывается по реально выбранному
         # URL и режиму.
         self._refresh_freemodel_brand_visibility()
 
-        self.btn_configure_custom.setEnabled(is_custom)
+        if hasattr(self, "btn_configure_custom"):
+            self.btn_configure_custom.setEnabled(mode == "anthropic")
 
         # Кнопка запуска:
         # - Anthropic/OpenAI — если сохранён API ключ
         # - Claude (official) — всегда: ключ не нужен, вход через аккаунт Anthropic
-        # - Omniroute — если Omniroute отвечает (last == True)
+        # - Custom URL (opencode) — всегда: ключ и модель не обязательны
         if hasattr(self, "btn_claude"):
-            self.btn_claude.setText(tr("Запустить Codex CLI") if is_openai
-                                    else tr("Запустить Claude Code"))
-            if is_official:
-                self.btn_claude.setEnabled(True)
-            elif is_custom:
-                has_key = bool(self.settings.get("custom_api_key", ""))
-                self.btn_claude.setEnabled(has_key)
-            else:
-                last = getattr(self, "_last_status", None)
-                self.btn_claude.setEnabled(bool(last))
+            label = {
+                "openai": tr("Запустить Codex CLI"),
+                "customurl": tr("Запустить opencode"),
+            }.get(mode, tr("Запустить Claude Code"))
+            self.btn_claude.setText(label)
+            # Кнопка запуска всегда кликабельна во всех режимах. Если ключа
+            # нет — сам запуск просто не удастся (эндпоинт откажет), но кнопка
+            # не блокируется.
+            self.btn_claude.setEnabled(True)
 
-        # Подгоняем высоту окна (official ниже — без рядов Base URL и ключа)
+        # Подгоняем высоту окна (official ниже — без рядов Base URL и ключа;
+        # customurl — с рядами Base URL / ключа, ВЕЗ модели).
+        # Для customurl зафиксирована текущая комфортная высота окна (783):
+        # вся секция видна без скролла.
         if is_official:
             target_h = 650
+        elif is_customurl:
+            target_h = 783
         else:
-            target_h = 750 if is_custom else 880
+            target_h = 750
         if hasattr(self, "_height_initialized") and self._height_initialized and self.isVisible():
             self._animate_window_height(target_h)
         else:
@@ -14649,8 +15444,6 @@ class ClaudeManager(QMainWindow):
             self.resize(self.width(), target_h)
             self._height_initialized = True
 
-        if mode == "omniroute" and hasattr(self, "status_timer"):
-            self.check_status_async()
         if is_official and not getattr(self, "_official_warning_shown", False) and self.isVisible():
             self._official_warning_shown = True
             dlg = OfficialModeWarningDialog(self)
@@ -14669,6 +15462,20 @@ class ClaudeManager(QMainWindow):
                 self._codex_version_checked_once = True
                 threading.Thread(target=self._check_codex_version, daemon=True).start()
 
+        if is_customurl:
+            self._update_oc_button_state()
+            # Ленивая проверка версии opencode при первом входе на вкладку
+            # (аналог codex-логики выше).
+            if (getattr(self, "_oc_signal_ready", False)
+                    and not getattr(self, "_oc_version_checked_once", False)):
+                self._oc_version_checked_once = True
+                threading.Thread(target=self._check_oc_version, daemon=True).start()
+            # Первичная подгрузка моделей (эндпоинт + бесплатные opencode) —
+            # чтобы комбо всегда было наполнено даже без заданного Base URL.
+            if not getattr(self, "_oc_models_loaded_once", False):
+                self._oc_models_loaded_once = True
+                self._oc_refresh_models()
+
     def open_custom_token_dialog(self):
         """Открывает диалог настройки кастомного токена"""
         dialog = CustomTokenDialog(self.settings, self)
@@ -14676,10 +15483,8 @@ class ClaudeManager(QMainWindow):
             # Настройки уже сохранены в диалоге
             save_settings(self.settings)
             self.log("Кастомные настройки сохранены", "success")
-
-
-        # Обновляем статус кнопки Claude (теперь доступна без Omniroute)
-        self.update_omniroute_status()
+            # Обновляем состояние кнопки запуска под сохранённый ключ
+            self._apply_app_mode()
 
     MODEL_ID_MAP = {
         "Opus 4.8": "claude-opus-4-8",
@@ -14803,10 +15608,14 @@ class ClaudeManager(QMainWindow):
             self.log(f"Не удалось записать effort в настройки Claude: {e}", "warning")
 
     def launch_claude(self):
-        """Запускает Claude Code с выбран  ой моделью"""
+        """Запускает Claude Code с выбранной моделью"""
         # Вкладка OpenAI живёт своей жизнью — там Codex CLI
         if self.settings.get("app_mode", "anthropic") == "openai":
             self.launch_codex()
+            return
+        # Вкладка Custom URL живёт своей жизнью — там opencode CLI
+        if self.settings.get("app_mode", "anthropic") == "customurl":
+            self.launch_opencode()
             return
         # Под-режим Claude (двойная ячейка) — официальный запуск без подмен
         if self.settings.get("app_mode", "anthropic") == "official":
@@ -14825,7 +15634,7 @@ class ClaudeManager(QMainWindow):
                     self._show_version_block_dialog(local)
                     return
 
-        model = self.model_combo.currentText()
+        model = self.settings.get("custom_model", "")
 
         # Рабочая директория
         working_dir = self.settings.get("working_directory", "")
@@ -14843,12 +15652,8 @@ class ClaudeManager(QMainWindow):
                 self.log("Запуск отменен - директория не выбрана", "warning")
                 return
 
-        # Сохраняем выбранную модель
-        self.settings["selected_model"] = model
-        save_settings(self.settings)
-
         # Проверяем используется ли кастомный токен
-        use_custom = self.settings.get("use_custom_token", False)
+        use_custom = True
 
         if use_custom:
             self.log(f"Запуск Claude Code с кастомным токеном...", "info")
@@ -14887,49 +15692,36 @@ class ClaudeManager(QMainWindow):
             effort = cli_effort
         self._write_claude_effort_setting(effort_ui)
 
-        if use_custom:
-            # Кастомные настройки (BaseURL). Пересчитываем активный ключ на
-            # случай, если зелёный ключ «пожелтел» за время работы приложения.
-            sync_custom_api_key(self.settings)
-            custom_api_key = self.settings.get("custom_api_key", "")
+        # Кастомные настройки (BaseURL). Пересчитываем активный ключ на
+        # случай, если зелёный ключ «пожелтел» за время работы приложения.
+        sync_custom_api_key(self.settings)
+        custom_api_key = self.settings.get("custom_api_key", "")
 
-            if not custom_api_key:
-                self.log("Нет активного API ключа — включите ключ в окне «Управление»", "error")
-                return
+        if not custom_api_key:
+            self.log("Нет активного API ключа — включите ключ в окне «Управление»", "error")
+            return
 
-            custom_model = self.settings.get("custom_model", "")
-            custom_base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
+        custom_model = self.settings.get("custom_model", "")
+        custom_base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
 
-            env["ANTHROPIC_API_KEY"] = custom_api_key
-            env["ANTHROPIC_BASE_URL"] = custom_base_url
-            env.pop("ANTHROPIC_MODEL", None)
-            env.pop("ANTHROPIC_SMALL_FAST_MODEL", None)
-            env["ANTHROPIC_AUTH_TOKEN"] = ""
-            env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        env["ANTHROPIC_API_KEY"] = custom_api_key
+        env["ANTHROPIC_BASE_URL"] = custom_base_url
+        env.pop("ANTHROPIC_MODEL", None)
+        env.pop("ANTHROPIC_SMALL_FAST_MODEL", None)
+        env["ANTHROPIC_AUTH_TOKEN"] = ""
+        env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
-            # Записываем модель в ~/.claude/settings.json для BaseURL
-            self._write_claude_model_setting(custom_model)
+        # Записываем модель в ~/.claude/settings.json для BaseURL
+        self._write_claude_model_setting(custom_model)
 
-            # Форсируем модель через --model (только для BaseURL)
-            model_id = self._resolve_model_id(custom_model)
-            cli_cmd = "claude"
-            if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
-                cli_cmd += f" --model {model_id}"
-            cli_cmd += effort_flag
+        # Форсируем модель через --model (только для BaseURL)
+        model_id = self._resolve_model_id(custom_model)
+        cli_cmd = "claude"
+        if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
+            cli_cmd += f" --model {model_id}"
+        cli_cmd += effort_flag
 
-            self.log(f"Используется кастомный токен для {custom_base_url} (effort={effort})", "info")
-        else:
-            # Обычные настройки через Omniroute
-            env["ANTHROPIC_BASE_URL"] = "http://localhost:20128/v1"
-            env["ANTHROPIC_AUTH_TOKEN"] = self.settings.get("auth_token", "")
-            env["ANTHROPIC_API_KEY"] = ""
-            env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-            # Передаём ID модели напрямую (kr/claude-sonnet-4.5 и т.д.)
-            env["ANTHROPIC_MODEL"] = model
-            env["ANTHROPIC_SMALL_FAST_MODEL"] = model
-
-            # Форсируем модель через --model + effort, чтобы старые чаты не переключались
-            cli_cmd = f"claude --model {model}{effort_flag}"
+        self.log(f"Используется кастомный токен для {custom_base_url} (effort={effort})", "info")
 
         # Снимаем блок PowerShell ExecutionPolicy для этой сессии — если у пользователя
         # стоит Restricted, claude.ps1 без этого не запустится. Scope Process действует
@@ -14941,14 +15733,11 @@ class ClaudeManager(QMainWindow):
                 ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
                 env=env
             )
-            if use_custom:
-                model_id = self._resolve_model_id(self.settings.get("custom_model", ""))
-                if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
-                    self.log(f"Claude Code запущен (--model {model_id})", "success")
-                else:
-                    self.log(f"Claude Code запущен ({model_id or 'default'})", "success")
+            model_id = self._resolve_model_id(self.settings.get("custom_model", ""))
+            if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
+                self.log(f"Claude Code запущен (--model {model_id})", "success")
             else:
-                self.log(f"Claude Code запущен ({model})", "success")
+                self.log(f"Claude Code запущен ({model_id or 'default'})", "success")
         except Exception as e:
             self.log(f"Ошибка запуска: {e}", "error")
 
@@ -15483,6 +16272,521 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
 
+    # ── opencode CLI: установка / удаление / версии / запуск (вкладка Custom URL) ──
+
+    def _detect_oc_install_dirs(self):
+        """Папки, где может лежать opencode (ставится только через npm)."""
+        candidates = [
+            os.path.join(os.environ.get("APPDATA", ""), "npm"),
+            os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
+        ]
+        return [d for d in candidates if os.path.isdir(d)]
+
+    def _is_oc_installed(self):
+        if shutil.which("opencode"):
+            return True
+        for d in self._detect_oc_install_dirs():
+            for name in ("opencode.exe", "opencode.cmd", "opencode.bat", "opencode.ps1", "opencode"):
+                if os.path.isfile(os.path.join(d, name)):
+                    return True
+        return False
+
+    def _get_installed_oc_version(self):
+        """Версия установленного opencode или пустая строка."""
+        return get_installed_oc_version()
+
+    def _check_oc_version(self):
+        """Фоновая проверка: локальная и последняя npm-версия opencode CLI."""
+        if getattr(self, "_oc_version_check_running", False):
+            return
+        self._oc_version_check_running = True
+        try:
+            local = self._get_installed_oc_version()
+            latest = check_oc_latest_version()
+            try:
+                self.oc_version_checked.emit(local, latest)
+            except Exception:
+                pass
+        finally:
+            self._oc_version_check_running = False
+
+    def _on_oc_version_checked(self, local, latest):
+        self._oc_local_version = local
+        self._oc_latest_version = latest
+        self._update_oc_button_state()
+
+    def _update_oc_button_state(self):
+        """Кнопки и индикатор opencode CLI (нет / установлен / доступно обновление)."""
+        installed = self._is_oc_installed()
+        local = getattr(self, "_oc_local_version", "")
+        latest = getattr(self, "_oc_latest_version", "")
+
+        update_available = False
+        if installed and local and latest:
+            try:
+                update_available = compare_versions(latest, local) > 0
+            except Exception:
+                update_available = False
+        version_unknown = installed and not local
+
+        if hasattr(self, "btn_install_oc"):
+            if not installed:
+                self.btn_install_oc.setEnabled(True)
+                self.btn_install_oc.setText(tr("Установить opencode"))
+                self.btn_install_oc.set_hover_color(52, 211, 153)
+            elif update_available:
+                self.btn_install_oc.setEnabled(True)
+                self.btn_install_oc.setText(tr("Обновить opencode"))
+                self.btn_install_oc.set_hover_color(245, 180, 60)
+            else:
+                self.btn_install_oc.setEnabled(False)
+                self.btn_install_oc.setText(tr("Установить opencode"))
+
+        if hasattr(self, "btn_uninstall_oc"):
+            self.btn_uninstall_oc.setEnabled(installed)
+
+        if hasattr(self, "oc_install_indicator"):
+            if not installed:
+                self.oc_install_indicator.set_state("off")
+            elif version_unknown or update_available:
+                self.oc_install_indicator.set_state("warn")
+            else:
+                self.oc_install_indicator.set_state("on")
+
+        if hasattr(self, "oc_install_status_label"):
+            if not installed:
+                text = tr("Не установлен")
+                color = "rgb(255, 50, 50)"
+            elif version_unknown:
+                # Бинарь есть, а версию пока не удалось распарсить (офлайн /
+                # нестандартный вывод) — показываем «Установлена», а не вечное
+                # «Проверяю версию…».
+                text = tr("Установлена")
+                color = "rgb(180, 180, 190)"
+            elif update_available:
+                text = tr("Доступно обновление") + (f" v{latest}" if latest else "")
+                color = "rgb(245, 180, 60)"
+            else:
+                text = tr("Установлена") + (f" v{local}" if local else "")
+                color = "rgb(52, 211, 153)"
+            self.oc_install_status_label.setText(text)
+            self.oc_install_status_label.setStyleSheet(
+                f"color: {color}; background: transparent; border: none;"
+            )
+
+    def _install_oc_cli(self):
+        """Ставит/обновляет opencode CLI (последняя версия) через npm i -g opencode-ai."""
+        installed = self._is_oc_installed()
+        local = getattr(self, "_oc_local_version", "")
+        latest = getattr(self, "_oc_latest_version", "") or tr("последняя")
+
+        if installed:
+            title = tr("Обновление opencode CLI")
+            message = (
+                (tr("У тебя установлена") + f" v{local}. " if local else "") +
+                tr("npm установит последнюю версию opencode.")
+            )
+            confirm_text = tr("Обновить")
+            icon = "↑"
+            icon_color = (245, 180, 60)
+        else:
+            title = tr("Установка opencode CLI")
+            message = tr(
+                "Будет установлен opencode CLI (npm-пакет opencode-ai).\n\n"
+                "Откроется окно PowerShell, где пойдёт установка."
+            )
+            confirm_text = tr("Установить")
+            icon = "↓"
+            icon_color = (52, 211, 153)
+
+        dlg = ConfirmActionDialog(
+            title=title,
+            message=message,
+            detail="npm i -g opencode-ai",
+            confirm_text=confirm_text,
+            icon=icon,
+            icon_color=icon_color,
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            self.log("Операция отменена", "info")
+            return
+
+        if not self._is_npm_installed():
+            self._show_npm_missing_dialog()
+            return
+
+        self.log("Запускаю установку opencode через npm...", "info")
+
+        progress_dlg = ClaudeInstallProgressDialog(
+            is_update=installed,
+            old_version=local,
+            new_version=latest if latest and latest[0].isdigit() else "",
+            parent=self,
+            product="opencode CLI",
+        )
+
+        try:
+            def _ps(s):
+                # экранируем одинарные кавычки для PowerShell-литералов
+                return tr(s).replace("'", "''")
+            popen = subprocess.Popen([
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                f"Write-Host '{_ps('Установка opencode через npm...')}' -ForegroundColor Cyan; "
+                "npm i -g opencode-ai; "
+                f"Write-Host '`n{_ps('Готово. Проверь команду: opencode -v')}' -ForegroundColor Green; "
+                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+            ])
+        except Exception as e:
+            self.log(f"Не удалось запустить установку: {e}", "error")
+            progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
+            progress_dlg.exec()
+            return
+
+        try:
+            self.oc_install_finished.disconnect(self._on_oc_install_done)
+        except Exception:
+            pass
+        self.oc_install_finished.connect(self._on_oc_install_done, Qt.QueuedConnection)
+        self._oc_install_dlg = progress_dlg
+
+        def _wait_and_emit():
+            try:
+                popen.wait()
+            except Exception:
+                pass
+            new_local = ""
+            try:
+                time.sleep(0.5)
+                new_local = self._get_installed_oc_version()
+            except Exception:
+                new_local = ""
+            try:
+                installed_now = self._is_oc_installed()
+            except Exception:
+                installed_now = False
+            ctx = {
+                "is_update": installed,
+                "is_uninstall": False,
+                "old_local": local,
+                "new_local": new_local,
+                "installed_now": installed_now,
+            }
+            try:
+                self.oc_install_finished.emit(ctx)
+            except Exception:
+                pass
+
+        threading.Thread(target=_wait_and_emit, daemon=True).start()
+        progress_dlg.exec()
+
+    def _uninstall_oc_cli(self):
+        """Удаляет opencode CLI через npm uninstall с подтверждением."""
+        if not self._is_oc_installed():
+            self.log("opencode не установлен", "info")
+            return
+
+        local = getattr(self, "_oc_local_version", "") or self._get_installed_oc_version()
+        version_part = f" v{local}" if local else ""
+
+        dlg = ConfirmActionDialog(
+            title=tr("Удалить opencode CLI"),
+            message=(
+                tr("Будет удалён глобальный npm-пакет opencode") + version_part + ". " +
+                tr("Настройки в %USERPROFILE%\\.local\\share\\opencode не пострадают — удалится только бинарь.")
+            ),
+            detail="npm uninstall -g opencode-ai",
+            confirm_text=tr("Удалить"),
+            icon="×",
+            icon_color=(235, 90, 90),
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            self.log("Удаление отменено", "info")
+            return
+
+        if not self._is_npm_installed():
+            self._show_npm_missing_dialog()
+            return
+
+        self.log("Запускаю удаление opencode через npm...", "info")
+
+        progress_dlg = ClaudeInstallProgressDialog(
+            is_uninstall=True,
+            old_version=local,
+            parent=self,
+            product="opencode CLI",
+        )
+
+        try:
+            def _ps(s):
+                # экранируем одинарные кавычки для PowerShell-литералов
+                return tr(s).replace("'", "''")
+            popen = subprocess.Popen([
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                f"Write-Host '{_ps('Удаление opencode (npm)...')}' -ForegroundColor Cyan; "
+                "npm uninstall -g opencode-ai; "
+                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\opencode-ai'; "
+                "if (Test-Path $npmDir) { "
+                f"  Write-Host '`n{_ps('NPM не смог удалить — удаляю папку напрямую...')}' -ForegroundColor Yellow; "
+                "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
+                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'opencode*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
+                "if (Test-Path $npmDir) { "
+                f"  Write-Host '`n{_ps('Не всё удалось удалить — попробуй позже.')}' -ForegroundColor Red; "
+                "} else { "
+                f"  Write-Host '`n{_ps('opencode полностью удалён.')}' -ForegroundColor Green; "
+                "} "
+                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+            ])
+        except Exception as e:
+            self.log(f"Не удалось запустить удаление: {e}", "error")
+            progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
+            progress_dlg.exec()
+            return
+
+        try:
+            self.oc_install_finished.disconnect(self._on_oc_install_done)
+        except Exception:
+            pass
+        self.oc_install_finished.connect(self._on_oc_install_done, Qt.QueuedConnection)
+        self._oc_install_dlg = progress_dlg
+
+        def _wait_and_emit():
+            try:
+                popen.wait()
+            except Exception:
+                pass
+            try:
+                time.sleep(0.5)
+                installed_now = self._is_oc_installed()
+            except Exception:
+                installed_now = True
+            new_local = ""
+            try:
+                new_local = self._get_installed_oc_version()
+            except Exception:
+                pass
+            ctx = {
+                "is_update": False,
+                "is_uninstall": True,
+                "old_local": local,
+                "new_local": new_local,
+                "installed_now": installed_now,
+            }
+            try:
+                self.oc_install_finished.emit(ctx)
+            except Exception:
+                pass
+
+        threading.Thread(target=_wait_and_emit, daemon=True).start()
+        progress_dlg.exec()
+
+    def _on_oc_install_done(self, ctx):
+        """PowerShell закрылся — обновляем окно прогресса и состояние кнопок."""
+        ctx = ctx or {}
+        new_local = ctx.get("new_local", "")
+        installed_now = ctx.get("installed_now", False)
+        is_uninstall = ctx.get("is_uninstall", False)
+        is_update = ctx.get("is_update", False)
+        old_local = ctx.get("old_local", "")
+
+        progress_dlg = getattr(self, "_oc_install_dlg", None)
+        dlg_alive = False
+        if progress_dlg is not None:
+            try:
+                from shiboken6 import isValid
+                dlg_alive = isValid(progress_dlg)
+            except Exception:
+                dlg_alive = True
+
+        self._oc_local_version = new_local
+
+        if dlg_alive:
+            try:
+                if is_uninstall:
+                    if not installed_now:
+                        progress_dlg.mark_finished()
+                        self.log(tr("opencode удалён"), "success")
+                    else:
+                        progress_dlg.mark_cancelled()
+                elif is_update:
+                    if new_local and new_local != old_local:
+                        progress_dlg.mark_finished(actual_version=new_local)
+                        self.log(tr("opencode обновлён до v{v}").format(v=new_local), "success")
+                    else:
+                        progress_dlg.mark_cancelled()
+                else:
+                    if installed_now and new_local:
+                        progress_dlg.mark_finished(actual_version=new_local)
+                        self.log(tr("opencode установлен (v{v})").format(v=new_local), "success")
+                    else:
+                        progress_dlg.mark_cancelled()
+            except Exception:
+                pass
+
+        try:
+            self._update_oc_button_state()
+        except Exception:
+            pass
+        # После установки/удаления/обновления opencode каталог моделей мог
+        # измениться (добавились/убрались встроенные модели) — принудительно
+        # перезагружаем его, сбрасывая кэш времени.
+        try:
+            self._oc_free_fetched_at = 0
+            self._oc_refresh_models()
+        except Exception:
+            pass
+        try:
+            threading.Thread(target=self._check_oc_version, daemon=True).start()
+        except Exception:
+            pass
+
+    def _oc_fetch_models(self, base_url, api_key):
+        """Спрашивает эндпоинт и возвращает список ID моделей.
+
+        Разные шлюзы обслуживают /models на разных путях:
+        - обычный OpenAI-совместимый: {base}/v1/models (базовый URL часто
+          уже содержит /v1) или {base}/models;
+        - некоторые прокси (cc.freemodel.dev) отдают каталог только на
+          /v1/models, а на /models отвечают 403.
+
+        Поэтому пробуем варианты по очереди и берём первый, который
+        реально вернул список. Возвращаем пустой список при любой ошибке."""
+        tries = []
+        base = base_url.rstrip("/")
+        if base.endswith("/v1"):
+            tries = [base + "/models", base.rstrip("1") + "models"]
+        else:
+            tries = [base + "/v1/models", base + "/models"]
+        for url in tries:
+            headers = {"User-Agent": "ClaudeManager"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            try:
+                req = Request(url, headers=headers)
+                with urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode("utf-8", "replace"))
+                ids = []
+                for m in (data.get("data") or []):
+                    mid = (m or {}).get("id")
+                    if mid:
+                        ids.append(str(mid))
+                if ids:
+                    return ids
+            except Exception:
+                continue
+        return []
+
+    def _write_oc_provider_config(self, base_url, api_key, model_ids):
+        """Пишет конфиг opencode-провайдера (OpenAI-совместимого) рядом с
+        настройками. Возвращает путь к файлу.
+
+        Без обвязки через OPENAI_BASE_URL — иначе opencode считает эндпоинт
+        провайдером «openai» и показывает каталог gpt-моделей, которые
+        кастомный эндпоинт не обслуживает. Здесь явно перечисляем модели,
+        которые эндпоинт отдаёт на /v1/models. Дефолтная модель и effort
+        НЕ задаются — выбор модели у пользователя убран, opencode сам решает,
+        какую модель использовать."""
+        host = ""
+        if base_url:
+            host = re.sub(r"[^A-Za-z0-9]", "", (re.sub(r"^https?://", "", base_url).split("/")[0] or "")) or "custom"
+        config = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+        if base_url:
+            provider = {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": base_url,
+                "options": {"baseURL": base_url.rstrip("/")},
+                "models": {},
+            }
+            if api_key:
+                provider["options"]["apiKey"] = api_key
+            for mid in model_ids:
+                provider["models"][mid] = {"name": mid}
+            config["provider"][host] = provider
+        try:
+            os.makedirs(SETTINGS_DIR, exist_ok=True)
+            path = os.path.join(SETTINGS_DIR, "opencode-provider.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            return path
+        except Exception:
+            return None
+
+    def launch_opencode(self):
+        """Запускает opencode CLI (вкладка Custom URL).
+
+        opencode запускается в дефолтном режиме: без ключа, модели и endpoint.
+        Если пользователь задал свой ключ / Base URL — они прокидываются так:
+        - anthropic-совместимый эндпоинт (в URL есть anthropic/claude) —
+          env-переменные ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY;
+        - любой другой OpenAI-совместимый эндпоинт (gorouter.app и т.п.) —
+          генерируется конфиг-провайдер со списком моделей с /v1/models и
+          передаётся через OPENCODE_CONFIG."""
+        working_dir = self.settings.get("working_directory", "")
+        if not working_dir:
+            working_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Выберите рабочую директорию для opencode",
+                os.path.expanduser("~"),
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+            )
+            if not working_dir:
+                self.log("Запуск отменен - директория не выбрана", "warning")
+                return
+
+        if not self._is_oc_installed():
+            self.log(tr("opencode не установлен"), "error")
+            return
+
+        self.log(tr("Запуск opencode..."), "info")
+        env = os.environ.copy()
+
+        # Активный API-ключ вкладки Custom URL (отдельное хранилище oc_keys).
+        try:
+            sync_oc_api_key(self.settings)
+        except Exception:
+            pass
+        api_key = self.settings.get("oc_api_key", "")
+
+        base_url = (self.settings.get("oc_base_url", "") or "").strip()
+        anthropic_style = bool(base_url) and ("anthropic" in base_url.lower() or "claude" in base_url.lower())
+
+        if base_url and anthropic_style:
+            env["ANTHROPIC_BASE_URL"] = base_url
+            if api_key:
+                env["ANTHROPIC_API_KEY"] = api_key
+        elif base_url:
+            model_ids = self._oc_fetch_models(base_url, api_key)
+            cfg_path = self._write_oc_provider_config(base_url, api_key, model_ids)
+            if cfg_path:
+                env["OPENCODE_CONFIG"] = cfg_path
+                env.pop("OPENAI_BASE_URL", None)
+                env.pop("OPENAI_API_KEY", None)
+                if model_ids:
+                    self.log(f"Обнаружено моделей на {base_url}: {len(model_ids)}", "info")
+                else:
+                    self.log("Не удалось получить /models — модели будут пустые", "warning")
+            else:
+                self.log("Не удалось записать конфиг провайдера", "warning")
+        elif api_key:
+            env["ANTHROPIC_API_KEY"] = api_key
+
+        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+        launch_cmd = "opencode"
+        # Модель НЕ форсируем: открывается модель, которую пользователь выбрал
+        # внутри opencode в прошлой сессии. Приложение не перезаписывает её.
+        try:
+            subprocess.Popen(
+                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {launch_cmd}"],
+                env=env
+            )
+            self.log(tr("opencode запущен"), "success")
+        except Exception as e:
+            self.log(f"Ошибка запуска: {e}", "error")
+
     def _statusline_bash_command(self):
         """Возвращает строку для поля statusLine.command в settings.json.
         Принципиально та же конвенция, что и в стандартном клиенте Claude Code:
@@ -15809,7 +17113,7 @@ class ClaudeManager(QMainWindow):
         Зачем: это единственное место, где автообновление Claude Code реально
         выключается (см. логику Fix Claude). Без него CLI рано или поздно уедет
         с зафиксированной версии на свежую, где Anthropic блокирует сторонние
-        Base URL — и FreeModel / Omniroute / прокси перестанут работать.
+        Base URL — и FreeModel / opencode / прокси перестанут работать.
         Делаем это автоматически при старте, чтобы пользователю не приходилось
         каждый раз нажимать Fix Claude вручную."""
         try:
@@ -15906,7 +17210,7 @@ class ClaudeManager(QMainWindow):
                 message=tr(
                     "Приложение перестанет обновлять Claude Code и зафиксируется "
                     f"на проверенной версии v{REQUIRED_CLAUDE_VERSION} — именно на ней "
-                    "гарантированно работают FreeModel / Omniroute / любые сторонние "
+                    "гарантированно работают FreeModel / opencode / любые сторонние "
                     "Base URL и API-ключи.\n\n"
                     "Встроенный автообновлятор Claude Code будет выключен "
                     "(DISABLE_UPDATES=1, autoUpdates=false), чтобы CLI сам не "
@@ -16177,7 +17481,7 @@ class ClaudeManager(QMainWindow):
                     # себе в окружение. DISABLE_UPDATES жёстче DISABLE_AUTOUPDATER —
                     # он блокирует и фоновую самообновлялку, и ручной `claude update`;
                     # нам именно это и нужно, так как версии после 2.1.180 ломают
-                    # FreeModel / Omniroute / прокси (Anthropic блокирует сторонние
+                    # FreeModel / opencode / прокси (Anthropic блокирует сторонние
                     # Base URL). settings.json CLI не перезаписывает при запуске,
                     # поэтому флаг прилипает надёжно.
                     settings_ok = True
@@ -17371,42 +18675,6 @@ class ClaudeManager(QMainWindow):
             self._update_install_button_state()
         except Exception:
             pass
-
-    def add_model(self):
-        """Добавляет новую модель"""
-        dialog = AddModelDialog(self)
-        if dialog.exec() == QDialog.Accepted:
-            model_name = dialog.get_model_name()
-            if model_name and model_name not in self.settings["models"]:
-                self.settings["models"].append(model_name)
-                # Обновляем модель данных
-                self.model_list_model.update_models(self.settings["models"])
-                save_settings(self.settings)
-                self.log(f"Добавлена модель: {model_name}", "success")
-
-    def remove_model(self):
-        """Удаляет выбранную модель"""
-        current_model = self.model_combo.currentText()
-
-        # Запрещаем удаление базовой модели
-        if current_model == "kr/claude-sonnet-4.5":
-            self.log("Нельзя удалить базовую модель", "warning")
-            return
-
-        if len(self.settings["models"]) > 1:
-            # Показываем кастомный диалог подтверждения
-            dialog = ConfirmDeleteDialog(current_model, self)
-            result = dialog.exec()
-
-            if result == QDialog.Accepted:
-                current_index = self.model_combo.currentIndex()
-                self.settings["models"].remove(current_model)
-                # Обновляем модель данных
-                self.model_list_model.update_models(self.settings["models"])
-                save_settings(self.settings)
-                self.log(f"Удалена модель: {current_model}", "success")
-        else:
-            self.log("Нельзя удалить последнюю модель", "warning")
 
     def _check_for_updates(self):
         """Проверяет наличие обновлений в фоновом режиме"""
