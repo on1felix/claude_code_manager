@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.8.5"  # Для обновлений
+APP_VERSION = "5.8.7"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -792,10 +792,36 @@ TRANSLATIONS = {
     "Не задан": "Not set",
     "Необязательно — откройте «Управление»": "Optional — open \"Manage\"",
     "Custom URL (opencode)": "Custom URL (opencode)",
+    "Доступные модели": "Available Models",
+    "Модели провайдера": "Provider Models",
+    "Модели не найдены": "No models found",
+    "Как изменить модель": "How to change the model",
+    "В терминале opencode введите /model и выберите нужную вам модель из списка.\n\nСписок ниже обновляется автоматически при каждом открытии этого окна — если моделей добавили или убрали, здесь это отразится само.": "In the opencode terminal type /model and pick the model you need from the list.\n\nThe list below refreshes automatically every time you open this window — if models were added or removed, it will be reflected here on its own.",
+    "Какие модели доступны": "What models are available",
+    "Модели:": "Models:",
+    "моделей": "models",
+    "бесплатных": "free",
+    "{total} моделей": "{total} models",
+    "{total} моделей · {free} бесплатных": "{total} models · {free} free",
+    "Не удалось получить модели для Custom URL": "Failed to fetch models for Custom URL",
     "Управление провайдерами": "Manage providers",
     "Провайдеры opencode": "opencode providers",
     "Провайдеры из конфига и auth.json. Удаление убирает и креду, и определение.": "Providers from config and auth.json. Deleting removes both the credential and the definition.",
     "Провайдеров не найдено": "No providers found",
+    "Подключённые провайдеры": "Connected providers",
+    "Доступные провайдеры": "Available providers",
+    "Подключить": "Connect",
+    "Поиск провайдера": "Search provider",
+    "Название провайдера": "Provider name",
+    "Редактировать провайдера": "Edit provider",
+    "подключён": "connected",
+    "Нет совпадений": "No matches",
+    "Каталог провайдеров загружается…": "Loading provider catalog…",
+    "Каталог провайдеров недоступен": "Provider catalog unavailable",
+    "Все провайдеры каталога уже подключены": "All catalog providers are already connected",
+    "Подключение провайдера": "Connect provider",
+    "Ключ сохранится в auth.json — как при opencode auth login.": "The key is saved to auth.json — same as `opencode auth login`.",
+    "Сверху — подключённые провайдеры, ниже — доступные из каталога opencode. Клик по доступному подключает его по API-ключу. Список обновляется при открытии окна.": "Connected providers on top, available ones from the opencode catalog below. Click an available provider to connect it with an API key. The list refreshes when the window opens.",
     "Без Base URL и кредов": "No Base URL or credentials",
     "Вы уверены, что хотите удалить провайдера? Будет удалена и креда (auth.json), и определение из конфига.": "Are you sure you want to delete this provider? Both the credential (auth.json) and the config definition will be removed.",
     # ── главное окно: подписи статусов
@@ -1049,7 +1075,7 @@ TRANSLATIONS = {
     # ── console banner
     "Приложение запущено": "Application started",
     "Автор:": "Author:",
-    "Для работы с Base URL (freemodel и др.):": "To work with Base URL (freemodel etc.):",
+    "Для работы с Anthropic (freemodel и др.):": "To work with Anthropic (freemodel etc.):",
     "Если впервые — запустите Claude Code и введите /logout.":
         "On first run — launch Claude Code and type /logout.",
     "Это нужно сделать только один раз. Даже если вы":
@@ -2220,6 +2246,79 @@ class StyledButton(QPushButton):
             }}
         """)
 
+class OcSpinner(QWidget):
+    """Вращающийся спиннер-загрузка. Рисуется через QPainter поверх кнопки,
+    поэтому не влияет на размеры/раскладку родителя. Цвет сероватый."""
+
+    def __init__(self, parent=None, size=18):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._rotate)
+        self._timer.start(50)
+
+    def _rotate(self):
+        self._angle = (self._angle + 30) % 360
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2.0, h / 2.0
+        r = min(w, h) / 2.0 - 2.0
+        p.setPen(Qt.NoPen)
+        # Траектория-дуга «догоняет» себя: хвост гаснет позади головы.
+        for i in range(8):
+            phase = (i / 8.0) * 360
+            a = self._angle - phase
+            alpha = 25 + int(225 * ((i / 8.0) ** 2))
+            pen = QPen(QColor(190, 190, 195, alpha), 2.4, Qt.SolidLine, Qt.RoundCap)
+            p.setPen(pen)
+            p.drawArc(QRectF(cx - r, cy - r, r * 2, r * 2), int(a * 16), int(38 * 16))
+        p.end()
+
+
+class OcModelInfoButton(StyledButton):
+    """Кнопка «Какие модели доступны» со встроенным спиннером загрузки.
+
+    Пока идёт обновление списка моделей эндпоинта кнопка некликабельна и
+    затемнена (стиль :disabled), а слева крутится серый спиннер. Спиннер — это
+    отдельный виджет поверх кнопки с абсолютной позицией: на размеры кнопки
+    он не влияет. Позиция пересчитывается при изменении размера и показе,
+    чтобы спиннер никогда не выходил за границы кнопки."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self._spinner = OcSpinner(self)
+        self._spinner.hide()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._place_spinner()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_spinner()
+
+    def _place_spinner(self):
+        if self._spinner is None:
+            return
+        # Всегда центрируем по вертикали и прижимаем к левому краю с отступом —
+        # независимо от текущего размера кнопки (не даём вылезти за границы).
+        self._spinner.move(12, (self.height() - self._spinner.height()) // 2)
+        self._spinner.raise_()
+
+    def set_loading(self, loading):
+        self.setEnabled(not loading)
+        if loading:
+            self._place_spinner()
+            self._spinner.show()
+        else:
+            self._spinner.hide()
+
 # ============================================================
 # КНОПКА С ЗЕЛЕНЫМ ЭФФЕКТОМ (ДЛЯ ЗАПУСКА)
 # ============================================================
@@ -2447,6 +2546,126 @@ class RedButton(QPushButton):
     def _update_style(self):
         base_r, base_g, base_b = 60, 60, 65
         hover_r, hover_g, hover_b = 200, 60, 60
+
+        r = int(base_r + (hover_r - base_r) * self._hover_progress)
+        g = int(base_g + (hover_g - base_g) * self._hover_progress)
+        b = int(base_b + (hover_b - base_b) * self._hover_progress)
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(40, 40, 45, 200);
+                color: rgb(200, 200, 200);
+                border: 2px solid rgb({r}, {g}, {b});
+                border-radius: 6px;
+                padding: 8px;
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(30, 30, 35, 200);
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(30, 30, 35, 150);
+                color: rgb(100, 100, 100);
+                border: 2px solid rgb(40, 40, 45);
+            }}
+        """)
+
+class YellowButton(QPushButton):
+    """Как RedButton, но с жёлтым hover — для кнопок «Обновить»."""
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.setMinimumHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover_progress = 0.0
+        self._hover_timer = QTimer()
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+        self._is_hovered = False
+        self.setMouseTracking(True)
+        self._update_style()
+        self.ensurePolished()
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        if self._is_hovered and self.isEnabled():
+            if self._hover_progress < 1.0:
+                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._update_style()
+        else:
+            if self._hover_progress > 0.0:
+                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._update_style()
+
+    def _update_style(self):
+        base_r, base_g, base_b = 60, 60, 65
+        hover_r, hover_g, hover_b = 245, 180, 60
+
+        r = int(base_r + (hover_r - base_r) * self._hover_progress)
+        g = int(base_g + (hover_g - base_g) * self._hover_progress)
+        b = int(base_b + (hover_b - base_b) * self._hover_progress)
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(40, 40, 45, 200);
+                color: rgb(200, 200, 200);
+                border: 2px solid rgb({r}, {g}, {b});
+                border-radius: 6px;
+                padding: 8px;
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(30, 30, 35, 200);
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(30, 30, 35, 150);
+                color: rgb(100, 100, 100);
+                border: 2px solid rgb(40, 40, 45);
+            }}
+        """)
+
+class OrangeButton(QPushButton):
+    """Как RedButton, но с оранжевым hover — для кнопок «Откатить»."""
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.setMinimumHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover_progress = 0.0
+        self._hover_timer = QTimer()
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+        self._is_hovered = False
+        self.setMouseTracking(True)
+        self._update_style()
+        self.ensurePolished()
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        if self._is_hovered and self.isEnabled():
+            if self._hover_progress < 1.0:
+                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._update_style()
+        else:
+            if self._hover_progress > 0.0:
+                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._update_style()
+
+    def _update_style(self):
+        base_r, base_g, base_b = 60, 60, 65
+        hover_r, hover_g, hover_b = 235, 150, 90
 
         r = int(base_r + (hover_r - base_r) * self._hover_progress)
         g = int(base_g + (hover_g - base_g) * self._hover_progress)
@@ -3303,7 +3522,7 @@ class AddModelDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        btn_cancel = RedButton(tr("Отмена"))
+        btn_cancel = GreenButton(tr("Отмена"))
         btn_cancel.setMinimumHeight(40)
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
@@ -3425,12 +3644,12 @@ class ConfirmDeleteDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        btn_no = GreenButton("Отмена")
+        btn_no = GreenButton(tr("Отмена"))
         btn_no.setMinimumHeight(40)
         btn_no.clicked.connect(self.reject)
         btn_layout.addWidget(btn_no)
 
-        btn_yes = RedButton("Да, удалить")
+        btn_yes = RedButton(tr("Да, удалить"))
         btn_yes.setMinimumHeight(40)
         btn_yes.clicked.connect(self.accept)
         btn_layout.addWidget(btn_yes)
@@ -4043,12 +4262,23 @@ class ConfirmActionDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
-        self.confirm_btn = GreenButton(confirm_text)
+        # Действие: «Обновить» — жёлтое, «Откатить» — оранжевое,
+        # «Удалить» — красное, остальное (Продолжить/Установить/Подтвердить
+        # и т.п.) — зелёное. Отмена всегда зелёная.
+        ctext = (confirm_text or "")
+        if "обнов" in ctext.lower():
+            self.confirm_btn = YellowButton(confirm_text)
+        elif "откат" in ctext.lower():
+            self.confirm_btn = OrangeButton(confirm_text)
+        elif "удал" in ctext.lower():
+            self.confirm_btn = RedButton(confirm_text)
+        else:
+            self.confirm_btn = GreenButton(confirm_text)
         self.confirm_btn.setMinimumHeight(40)
         self.confirm_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.confirm_btn)
@@ -6353,6 +6583,382 @@ class OptionSlider(QWidget):
         p.end()
 
 
+_OC_MODEL_PALETTE = [
+    (220, 120, 150), (120, 190, 240), (160, 220, 130), (250, 200, 110),
+    (180, 150, 250), (120, 220, 200), (250, 150, 110), (150, 200, 250),
+    (230, 180, 120), (170, 220, 160), (220, 160, 200), (140, 190, 230),
+    (240, 190, 90),  (160, 210, 150), (210, 140, 180), (130, 200, 220),
+]
+
+
+def _oc_model_color(name):
+    """Стабильный цвет для модели по имени (для карточек каталога)."""
+    h = 0
+    for ch in name:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return _OC_MODEL_PALETTE[h % len(_OC_MODEL_PALETTE)]
+
+
+def _oc_short_label(name):
+    return name.replace("-contributor", "").replace("-free", "")
+
+
+class _OcInfoRow(QWidget):
+    """Строка-карточка с моделью в информационном окне: цветной бейдж с
+    первой буквой, имя модели подсвечено её цветом, внизу полное имя обычным
+    текстом. При наведении подсвечивается только рамка и слегка — цветное имя."""
+
+    def __init__(self, model_name, color, parent=None):
+        super().__init__(parent)
+        self._name = model_name
+        self._color = color
+        self._hover = 0.0
+        self._hover_target = 0.0
+        self._text_k = -1
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+        self.setMinimumHeight(52)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 6, 12, 6)
+        lay.setSpacing(12)
+
+        badge = QLabel((model_name[0] if model_name else "?").upper())
+        badge.setFixedSize(34, 34)
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        badge.setAttribute(Qt.WA_TranslucentBackground)
+        badge.setStyleSheet(
+            "color: rgb(%d,%d,%d); background: transparent; border: none;" % color
+        )
+        lay.addWidget(badge)
+
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        name_lbl = QLabel(_oc_short_label(model_name))
+        name_lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        name_lbl.setAttribute(Qt.WA_TranslucentBackground)
+        name_lbl.setStyleSheet(
+            "color: rgb(%d,%d,%d); background: transparent; border: none;" % color
+        )
+        self._name_lbl = name_lbl
+        col.addWidget(name_lbl)
+        sub_lbl = QLabel(model_name)
+        sub_lbl.setFont(QFont("Segoe UI", 9))
+        sub_lbl.setAttribute(Qt.WA_TranslucentBackground)
+        sub_lbl.setStyleSheet("color: rgb(135, 135, 145); background: transparent; border: none;")
+        col.addWidget(sub_lbl)
+        lay.addLayout(col, 1)
+
+    @property
+    def model_name(self):
+        return self._name
+
+    def _tick(self):
+        d = self._hover_target - self._hover
+        if abs(d) > 0.003:
+            self._hover += d * 0.3
+            self.update()
+        r, g, b = self._color
+        k = int(self._hover * 55)
+        if k != self._text_k:
+            self._text_k = k
+            if k:
+                self._name_lbl.setStyleSheet(
+                    "color: rgb(%d,%d,%d); background: transparent; border: none;"
+                    % (min(255, r + k), min(255, g + k), min(255, b + k))
+                )
+            else:
+                self._name_lbl.setStyleSheet(
+                    "color: rgb(%d,%d,%d); background: transparent; border: none;"
+                    % (r, g, b)
+                )
+
+    def enterEvent(self, event):
+        self._hover_target = 1.0
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_target = 0.0
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r, g, b = self._color
+        # Фон не подсвечивается — только рамка (нарастает при наведении).
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(r, g, b, 70 + int(120 * self._hover)), 1.2))
+        p.drawRoundedRect(QRectF(1.0, 1.0, w - 2.0, h - 2.0), 10, 10)
+        p.end()
+
+        # Прозрачный фон у дочерних виджетов, чтобы канва была видна.
+        for child in self.findChildren(QLabel):
+            child.setAttribute(Qt.WA_TranslucentBackground, True)
+
+
+class OcModelDialog(QDialog):
+    """Информационное окно для вкладки Custom URL (opencode).
+
+    Показывает, какие модели доступны:
+    - секция «Для вашего провайдера доступны модели» — модели эндпоинта
+      ({base_url}/models), названия подсвечены цветом;
+    - секция «UNLIMIT MODELS» — бесплатные модели opencode;
+    - внизу блок-инструкция: как сменить модель (через /model в opencode) и
+      что список обновляется автоматически при каждом открытии.
+
+    Чисто информационное: выбора моделей и effort'а нет. Кастомный тёмный
+    фон, контент в прокручиваемой области (при большом списке окно
+    расширяется и скроллится, а не убегает за экран)."""
+
+    MAX_W = 680
+    MAX_H = 660
+    MIN_W = 380
+
+    def __init__(self, endpoint_models, free_models, reasoning_map, provider_name="", parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setModal(True)
+        self._endpoint = list(endpoint_models or [])
+        self._free = [m for m in (free_models or []) if m not in self._endpoint]
+        self._provider_name = provider_name
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 14)
+
+        container = DottedFrame()
+        container.setObjectName("ocModelDialogContainer")
+        container.setStyleSheet("""
+            QFrame#ocModelDialogContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        outer.addWidget(container)
+
+        shadow = QGraphicsDropShadowEffect(container)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 6)
+        container.setGraphicsEffect(shadow)
+
+        inner = QVBoxLayout(container)
+        inner.setContentsMargins(18, 12, 18, 16)
+        inner.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addSpacing(22)
+        head.addStretch()
+        title = QLabel(tr("Доступные модели"))
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setStyleSheet("color: rgb(225, 225, 235); background: transparent; border: none;")
+        title.setTextFormat(Qt.PlainText)
+        title.setAlignment(Qt.AlignCenter)
+        head.addWidget(title)
+        head.addStretch()
+        self.close_btn = _CloseButton(parent=container)
+        self.close_btn.setFixedSize(24, 24)
+        self.close_btn.clicked.connect(self.close)
+        head.addWidget(self.close_btn)
+        inner.addLayout(head)
+
+        self._cards_host = QWidget()
+        self._cards_host.setStyleSheet("background: transparent; border: none;")
+        self._cards_layout = QVBoxLayout(self._cards_host)
+        self._cards_layout.setContentsMargins(0, 0, 4, 0)
+        self._cards_layout.setSpacing(6)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setWidget(self._cards_host)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setObjectName("ocModelScroll")
+        self._scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: none; }
+            QScrollArea > QWidget > QWidget { background: transparent; }
+            QScrollBar:vertical {
+                width: 4px;
+                background: transparent;
+                border-radius: 2px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(140, 140, 145, 160);
+                border-radius: 2px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:vertical:hover { background: rgba(170, 170, 175, 200); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+        inner.addWidget(self._scroll, 1)
+
+        self._build_sections()
+        self._build_instruction()
+
+        # Авто-подстройка размера: растёт под контент, но ограничен максимумами
+        # (при множестве моделей дальше работает скролл).
+        self.setMaximumWidth(self.MAX_W)
+        self.setMaximumHeight(self.MAX_H)
+        self.setMinimumWidth(self.MIN_W)
+        self._scroll.setMaximumHeight(self.MAX_H - 170)
+        self.adjustSize()
+
+        self.setWindowOpacity(0.0)
+        self._fade_in = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_in.setDuration(220)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        self._closing = False
+
+    def _add_section_header(self, text, margin=False):
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        lbl.setStyleSheet(
+            "color: rgb(170, 170, 182); background: transparent; border: none;"
+            + ("margin-top: 10px;" if margin else "")
+        )
+        lbl.setTextFormat(Qt.PlainText)
+        self._cards_layout.addWidget(lbl)
+
+    def _add_row(self, name, color):
+        row = _OcInfoRow(name, _oc_model_color(name))
+        self._cards_layout.addWidget(row)
+
+    def update_models(self, endpoint_models, free_models, provider_name=""):
+        """Перестраивает карточки моделей, когда фоновый loader принёс свежие
+        данные (установка/удаление/обновление opencode и т.п.). Старые рядки
+        удаляются, затем секции строятся заново."""
+        self._endpoint = list(endpoint_models or [])
+        self._free = [m for m in (free_models or []) if m not in self._endpoint]
+        self._provider_name = provider_name or ""
+        while self._cards_layout.count():
+            item = self._cards_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._build_sections()
+        self._build_instruction()
+        self.adjustSize()
+
+    def _add_provider_name(self):
+        """Имя провайдера под заголовком секции — обычным цветом."""
+        if not self._provider_name:
+            return
+        lbl = QLabel(self._provider_name)
+        lbl.setFont(QFont("Segoe UI", 9))
+        lbl.setStyleSheet("color: rgb(120, 120, 132); background: transparent; border: none;")
+        lbl.setTextFormat(Qt.PlainText)
+        self._cards_layout.addWidget(lbl)
+
+    def _build_sections(self):
+        combined = self._endpoint + self._free
+        if self._endpoint:
+            self._add_section_header(tr("Модели провайдера"), margin=True)
+            self._add_provider_name()
+            for m in self._endpoint:
+                self._add_row(m, _oc_model_color(m))
+        if self._free:
+            self._add_section_header("UNLIMIT MODELS", margin=self._endpoint is not None)
+            for m in self._free:
+                self._add_row(m, _oc_model_color(m))
+        if not combined:
+            lbl = QLabel(tr("Модели не найдены"))
+            lbl.setStyleSheet("color: rgb(120, 120, 130); background: transparent; border: none;")
+            lbl.setAlignment(Qt.AlignCenter)
+            self._cards_layout.addWidget(lbl)
+        self._cards_layout.addSpacing(6)
+
+    def _build_instruction(self):
+        """Блок-инструкция внизу: как сменить модель и что список авто-обновляется."""
+        frame = QFrame()
+        frame.setObjectName("ocInfoTip")
+        frame.setStyleSheet(
+            "QFrame#ocInfoTip { background-color: rgba(30, 30, 36, 200); "
+            "border: 1px solid rgb(60, 60, 68); border-radius: 10px; }"
+        )
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(5)
+
+        tip_lbl = QLabel(tr("Как изменить модель"))
+        tip_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        tip_lbl.setTextFormat(Qt.PlainText)
+        tip_lbl.setStyleSheet("color: rgb(225, 225, 235); background: transparent; border: none;")
+        lay.addWidget(tip_lbl)
+
+        text = QLabel(
+            tr("В терминале opencode введите /model и выберите нужную вам модель "
+               "из списка.\n\n"
+               "Список ниже обновляется автоматически при каждом открытии этого "
+               "окна — если моделей добавили или убрали, здесь это отразится "
+               "само.")
+        )
+        text.setWordWrap(True)
+        text.setFont(QFont("Segoe UI", 10))
+        text.setStyleSheet("color: rgb(180, 180, 192); background: transparent; border: none;")
+        lay.addWidget(text)
+        self._cards_layout.addWidget(frame)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, "_fade_in"):
+            self._fade_in.start()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+
+class _OcModelsLoader(QThread):
+    """Фоновая загрузка моделей вкладки Custom URL без блокировки UI:
+    HTTP {base_url}/models (список ID) + opencode models --verbose
+    (capabilities.reasoning для эндпоинта и для бесплатных моделей opencode).
+    Методы owner не трогают GUI, поэтому их вызов из потока безопасен."""
+
+    loaded = Signal(list, dict, list, dict)  # endpoint_ids, endpoint_reasoning, free_ids, free_reasoning
+
+    def __init__(self, owner, base_url, api_key, provider):
+        super().__init__()
+        self._owner = owner
+        self._base_url = base_url
+        self._api_key = api_key
+        self._provider = provider
+
+    def run(self):
+        model_ids = []
+        reasoning = {}
+        if self._base_url:
+            try:
+                model_ids = self._owner._oc_fetch_models(self._base_url, self._api_key)
+            except Exception:
+                model_ids = []
+            if model_ids:
+                try:
+                    cfg_path = self._owner._write_oc_provider_config(
+                        self._base_url, self._api_key, list(model_ids)
+                    )
+                    reasoning = self._owner._oc_fetch_capabilities(self._provider, cfg_path)
+                except Exception:
+                    reasoning = {}
+        free_ids, free_reasoning = [], {}
+        try:
+            free_ids, free_reasoning = self._owner._oc_fetch_free_catalog()
+        except Exception:
+            pass
+        self.loaded.emit(list(model_ids), reasoning, list(free_ids), free_reasoning)
+
+
 class OpenAIModelDialog(QDialog):
     """Окно выбора модели и reasoning effort для Codex CLI (вкладка OpenAI).
     Структура и стиль полностью повторяют ModelDialog: два ползунка + описания."""
@@ -7882,7 +8488,7 @@ class KeyLimitTypeDialog(QDialog):
 
         cancel_row = QHBoxLayout()
         cancel_row.addStretch()
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(38)
         self.cancel_btn.setMinimumWidth(140)
         self.cancel_btn.clicked.connect(self.reject)
@@ -8186,7 +8792,7 @@ class KeyLimitDurationDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self.cancel_btn)
@@ -8648,7 +9254,7 @@ class FreemodelResetTimeDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self.cancel_btn)
@@ -9047,7 +9653,7 @@ class KeyEditDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.setAutoDefault(False)
         self.cancel_btn.setDefault(False)
@@ -10190,13 +10796,267 @@ def _backup_file(path):
         pass
 
 
-class OpencodeProvidersDialog(QDialog):
-    """Показывает все провайдеры opencode (определения из ~/.config/opencode
-    и креды из ~/.local/share/opencode/auth.json) и позволяет их удалять.
+class _OcClickFrame(QFrame):
+    """QFrame с сигналом clicked: клик левой кнопкой внутри — подключение."""
 
-    Удаление затрагивает оба источника: креду из auth.json, определения из
-    opencode.json/.jsonc (сам блок + упоминание в disabled_providers /
-    enabled_providers)."""
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
+class _OcCatalogLoader(QThread):
+    """Фоновая загрузка глобального каталога провайдеров opencode
+    (~/.cache/opencode/models.json — кэш каталога models.dev). Если файла
+    ещё нет — один раз вызывает `opencode models`, чтобы opencode его
+    создал. Наверх летит облегчённый словарь:
+    {provider_id: {name, npm, env, models_count}}."""
+
+    loaded = Signal(dict)
+
+    def __init__(self, owner):
+        super().__init__()
+        self._owner = owner
+        self._path = (
+            getattr(owner, "catalog_path", None)
+            or os.path.join(
+                os.path.expanduser("~"), ".cache", "opencode", "models.json"
+            )
+        )
+
+    def run(self):
+        path = self._path
+        if not os.path.exists(path):
+            try:
+                exe = shutil.which("opencode")
+                if exe:
+                    subprocess.run(
+                        ["cmd", "/c", exe, "models"],
+                        capture_output=True, timeout=90,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+            except Exception:
+                pass
+        slim = {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for pid, meta in data.items():
+                if not isinstance(meta, dict):
+                    continue
+                models = meta.get("models")
+                slim[str(pid)] = {
+                    "name": str(meta.get("name") or pid),
+                    "npm": str(meta.get("npm") or ""),
+                    "env": list(meta.get("env") or []),
+                    "models_count": len(models) if isinstance(models, dict) else 0,
+                    "models": dict(models) if isinstance(models, dict) else {},
+                }
+        except Exception:
+            slim = {}
+        self.loaded.emit(slim)
+
+
+class OcApiKeyDialog(QDialog):
+    """Ввод имени и API-ключа при подключении/редактировании провайдера
+    opencode: сверху название (можно своё — под ним провайдер и подключится),
+    ниже ключ с глазиком. «ОК» применяет, «Отмена» закрывает без изменений."""
+
+    def __init__(self, provider_id, provider_name, parent=None,
+                 title=None, ok_text=None, initial_name="", initial_key=""):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("ocApiKeyContainer")
+        container.setStyleSheet("""
+            QFrame#ocApiKeyContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(14)
+
+        icon_label = QLabel("🔑")
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("""
+            QLabel {
+                color: rgb(52, 211, 153);
+                font-size: 24px;
+                background: rgba(52, 211, 153, 0.12);
+                border: 2px solid rgba(52, 211, 153, 0.4);
+                border-radius: 25px;
+                min-width: 50px;
+                max-width: 50px;
+                min-height: 50px;
+                max-height: 50px;
+            }
+        """)
+        icon_row = QHBoxLayout()
+        icon_row.addStretch()
+        icon_row.addWidget(icon_label)
+        icon_row.addStretch()
+        layout.addLayout(icon_row)
+
+        title = QLabel(title if title else tr("Подключение провайдера"))
+        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #DDDDDD; background: transparent; border: none;")
+        layout.addWidget(title)
+
+        name_label = QLabel(provider_id)
+        name_label.setFont(QFont("Consolas", 10))
+        name_label.setAlignment(Qt.AlignCenter)
+        name_label.setStyleSheet("""
+            QLabel {
+                color: #E0E0E0;
+                background: rgba(100, 100, 105, 0.1);
+                border: 1.5px solid rgba(100, 100, 105, 0.4);
+                border-radius: 8px;
+                padding: 8px 12px;
+            }
+        """)
+        layout.addWidget(name_label)
+
+        hint = QLabel(tr("Ключ сохранится в auth.json — как при opencode auth login."))
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setStyleSheet("color: rgb(130, 130, 135); background: transparent; border: none;")
+        layout.addWidget(hint)
+
+        # Название провайдера — над полем ключа. Можно оставить как есть
+        # или вписать своё: тогда подключится отдельный экземпляр под этим
+        # именем (одного провайдера можно подключить несколько раз).
+        self.name_edit = QLineEdit()
+        self.name_edit.setText(initial_name if initial_name else provider_name)
+        self.name_edit.setPlaceholderText(tr("Название провайдера"))
+        self.name_edit.setFont(QFont("Segoe UI", 9))
+        self.name_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        self.name_edit.returnPressed.connect(lambda: self.key_edit.setFocus())
+        layout.addWidget(self.name_edit)
+
+        key_row = QHBoxLayout()
+        key_row.setSpacing(8)
+        self.key_edit = QLineEdit()
+        self.key_edit.setPlaceholderText(tr("API ключ:"))
+        self.key_edit.setEchoMode(QLineEdit.Password)
+        if initial_key:
+            self.key_edit.setText(initial_key)
+        self.key_edit.setFont(QFont("Segoe UI", 9))
+        self.key_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        key_row.addWidget(self.key_edit, 1)
+        self.eye_btn = EyeToggleButton()
+        self.eye_btn.clicked.connect(self._toggle_key)
+        key_row.addWidget(self.eye_btn)
+        layout.addLayout(key_row)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+        cancel_btn = GreenButton(tr("Отмена"))
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        ok_btn = GreenButton(ok_text if ok_text else "ОК")
+        ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(ok_btn)
+        layout.addLayout(btn_layout)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setMinimumWidth(460)
+        self.adjustSize()
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        self.name_edit.setFocus()
+        self.key_edit.returnPressed.connect(self.accept)
+
+    def _toggle_key(self):
+        if self.key_edit.echoMode() == QLineEdit.Password:
+            self.key_edit.setEchoMode(QLineEdit.Normal)
+            self.eye_btn.setRevealed(True)
+        else:
+            self.key_edit.setEchoMode(QLineEdit.Password)
+            self.eye_btn.setRevealed(False)
+
+    def key_value(self):
+        return self.key_edit.text()
+
+    def name_value(self):
+        return self.name_edit.text()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(OcApiKeyDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(OcApiKeyDialog, self).reject())
+        fade.start()
+        self._fade_out = fade
+
+
+class OpencodeProvidersDialog(QDialog):
+    """Управление провайдерами opencode.
+
+    Сверху — секция «Подключённые провайдеры»: определения из ~/.config/opencode
+    (opencode.json/.jsonc) и креды из ~/.local/share/opencode/auth.json,
+    у каждой строки есть «Удалить» (убирает и креду, и определение).
+
+    Ниже — секция «Доступные провайдеры»: глобальный каталог opencode
+    (~/.cache/opencode/models.json). Клик по строке открывает ввод API-ключа;
+    после «ОК» провайдер реально подключается — креда пишется в auth.json
+    (тот же механизм, что у `opencode auth login`).
+
+    Списки обновляются при каждом открытии окна: _OcCatalogLoader грузит
+    каталог в фоне, так что если opencode сам добавил/убрал провайдеров —
+    при следующем открытии это сразу видно."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -10214,6 +11074,16 @@ class OpencodeProvidersDialog(QDialog):
             if os.path.exists(cand):
                 self.config_path = cand
                 break
+        self.catalog_path = os.path.join(
+            os.path.expanduser("~"), ".cache", "opencode", "models.json"
+        )
+
+        # Фоновая загрузка каталога провайдеров (список «доступные»).
+        # Окно пересоздаётся при каждом открытии, поэтому каталог и списки
+        # обновляются при каждом открытии окна.
+        self._catalog = {}
+        self._catalog_loader = None
+        self._start_catalog_load()
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -10250,12 +11120,31 @@ class OpencodeProvidersDialog(QDialog):
         title_row.addWidget(_close)
         layout.addLayout(title_row)
 
-        info = QLabel(tr("Провайдеры из конфига и auth.json. Удаление убирает и креду, и определение."))
+        info = QLabel(tr("Сверху — подключённые провайдеры, ниже — доступные из каталога opencode. Клик по доступному подключает его по API-ключу. Список обновляется при открытии окна."))
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
         info.setWordWrap(True)
         info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
         layout.addWidget(info)
+
+        # Живой поиск по обоим спискам: фильтрует мгновенно при вводе,
+        # без кнопки «Поиск». Ищет и среди подключённых, и среди доступных.
+        self._search = ""
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText(tr("Поиск провайдера"))
+        self.search_edit.setFont(QFont("Segoe UI", 9))
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        self.search_edit.textChanged.connect(self._on_search)
+        layout.addWidget(self.search_edit)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -10348,22 +11237,259 @@ class OpencodeProvidersDialog(QDialog):
             records[rec["id"]] = rec
         return records
 
+    def _start_catalog_load(self):
+        """Фоновая загрузка каталога доступных провайдеров."""
+        if self._catalog_loader is not None:
+            try:
+                if self._catalog_loader.isRunning():
+                    return
+            except Exception:
+                pass
+        self._catalog_loader = _OcCatalogLoader(self)
+        self._catalog_loader.loaded.connect(self._on_catalog_loaded)
+        self._catalog_loader.start()
+
+    def _on_catalog_loaded(self, slim):
+        self._catalog = slim or {}
+        self.refresh()
+
+    def _section_header(self, text, color):
+        lbl = QLabel(text)
+        lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        lbl.setStyleSheet(
+            "color: rgb(%d, %d, %d); background: transparent; border: none;"
+            % color
+        )
+        return lbl
+
+    def _matches(self, pid, *texts):
+        """Живой фильтр: подстрока (без регистра) в id или в любом тексте."""
+        q = (self._search or "").lower().strip()
+        if not q:
+            return True
+        hay = " ".join([str(pid)] + [t for t in texts if t]).lower()
+        return q in hay
+
     def refresh(self):
         while self.list_layout.count():
             item = self.list_layout.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+            elif item.layout() is not None:
+                while item.layout().count():
+                    sub = item.layout().takeAt(0)
+                    if sub.widget() is not None:
+                        sub.widget().deleteLater()
+
         records = self._collect()
-        if not records:
+        connected_ids = set(records.keys())
+        catalog_ids = set(self._catalog.keys())
+        avail = [pid for pid in sorted(catalog_ids - connected_ids)
+                 if self._matches(pid, self._catalog[pid].get("name"))]
+        conn = [pid for pid in sorted(records.keys())
+                if self._matches(pid, records[pid].get("name"),
+                                 records[pid].get("base_url"))]
+
+        if not records and not self._catalog:
+            # Каталог ещё грузится либо недоступен.
             self.empty_label.show()
             self.scroll.hide()
             return
         self.empty_label.hide()
         self.scroll.show()
-        for pid in sorted(records.keys()):
-            self.list_layout.addWidget(self._build_row(records[pid]))
+
+        no_match = bool(self._search.strip()) and not conn and not avail
+
+        # ── Секция 1: подключённые провайдеры ──
+        if not no_match:
+            self.list_layout.addWidget(
+                self._section_header(tr("Подключённые провайдеры"), (52, 211, 153))
+            )
+        if conn:
+            for pid in conn:
+                self.list_layout.addWidget(self._build_row(records[pid]))
+        elif not no_match:
+            none_lbl = QLabel(
+                tr("Нет совпадений") if self._search.strip()
+                else tr("Провайдеров не найдено")
+            )
+            none_lbl.setFont(QFont("Segoe UI", 9))
+            none_lbl.setAlignment(Qt.AlignCenter)
+            none_lbl.setStyleSheet(
+                "color: rgb(120, 120, 120); background: transparent; border: none;"
+            )
+            self.list_layout.addWidget(none_lbl)
+
+        if not no_match:
+            self.list_layout.addSpacing(14)
+
+        # ── Секция 2: доступные провайдеры (клик = подключить) ──
+        if not no_match:
+            self.list_layout.addWidget(
+                self._section_header(tr("Доступные провайдеры"), (120, 160, 235))
+            )
+        if not self._catalog:
+            if not no_match:
+                load_lbl = QLabel(tr("Каталог провайдеров загружается…"))
+                load_lbl.setFont(QFont("Segoe UI", 9))
+                load_lbl.setAlignment(Qt.AlignCenter)
+                load_lbl.setStyleSheet(
+                    "color: rgb(120, 120, 120); background: transparent; border: none;"
+                )
+                self.list_layout.addWidget(load_lbl)
+        elif not avail:
+            if not no_match:
+                all_lbl = QLabel(
+                    tr("Нет совпадений") if self._search.strip()
+                    else tr("Все провайдеры каталога уже подключены")
+                )
+                all_lbl.setFont(QFont("Segoe UI", 9))
+                all_lbl.setAlignment(Qt.AlignCenter)
+                all_lbl.setStyleSheet(
+                    "color: rgb(120, 120, 120); background: transparent; border: none;"
+                )
+                self.list_layout.addWidget(all_lbl)
+        else:
+            for pid in avail:
+                self.list_layout.addWidget(
+                    self._build_available_row(pid, self._catalog[pid])
+                )
+        if no_match:
+            nm_lbl = QLabel(tr("Нет совпадений"))
+            nm_lbl.setFont(QFont("Segoe UI", 10))
+            nm_lbl.setAlignment(Qt.AlignCenter)
+            nm_lbl.setStyleSheet(
+                "color: rgb(120, 120, 120); background: transparent; border: none;"
+            )
+            self.list_layout.addWidget(nm_lbl)
         self.list_layout.addStretch(1)
+
+    def _on_search(self, text):
+        self._search = text
+        self.refresh()
+
+    def _build_available_row(self, pid, meta):
+        """Строка каталога: клик по ней — диалог ввода API-ключа."""
+        row = _OcClickFrame()
+        row.setCursor(Qt.PointingHandCursor)
+        row.setToolTip(tr("Подключить"))
+        row.setStyleSheet("""
+            QFrame { background-color: rgba(30, 30, 35, 130);
+                     border: 1px solid rgb(55, 55, 60); border-radius: 8px; }
+            QFrame:hover { background-color: rgba(40, 40, 48, 200);
+                           border: 1px solid rgb(120, 160, 235); }
+        """)
+        row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(10, 7, 10, 7)
+        lay.setSpacing(8)
+
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        name = QLabel(meta.get("name") or pid)
+        name.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        name.setStyleSheet("color: rgb(190, 190, 195); background: transparent; border: none;")
+        name.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        col.addWidget(name)
+
+        sub_bits = [pid]
+        if meta.get("models_count"):
+            sub_bits.append(tr("Модели:") + " %d" % meta["models_count"])
+        sub = QLabel("  ·  ".join(sub_bits))
+        sub.setFont(QFont("Segoe UI", 9))
+        sub.setStyleSheet("color: rgb(135, 135, 145); background: transparent; border: none;")
+        sub.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        col.addWidget(sub)
+        lay.addLayout(col, 1)
+
+        add_lbl = QLabel("+")
+        add_lbl.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        add_lbl.setStyleSheet("color: rgb(120, 160, 235); background: transparent; border: none;")
+        lay.addWidget(add_lbl)
+
+        row.clicked.connect(lambda p=pid: self._connect_provider(p))
+        return row
+
+    def _connect_provider(self, pid):
+        """Клик по доступному провайдеру: ввод названия и API-ключа →
+        реальное подключение. Название пишется в конфиг (blocks «name»),
+        ключ — в auth.json (как при opencode auth login). Один и тот же
+        провайдер каталога может быть подключён под разными id: к id
+        добавляется суффикс 2, 3, ... если id уже занят."""
+        meta = self._catalog.get(pid, {})
+        dlg = OcApiKeyDialog(pid, meta.get("name") or pid, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        key = dlg.key_value().strip()
+        if not key:
+            return
+        name = dlg.name_value().strip() or (meta.get("name") or pid)
+        new_id = pid
+        existing = self._collect()
+        n = 2
+        while new_id in existing:
+            new_id = "%s%d" % (pid, n)
+            n += 1
+        self._apply_provider_credentials(new_id, name, key, pid)
+        self.refresh()
+
+    def _apply_provider_credentials(self, new_id, name, key, catalog_pid=None):
+        """Реально подключает провайдера: креда в auth.json (формат как у
+        `opencode auth login`), имя — в конфиг. catalog_pid — оригинальный id
+        каталога, new_id — под каким id подключаем (с суффиксом 2, 3, ...
+        если исходный занят). Существующий конфиг-блок не затирается:
+        обновляется только name (+ models для экземпляров с новым id)."""
+        try:
+            os.makedirs(os.path.dirname(self.auth_path), exist_ok=True)
+            auth = {}
+            if os.path.exists(self.auth_path):
+                auth = _load_jsonc(self.auth_path)
+                if not isinstance(auth, dict):
+                    auth = {}
+            _backup_file(self.auth_path)
+            auth[new_id] = {"type": "api", "key": key}
+            _save_json(self.auth_path, auth)
+        except Exception:
+            return
+
+        meta = self._catalog.get(catalog_pid or new_id, {})
+        if self.config_path:
+            try:
+                cfg = _load_jsonc(self.config_path)
+                if not isinstance(cfg, dict):
+                    cfg = {}
+                providers = cfg.get("provider")
+                if not isinstance(providers, dict):
+                    providers = {}
+                    cfg["provider"] = providers
+                block = providers.get(new_id)
+                if not isinstance(block, dict):
+                    block = {}
+                    providers[new_id] = block
+                # Имя обновляем всегда; npm не трогаем, если уже задан
+                # (у кастомных роутеров там свой пакет).
+                block["name"] = name
+                if "npm" not in block:
+                    npm = meta.get("npm") or "@ai-sdk/openai-compatible"
+                    block["npm"] = npm
+                # Экземпляр под новым id не совпадает с каталогом — opencode
+                # не найдёт для него модели сам, переносим из каталога.
+                if new_id != (catalog_pid or new_id):
+                    models = meta.get("models") or {}
+                    if models:
+                        block["models"] = {mid: dict(m) for mid, m in models.items()}
+                disabled = cfg.get("disabled_providers")
+                if isinstance(disabled, list):
+                    for pid_like in (new_id, catalog_pid):
+                        if pid_like in disabled:
+                            disabled.remove(pid_like)
+                _backup_file(self.config_path)
+                _save_json(self.config_path, cfg)
+            except Exception:
+                pass
+
+        self.refresh()
 
     def _build_row(self, rec):
         row = QFrame()
@@ -10406,12 +11532,46 @@ class OpencodeProvidersDialog(QDialog):
         labels.addWidget(sub_lbl)
         lay.addLayout(labels, 1)
 
+        edit_btn = StyledButton(tr("Изменить"))
+        edit_btn.setMinimumHeight(30)
+        edit_btn.setFixedWidth(96)
+        edit_btn.clicked.connect(lambda _, p=rec["id"]: self._edit_provider(p))
+        lay.addWidget(edit_btn)
+
         del_btn = RedButton(tr("Удалить"))
         del_btn.setMinimumHeight(30)
         del_btn.setMaximumWidth(90)
         del_btn.clicked.connect(lambda _, p=rec["id"]: self._delete_provider(p))
         lay.addWidget(del_btn)
         return row
+
+    def _edit_provider(self, pid):
+        """«Изменить»: поменять название и API-ключ подключённого провайдера.
+        Ключ обновляется в auth.json, название — в конфиге (если провайдер
+        там определён)."""
+        rec = self._collect().get(pid, {})
+        current_key = ""
+        try:
+            auth = _load_jsonc(self.auth_path)
+            cred = auth.get(pid) or {}
+            current_key = cred.get("key") or ""
+        except Exception:
+            pass
+        dlg = OcApiKeyDialog(
+            pid, rec.get("name") or pid, self,
+            title=tr("Редактировать провайдера"),
+            ok_text=tr("Сохранить"),
+            initial_name=rec.get("name") or "",
+            initial_key=current_key,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        key = dlg.key_value().strip()
+        name = dlg.name_value().strip() or (rec.get("name") or pid)
+        if not key:
+            return
+        self._apply_provider_credentials(pid, name, key, pid)
+        self.refresh()
 
     def _delete_provider(self, pid):
         confirm = ConfirmDeleteDialog(
@@ -10635,7 +11795,7 @@ class CustomTokenDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
 
-        btn_cancel = RedButton(tr("Отмена"))
+        btn_cancel = GreenButton(tr("Отмена"))
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
@@ -10821,7 +11981,7 @@ class UpdateAppDialog(QDialog):
         bl = QHBoxLayout()
         bl.setSpacing(12)
 
-        self.cancel_btn = RedButton(tr("Отмена"))
+        self.cancel_btn = GreenButton(tr("Отмена"))
         self.cancel_btn.clicked.connect(self.reject_animated)
 
         self.update_btn = GreenButton(tr("Обновить"))
@@ -12925,8 +14085,31 @@ class ClaudeManager(QMainWindow):
         oc_key_row.addWidget(self.oc_btn_manage_keys)
         oc_layout.addLayout(oc_key_row)
 
-        # Модель для opencode не задаётся: opencode работает в дефолтном режиме
-        # и без ключа, и без модели, и без endpoint.
+        # Информация о доступных моделях (эндпоинт + бесплатные opencode).
+        # Выбора моделей и effort'а нет: клик по кнопке открывает
+        # информационное OcModelDialog (списки цветом + инструкция). Список
+        # моделей подтягивается заранее ({base_url}/models + capabilities
+        # из opencode) в фоне и авто-обновляется при открытии окна.
+        oc_model_row = QHBoxLayout()
+        oc_model_lbl = QLabel(tr("Модели:"))
+        oc_model_lbl.setFont(QFont("Segoe UI", 10))
+        oc_model_lbl.setStyleSheet(
+            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+        )
+        self._track_tr(oc_model_lbl, "Модели:")
+        oc_model_lbl.setFixedWidth(90)
+        oc_model_row.addWidget(oc_model_lbl)
+
+        self.oc_info_btn = OcModelInfoButton(tr("Какие модели доступны"))
+        self.oc_info_btn.setObjectName("ocInfoButton")
+        self.oc_info_btn.setMinimumHeight(0)
+        self.oc_info_btn.setFixedHeight(36)
+        self.oc_info_btn.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.oc_info_btn.clicked.connect(self._oc_show_info)
+        oc_model_row.addWidget(self.oc_info_btn, 1)
+
+        oc_layout.addLayout(oc_model_row)
 
         # Менеджер провайдеров opencode (определения из конфига + креды auth.json)
         oc_prov_row = QHBoxLayout()
@@ -13663,7 +14846,7 @@ class ClaudeManager(QMainWindow):
         self.log(tr("opencode CLI: установка/обновление через npm"), "info")
         self.log(tr("opencode можно запускать без ключа и модели"), "info")
         self.log("─" * 50, "info")
-        self.log(tr("Для работы с Base URL (freemodel и др.):"), "warning")
+        self.log(tr("Для работы с Anthropic (freemodel и др.):"), "warning")
         self.log(tr("Если впервые — запустите Claude Code и введите /logout."), "warning")
         self.log(tr("Это нужно сделать только один раз. Даже если вы"), "warning")
         self.log(tr("поменяете API ключ — повторно вводить /logout не нужно."), "warning")
@@ -13875,6 +15058,11 @@ class ClaudeManager(QMainWindow):
                 self.btn_configure_custom.setText(tr("Настроить"))
             if hasattr(self, "dir_input"):
                 self.dir_input.setPlaceholderText(tr("Не выбрана (будет запрошена)"))
+            if hasattr(self, "oc_info_btn"):
+                try:
+                    self._oc_refresh_info_button_text()
+                except Exception:
+                    pass
             # Дочерние QLabel-ы по тексту через _tr_widgets (если был трекинг)
             self._retranslate_generic()
             # Прогоняем sync-методы, которые сами уже используют tr() —
@@ -14361,16 +15549,21 @@ class ClaudeManager(QMainWindow):
             save_settings(self.settings)
             if prev != new_url:
                 self.log(f"Base URL {new_url} сохранён", "success")
+            # Сменился эндпоинт — перезагружаем список моделей и capabilities.
+            self._oc_refresh_models()
 
     def _oc_manage_urls(self):
-        """Окно управления Base URL для вкладки Custom URL (отдельный список)."""
+        """Окно управления Base URL для вкладки Custom URL (отдельный список).
+        Здесь НЕТ «зарезервированных» дефолтов (в отличие от вкладки Claude
+        Code): любой введённый адрес, включая cc.freemodel.dev, можно удалить."""
         urls = self.settings.get("oc_base_urls", [])
         current = self.oc_url_combo.currentText()
         if current == tr("Не задан"):
             current = ""
-        dialog = BaseUrlManagerDialog(urls, current, self)
+        dialog = BaseUrlManagerDialog(urls, current, self, default_urls=())
         if dialog.exec() == QDialog.Accepted:
             new_urls, new_current = dialog.get_result()
+            changed = new_current != current
             self.settings["oc_base_urls"] = list(new_urls)
             self.settings["oc_base_url"] = new_current
             save_settings(self.settings)
@@ -14383,6 +15576,10 @@ class ClaudeManager(QMainWindow):
             if new_current in new_urls:
                 self.oc_url_combo.setCurrentText(new_current)
             self.oc_url_combo.blockSignals(False)
+            # Сигнал currentTextChanged тут заблокирован, поэтому обновляем
+            # список моделей вручную, если эндпоинт реально сменился.
+            if changed:
+                self._oc_refresh_models()
 
     def _oc_manage_providers(self):
         """Окно управления провайдерами opencode: определения из конфига +
@@ -14398,6 +15595,232 @@ class ClaudeManager(QMainWindow):
         else:
             self.oc_key_input.setEchoMode(QLineEdit.Password)
             self.oc_btn_toggle_key.setRevealed(False)
+
+    def _oc_refresh_models(self):
+        """Фоновая подгрузка моделей + capabilities.reasoning для текущего
+        Base URL вкладки Custom URL. Без эндпоинта тоже запускается — чтобы
+        наполнить список бесплатными моделями opencode (глобальный каталог)."""
+        if not hasattr(self, "_oc_model_ids"):
+            self._oc_model_ids = []
+            self._oc_free_ids = []
+            self._oc_reasoning = {}
+            self._oc_info_dlg = None
+            self._oc_provider_name = ""
+        if getattr(self, "_oc_models_loader", None) is not None:
+            try:
+                if self._oc_models_loader.isRunning():
+                    return
+            except Exception:
+                pass
+        base_url = (self.settings.get("oc_base_url", "") or "").strip()
+        host = re.sub(r"[^A-Za-z0-9]", "", (re.sub(r"^https?://", "", base_url).split("/")[0] or "")) or "custom"
+        self._oc_provider_name = host
+        api_key = self.settings.get("oc_api_key", "")
+        self._oc_loader_url = base_url
+        self._oc_models_loader = _OcModelsLoader(self, base_url, api_key, host)
+        self._oc_models_loader.loaded.connect(self._on_oc_models_loaded)
+        self._oc_models_loader.start()
+        # Загрузка началась — блокируем кнопку моделей и показываем спиннер.
+        self._oc_set_info_loading(True)
+
+    def _on_oc_models_loaded(self, model_ids, reasoning_map, free_ids, free_reasoning):
+        """Модели и capabilities пришли из фонового потока."""
+        if getattr(self, "_oc_loader_url", None) != (self.settings.get("oc_base_url", "") or "").strip():
+            return
+        self._oc_free_fetched_at = time.time()
+        self._oc_apply_models(model_ids, reasoning_map, free_ids, free_reasoning)
+        self._oc_set_info_loading(False)
+
+    def _oc_set_info_loading(self, loading):
+        """Включает/выключает состояние загрузки на кнопке «Какие модели
+        доступны»: блокирует её и запускает/гасит спиннер."""
+        btn = getattr(self, "oc_info_btn", None)
+        if btn is not None and hasattr(btn, "set_loading"):
+            btn.set_loading(bool(loading))
+
+    def _oc_apply_models(self, model_ids, reasoning_map, free_ids, free_reasoning):
+        """Сохраняет списки моделей эндпоинта и бесплатных opencode для
+        информационного окна. Модель пользователь не выбирает — окно только
+        показывает доступное."""
+        self._oc_model_ids = list(model_ids)
+        self._oc_free_ids = list(free_ids)
+        reasoning = dict(reasoning_map)
+        reasoning.update(free_reasoning)
+        self._oc_reasoning = reasoning
+        if hasattr(self, "oc_info_btn"):
+            self._oc_refresh_info_button_text()
+        # Свежие данные пришли асинхронно — перестраиваем уже открытое
+        # инфо-окно, чтобы пользователь сразу видел актуальный список
+        # (установка/удаление/обновление opencode и т.п.).
+        self._oc_refresh_open_info()
+        if not self._oc_model_ids and not self._oc_free_ids and self.settings.get("oc_base_url"):
+            self.log("Не удалось получить модели для Custom URL", "warning")
+
+    def _oc_refresh_open_info(self):
+        """Перестраивает открытое информационное окно моделей свежими данными
+        (если оно живо). Пустой кэш НЕ трогает — окно просто остаётся как есть."""
+        dlg = getattr(self, "_oc_info_dlg", None)
+        if dlg is None:
+            return
+        try:
+            from shiboken6 import isValid
+            if not isValid(dlg):
+                self._oc_info_dlg = None
+                return
+        except Exception:
+            pass
+        try:
+            dlg.update_models(list(self._oc_model_ids or []),
+                              list(self._oc_free_ids or []),
+                              getattr(self, "_oc_provider_name", "") or "")
+        except Exception:
+            pass
+
+    def _oc_refresh_info_button_text(self):
+        """Пересчитывает текст кнопки «Какие модели доступны» по текущему языку:
+        «N models · M free» / «N моделей · M бесплатных». Прямое ветвление по
+        LANG.lang — перевод не зависит от словаря TRANSLATIONS."""
+        btn = getattr(self, "oc_info_btn", None)
+        if btn is None or not getattr(self, "_oc_model_ids", None) and \
+                not getattr(self, "_oc_free_ids", None):
+            if btn is not None:
+                btn.setText(tr("Какие модели доступны"))
+            return
+        total = len(self._oc_model_ids) + len(self._oc_free_ids)
+        lang_en = LANG is not None and LANG.lang == "en"
+        if self._oc_free_ids:
+            if lang_en:
+                btn.setText(f"{total} models · {len(self._oc_free_ids)} free")
+            else:
+                btn.setText(f"{total} моделей · {len(self._oc_free_ids)} бесплатных")
+        else:
+            if lang_en:
+                btn.setText(f"{total} models")
+            else:
+                btn.setText(f"{total} моделей")
+
+    def _oc_show_info(self):
+        """Открывает информационное окно доступных моделей (клик по кнопке
+        «Какие модели доступны»). Названия моделей подсвечены цветом, текст
+        пояснений обычный; список авто-обновляется при каждом открытии."""
+        self._oc_maybe_refresh_catalog()
+        endpoint = list(getattr(self, "_oc_model_ids", []) or [])
+        free = list(getattr(self, "_oc_free_ids", []) or [])
+        reasoning = dict(getattr(self, "_oc_reasoning", {}) or {})
+        provider_name = getattr(self, "_oc_provider_name", "") or ""
+        dlg = OcModelDialog(endpoint, free, reasoning,
+                            provider_name=provider_name, parent=self)
+        dlg.destroyed.connect(self._on_oc_info_destroyed)
+        self._oc_info_dlg = dlg
+        # Окно строится из кэша мгновенно, а фоновый refresh (если запущен)
+        # дообновит его через _oc_refresh_open_info, как только свежие данные
+        # придут. Чтобы окно всегда было максимально свежим, принудительно
+        # запускаем refresh при каждом открытии (300с-кэш не блокирует).
+        self._oc_refresh_models()
+
+        def _show_and_position():
+            dlg.show()
+            dlg.adjustSize()
+            dw, dh = dlg.width(), dlg.height()
+            try:
+                pg = self.frameGeometry()
+                center = pg.center()
+                dlg.move(center.x() - dw // 2, center.y() - dh // 2)
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _show_and_position)
+
+    def _on_oc_info_destroyed(self):
+        if getattr(self, "_oc_info_dlg", None) is not None:
+            self._oc_info_dlg = None
+
+    def _oc_run_models_cmd(self, provider=None, config_path=None):
+        """Запускает `opencode models --verbose [provider]` и возвращает stdout.
+        Без provider — глобальный каталог всех провайдеров (включая бесплатные
+        opencode-модели). config_path прокидывается через OPENCODE_CONFIG."""
+        exe = shutil.which("opencode")
+        if not exe:
+            return ""
+        env = os.environ.copy()
+        if config_path:
+            env["OPENCODE_CONFIG"] = config_path
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        # npm-шимы на Windows — это .cmd/.ps1; subprocess не может их запустить
+        # напрямую, поэтому через cmd /c.
+        if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+            args = ["cmd", "/c", exe, "models", "--verbose"]
+        else:
+            args = [exe, "models", "--verbose"]
+        if provider:
+            args.append(provider)
+        try:
+            r = subprocess.run(
+                args,
+                capture_output=True, text=True, timeout=40, env=env, creationflags=flags,
+            )
+            return r.stdout or ""
+        except Exception:
+            return ""
+
+    def _parse_verbose_sections(self, out):
+        """Делит вывод `opencode models --verbose` на секции и возвращает список
+        (provider, short_name, reasoning). «Слоёный» текст: каждая модель
+        начинается неотступленной строкой 'provider/name', за которой идёт
+        JSON-объект, и всё подряд (без пустых строк между блоками)."""
+        sections = []
+        current = None
+        for ln in (out or "").splitlines():
+            if not ln[:1].isspace() and "/" in ln and not ln.strip().startswith("{"):
+                current = [ln]
+                sections.append(current)
+            elif current is not None:
+                current.append(ln)
+        parsed = []
+        for sec in sections:
+            provider, _, short = sec[0].partition("/")
+            try:
+                meta = json.loads("\n".join(sec[1:]))
+            except Exception:
+                meta = {}
+            c = meta.get("capabilities") or {}
+            parsed.append((provider, short, bool(c.get("reasoning", False))))
+        return parsed
+
+    def _oc_fetch_capabilities(self, provider, config_path):
+        """Запускает `opencode models --verbose <provider>` и извлекает
+        capabilities.reasoning для каждой модели провайдера."""
+        if not provider:
+            return {}
+        caps = {}
+        for prov, short, reasoning in self._parse_verbose_sections(self._oc_run_models_cmd(provider, config_path)):
+            if prov == provider:
+                caps[short] = reasoning
+        return caps
+
+    def _oc_fetch_free_catalog(self):
+        """Бесплатные модели opencode: `opencode models --verbose` БЕЗ
+        OPENCODE_CONFIG (глобальный каталог). Возвращает (free_ids,
+        free_reasoning) для провайдера 'opencode'."""
+        out = self._oc_run_models_cmd(None, None)
+        free_ids = []
+        free_reasoning = {}
+        for prov, short, reasoning in self._parse_verbose_sections(out):
+            if prov == "opencode":
+                free_ids.append(short)
+                free_reasoning[short] = reasoning
+        return free_ids, free_reasoning
+
+    def _oc_maybe_refresh_catalog(self):
+        """Фоновый refresh каталога моделей, если он давно не обновлялся
+        (>=300 c) — чтобы opencode подхватил добавленные/убранные бесплатные
+        модели. Вызывается при открытии окна выбора модели."""
+        now = time.time()
+        last = getattr(self, "_oc_free_fetched_at", 0)
+        if last and (now - last) < 300:
+            return
+        self._oc_free_fetched_at = now
+        self._oc_refresh_models()
 
     def _oa_model_changed(self, new_model):
         """Сохраняет выбранную модель OpenAI и перекрашивает комбо. Заодно
@@ -14565,18 +15988,19 @@ class ClaudeManager(QMainWindow):
                 "customurl": tr("Запустить opencode"),
             }.get(mode, tr("Запустить Claude Code"))
             self.btn_claude.setText(label)
-            if is_official or is_customurl:
-                self.btn_claude.setEnabled(True)
-            else:
-                has_key = bool(self.settings.get("custom_api_key", ""))
-                self.btn_claude.setEnabled(has_key)
+            # Кнопка запуска всегда кликабельна во всех режимах. Если ключа
+            # нет — сам запуск просто не удастся (эндпоинт откажет), но кнопка
+            # не блокируется.
+            self.btn_claude.setEnabled(True)
 
         # Подгоняем высоту окна (official ниже — без рядов Base URL и ключа;
-        # customurl — с рядами Base URL / ключа, ВЕЗ модели)
+        # customurl — с рядами Base URL / ключа, ВЕЗ модели).
+        # Для customurl зафиксирована текущая комфортная высота окна (783):
+        # вся секция видна без скролла.
         if is_official:
             target_h = 650
         elif is_customurl:
-            target_h = 740
+            target_h = 783
         else:
             target_h = 750
         if hasattr(self, "_height_initialized") and self._height_initialized and self.isVisible():
@@ -14614,6 +16038,11 @@ class ClaudeManager(QMainWindow):
                     and not getattr(self, "_oc_version_checked_once", False)):
                 self._oc_version_checked_once = True
                 threading.Thread(target=self._check_oc_version, daemon=True).start()
+            # Первичная подгрузка моделей (эндпоинт + бесплатные opencode) —
+            # чтобы комбо всегда было наполнено даже без заданного Base URL.
+            if not getattr(self, "_oc_models_loaded_once", False):
+                self._oc_models_loaded_once = True
+                self._oc_refresh_models()
 
     def open_custom_token_dialog(self):
         """Открывает диалог настройки кастомного токена"""
@@ -15770,33 +17199,54 @@ class ClaudeManager(QMainWindow):
             self._update_oc_button_state()
         except Exception:
             pass
+        # После установки/удаления/обновления opencode каталог моделей мог
+        # измениться (добавились/убрались встроенные модели) — принудительно
+        # перезагружаем его, сбрасывая кэш времени.
+        try:
+            self._oc_free_fetched_at = 0
+            self._oc_refresh_models()
+        except Exception:
+            pass
         try:
             threading.Thread(target=self._check_oc_version, daemon=True).start()
         except Exception:
             pass
 
     def _oc_fetch_models(self, base_url, api_key):
-        """Спрашивает {base_url}/models и возвращает список ID моделей.
+        """Спрашивает эндпоинт и возвращает список ID моделей.
 
-        Эндоинты вроде gorouter.app/v1 обслуживают OpenAI-совместимый API и на
-        /v1/models реально отдают свои модели (обычно claude-*). Возвращаем
-        список или пустой список при любой ошибке."""
-        url = base_url.rstrip("/") + "/models"
-        headers = {"User-Agent": "ClaudeManager"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        try:
-            req = Request(url, headers=headers)
-            with urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode("utf-8", "replace"))
-            ids = []
-            for m in (data.get("data") or []):
-                mid = (m or {}).get("id")
-                if mid:
-                    ids.append(str(mid))
-            return ids
-        except Exception:
-            return []
+        Разные шлюзы обслуживают /models на разных путях:
+        - обычный OpenAI-совместимый: {base}/v1/models (базовый URL часто
+          уже содержит /v1) или {base}/models;
+        - некоторые прокси (cc.freemodel.dev) отдают каталог только на
+          /v1/models, а на /models отвечают 403.
+
+        Поэтому пробуем варианты по очереди и берём первый, который
+        реально вернул список. Возвращаем пустой список при любой ошибке."""
+        tries = []
+        base = base_url.rstrip("/")
+        if base.endswith("/v1"):
+            tries = [base + "/models", base.rstrip("1") + "models"]
+        else:
+            tries = [base + "/v1/models", base + "/models"]
+        for url in tries:
+            headers = {"User-Agent": "ClaudeManager"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            try:
+                req = Request(url, headers=headers)
+                with urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode("utf-8", "replace"))
+                ids = []
+                for m in (data.get("data") or []):
+                    mid = (m or {}).get("id")
+                    if mid:
+                        ids.append(str(mid))
+                if ids:
+                    return ids
+            except Exception:
+                continue
+        return []
 
     def _write_oc_provider_config(self, base_url, api_key, model_ids):
         """Пишет конфиг opencode-провайдера (OpenAI-совместимого) рядом с
@@ -15805,17 +17255,25 @@ class ClaudeManager(QMainWindow):
         Без обвязки через OPENAI_BASE_URL — иначе opencode считает эндпоинт
         провайдером «openai» и показывает каталог gpt-моделей, которые
         кастомный эндпоинт не обслуживает. Здесь явно перечисляем модели,
-        которые эндпоинт отдаёт на /v1/models."""
-        host = re.sub(r"[^A-Za-z0-9]", "", (re.sub(r"^https?://", "", base_url).split("/")[0] or "")) or "custom"
-        provider = {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": base_url,
-            "options": {"baseURL": base_url.rstrip("/")},
-            "models": {mid: {"name": mid} for mid in model_ids},
-        }
-        if api_key:
-            provider["options"]["apiKey"] = api_key
-        config = {"$schema": "https://opencode.ai/config.json", "provider": {host: provider}}
+        которые эндпоинт отдаёт на /v1/models. Дефолтная модель и effort
+        НЕ задаются — выбор модели у пользователя убран, opencode сам решает,
+        какую модель использовать."""
+        host = ""
+        if base_url:
+            host = re.sub(r"[^A-Za-z0-9]", "", (re.sub(r"^https?://", "", base_url).split("/")[0] or "")) or "custom"
+        config = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+        if base_url:
+            provider = {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": base_url,
+                "options": {"baseURL": base_url.rstrip("/")},
+                "models": {},
+            }
+            if api_key:
+                provider["options"]["apiKey"] = api_key
+            for mid in model_ids:
+                provider["models"][mid] = {"name": mid}
+            config["provider"][host] = provider
         try:
             os.makedirs(SETTINGS_DIR, exist_ok=True)
             path = os.path.join(SETTINGS_DIR, "opencode-provider.json")
@@ -15834,7 +17292,7 @@ class ClaudeManager(QMainWindow):
           env-переменные ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY;
         - любой другой OpenAI-совместимый эндпоинт (gorouter.app и т.п.) —
           генерируется конфиг-провайдер со списком моделей с /v1/models и
-          передаётся через OPENCODE_CONFIG. Модель НЕ задаётся никогда."""
+          передаётся через OPENCODE_CONFIG."""
         working_dir = self.settings.get("working_directory", "")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
@@ -15885,9 +17343,12 @@ class ClaudeManager(QMainWindow):
             env["ANTHROPIC_API_KEY"] = api_key
 
         ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+        launch_cmd = "opencode"
+        # Модель НЕ форсируем: открывается модель, которую пользователь выбрал
+        # внутри opencode в прошлой сессии. Приложение не перезаписывает её.
         try:
             subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; opencode"],
+                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {launch_cmd}"],
                 env=env
             )
             self.log(tr("opencode запущен"), "success")
