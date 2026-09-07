@@ -14,7 +14,7 @@
 AUTHOR_NAME = "on1felix"
 AUTHOR_DISCORD = "on1felix"
 AUTHOR_GITHUB = "https://github.com/on1felix/claude_code_manager"
-import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil, re, calendar
+import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil, re, calendar, tempfile
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.8.7"  # Для обновлений
+APP_VERSION = "5.8.8"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -1596,6 +1596,72 @@ def get_installed_oc_version():
         return m.group(1) if m else ""
     except Exception:
         return ''
+
+def find_windows_terminal():
+    """Путь к wt.exe (Windows Terminal) или None, если терминал не установлен.
+
+    Windows Terminal входит в состав Windows 11 и часто установлен на
+    Windows 10 (из Store). Его app-execution-alias wt.exe лежит в
+    %LOCALAPPDATA%\\Microsoft\\WindowsApps и обычно находится через PATH."""
+    exe = shutil.which("wt")
+    if exe:
+        return exe
+    local = os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                         "Microsoft", "WindowsApps", "wt.exe")
+    if os.path.isfile(local):
+        return local
+    return None
+
+def spawn_powershell_session(working_dir, ps_body, env=None):
+    """Открывает интерактивное окно PowerShell с ps_body в рабочей директории.
+
+    Движок всегда системный powershell.exe — ровно тот, что запускает поиск
+    в меню «Пуск». Разный вид окна на машинах пользователей задаёт не движок,
+    а хост-терминал Windows: на Win11 с настройками по умолчанию консольные
+    окна рисует Windows Terminal, на Win10 / при выключенной настройке —
+    старый conhost. Чтобы вид не зависел от этих настроек, при наличии
+    wt.exe запускаем окно напрямую через него. Если wt нет — обычный запуск:
+    хост выберет сама Windows (на Win11 это всё равно будет Terminal).
+
+    Нюанс wt: точка с запятой в его командной строке — разделитель команд,
+    поэтому тело -Command через wt передавать нельзя (рвётся на первом ;).
+    Пишем ps_body во временный .ps1 и запускаем -File; рабочий каталог
+    задаём флагом wt -d (cd не нужен)."""
+    wt = find_windows_terminal()
+    if wt:
+        script = os.path.join(
+            tempfile.gettempdir(),
+            "ccm_session_{}_{}.ps1".format(os.getpid(), int(time.time() * 1000))
+        )
+        try:
+            with open(script, 'w', encoding='utf-8-sig') as f:
+                f.write(ps_body)
+        except OSError:
+            # Не смогли записать скрипт — деградируем к обычному запуску.
+            return subprocess.Popen(
+                ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {ps_body}"],
+                env=env
+            )
+        proc = subprocess.Popen(
+            [wt, "-d", working_dir, "powershell", "-NoExit",
+             "-ExecutionPolicy", "Bypass", "-File", script],
+            env=env
+        )
+
+        def _cleanup_script():
+            try:
+                os.remove(script)
+            except OSError:
+                pass
+
+        timer = threading.Timer(60.0, _cleanup_script)
+        timer.daemon = True
+        timer.start()
+        return proc
+    return subprocess.Popen(
+        ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {ps_body}"],
+        env=env
+    )
 
 def check_app_update():
     """Проверяет наличие обновлений приложения через GitHub API"""
@@ -16297,8 +16363,9 @@ class ClaudeManager(QMainWindow):
         ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
 
         try:
-            subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
+            spawn_powershell_session(
+                working_dir,
+                f"{ps_prefix}{cli_cmd}",
                 env=env
             )
             model_id = self._resolve_model_id(self.settings.get("custom_model", ""))
@@ -16357,8 +16424,9 @@ class ClaudeManager(QMainWindow):
         # остальных режимах, Scope Process ничего не меняет глобально.
         ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
         try:
-            subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
+            spawn_powershell_session(
+                working_dir,
+                f"{ps_prefix}{cli_cmd}",
                 env=env
             )
             self.log(
@@ -16439,8 +16507,9 @@ class ClaudeManager(QMainWindow):
         )
         ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
         try:
-            subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
+            spawn_powershell_session(
+                working_dir,
+                f"{ps_prefix}{cli_cmd}",
                 env=env
             )
             self.log(f"Codex CLI запущен ({model}, effort={effort})", "success")
@@ -17347,10 +17416,7 @@ class ClaudeManager(QMainWindow):
         # Модель НЕ форсируем: открывается модель, которую пользователь выбрал
         # внутри opencode в прошлой сессии. Приложение не перезаписывает её.
         try:
-            subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {launch_cmd}"],
-                env=env
-            )
+            spawn_powershell_session(working_dir, f"{ps_prefix}{launch_cmd}", env=env)
             self.log(tr("opencode запущен"), "success")
         except Exception as e:
             self.log(f"Ошибка запуска: {e}", "error")
