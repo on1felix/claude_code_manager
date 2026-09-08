@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.8.8"  # Для обновлений
+APP_VERSION = "5.8.9"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -191,6 +191,78 @@ def ensure_settings_dir():
             os.makedirs(SETTINGS_DIR)
         except:
             pass
+
+
+# ── Постоянные случайные цвета провайдеров opencode ─────────────────
+# При первом появлении провайдера (подключение или первое открытие окна
+# моделей) ему один раз случайным образом назначается яркий цвет (не
+# чёрный/белый/серые) и сохраняется в
+# %APPDATA%/ClaudeManager/provider_colors.json. Цвет живёт, пока провайдер
+# подключён: удалил провайдера → запись стёрта; подключил снова → выпал
+# новый случайный цвет.
+
+PROVIDER_COLORS_FILE = os.path.join(SETTINGS_DIR, "provider_colors.json")
+
+
+def _load_provider_colors():
+    try:
+        with open(PROVIDER_COLORS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_provider_colors(colors):
+    try:
+        ensure_settings_dir()
+        with open(PROVIDER_COLORS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(colors, f, indent=2)
+    except Exception:
+        pass
+
+
+def assign_provider_color(pid):
+    """Возвращает сохранённый цвет провайдера или назначает новый случайный.
+    Только светлые оттенки (на тёмном фоне): тёмные цвета запрещены фильтром
+    по яркости, чёрный/белый/серый исключены конструктивно."""
+    colors = _load_provider_colors()
+    if pid in colors:
+        c = colors[pid]
+        if (isinstance(c, list) and len(c) == 3
+                and all(isinstance(v, int) and 0 <= v <= 255 for v in c)):
+            rgb = tuple(c)
+            # Старые тёмные записи перегенерируем на лету.
+            lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+            if lum >= 150 and max(rgb) - min(rgb) >= 30:
+                return rgb
+    while True:
+        h = random.random()          # случайный тон
+        s = random.uniform(0.55, 0.85)   # насыщенный, но не кислотный
+        l = random.uniform(0.68, 0.80)   # светлый пастельный диапазон
+        # HSL → RGB
+        def _f(n):
+            k = (n + h * 12) % 12
+            a = s * min(l, 1 - l)
+            return int(255 * (l - a * max(-1, min(k - 3, 9 - k, 1))))
+        rgb = (_f(0), _f(8), _f(4))
+        lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+        # запрет тёмных (lum >= 150) и серых (разброс каналов >= 30)
+        if lum >= 150 and max(rgb) - min(rgb) >= 30:
+            break
+    colors[pid] = list(rgb)
+    _save_provider_colors(colors)
+    return rgb
+
+
+def release_provider_color(pid):
+    """Удаляет запись цвета (при удалении провайдера). Следующее подключение
+    того же провайдера получит новый случайный цвет."""
+    colors = _load_provider_colors()
+    if pid in colors:
+        del colors[pid]
+        _save_provider_colors(colors)
+
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -895,6 +967,9 @@ TRANSLATIONS = {
     "флагманский Opus 4.8 — максимум качества": "flagship Opus 4.8 — maximum quality",
     "новый флагман Opus 5 — сильнее 4.8 во всём": "new flagship Opus 5 — stronger than 4.8 all around",
     "экспериментальная Fable 5 — необычные вопросы": "experimental Fable 5 — unusual questions",
+    "для требовательного reasoning и длинных agentic-задач": "for demanding reasoning and long-horizon agentic work",
+    "самая мощная модель — для самой сложной end-to-end работы": "our most capable model, built for the hardest end-to-end work",
+    "новейшая флагманская agentic-модель для кода": "latest frontier agentic coding model",
     # ── EffortDialog: заголовок и подписи уровней
     "Reasoning Effort": "Reasoning Effort",
     "минимум размышлений — быстро и дёшево": "minimal reasoning — fast and cheap",
@@ -1133,28 +1208,6 @@ TRANSLATIONS = {
         "the file ~/.claude/statusline-command.sh has been erased.",
     "Не удалось получить /api/status. Повторим через несколько секунд.":
         "Failed to fetch /api/status. We'll retry in a few seconds.",
-    # ── Fable 5
-    "Fable 5 — Модель высшего класса": "Fable 5 — Top-tier model",
-    "Один запрос при уровне /effort High может потребовать "
-    "до 15% вашего дневного лимита токенов.\n\n"
-    "Fable 5 на среднем уровне /effort (Medium) превосходит "
-    "Opus 4.8 на максимальных настройках (xHigh / Max) — разрыв "
-    "составляет около 5% в пользу Fable 5.\n\n"
-    "По общей мощности Fable 5 превосходит Opus 4.8 примерно "
-    "в 2 раза — но и стоит соответственно.\n\n"
-    "Используйте эту модель только тогда, когда другие уже не "
-    "справляются — она стоит каждого токена, но расходует их "
-    "значительно быстрее.":
-        "A single request at /effort High can burn up to 15% of "
-        "your daily token limit.\n\n"
-        "Fable 5 at /effort Medium beats Opus 4.8 at its maximum "
-        "settings (xHigh / Max) — the gap is about 5% in Fable 5's "
-        "favor.\n\n"
-        "Overall Fable 5 is roughly 2× more powerful than Opus 4.8 — "
-        "and priced accordingly.\n\n"
-        "Use this model only when others no longer keep up — it's "
-        "worth every token, but it spends them much faster.",
-    "Выпущена Anthropic · 09 июня 2026": "Released by Anthropic · June 09, 2026",
     "Продолжить": "Continue",
     # ── Official mode warning
     "Официальный режим — только для подписчиков Anthropic": "Official mode — Anthropic subscribers only",
@@ -2992,9 +3045,12 @@ class PickerCard(QPushButton):
     """Одна карточка-виджет в окне выбора."""
 
     def __init__(self, text, color=None, tooltip=None, is_current=False,
-                 is_disabled=False, parent=None):
+                 is_disabled=False, clickable=True, parent=None):
         super().__init__(text, parent)
-        self.setCursor(Qt.PointingHandCursor)
+        # clickable=False — информационная карточка (окно моделей opencode):
+        # тот же вид, но курсор обычный и клик не подразумевается.
+        if clickable:
+            self.setCursor(Qt.PointingHandCursor)
         self.setFont(QFont("Segoe UI", 10, QFont.Medium))
         self.setMinimumHeight(42)
         self._full_text = text
@@ -3761,163 +3817,6 @@ class ConfirmDeleteDialog(QDialog):
         fade.start()
         self._fade = fade
 
-# ============================================================
-# ПРЕДУПРЕЖДЕНИЕ О МОДЕЛИ FABLE 5
-# ============================================================
-
-class Fable5WarningDialog(QDialog):
-    """Предупреждение о модели Fable 5 — модель высшего класса."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setWindowModality(Qt.ApplicationModal)
-
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
-
-        container = QFrame()
-        container.setObjectName("fable5Container")
-        container.setStyleSheet("""
-            QFrame#fable5Container {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(24, 18, 38, 0.99),
-                    stop:1 rgba(16, 11, 27, 0.99));
-                border: 2px solid rgba(167, 139, 252, 0.6);
-                border-radius: 18px;
-            }
-        """)
-
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(32, 26, 32, 26)
-        layout.setSpacing(12)
-
-        # Иконка — огонь
-        icon_label = QLabel("🔥")
-        icon_label.setFont(QFont("Segoe UI Emoji", 38))
-        icon_label.setStyleSheet("background: transparent; border: none;")
-        icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(icon_label)
-
-        # Главный заголовок
-        title_label = QLabel(tr("Fable 5 — Модель высшего класса"))
-        title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        title_label.setStyleSheet("""
-            QLabel {
-                color: rgb(188, 166, 255);
-                background: transparent;
-                border: none;
-            }
-        """)
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
-
-        # Разделитель
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: rgba(167, 139, 252, 0.3); background: rgba(167, 139, 252, 0.3); border: none; max-height: 1px;")
-        layout.addWidget(sep)
-
-        # Основное описание
-        desc_label = QLabel(tr(
-            "Один запрос при уровне /effort High может потребовать "
-            "до 15% вашего дневного лимита токенов.\n\n"
-            "Fable 5 на среднем уровне /effort (Medium) превосходит "
-            "Opus 4.8 на максимальных настройках (xHigh / Max) — разрыв "
-            "составляет около 5% в пользу Fable 5.\n\n"
-            "По общей мощности Fable 5 превосходит Opus 4.8 примерно "
-            "в 2 раза — но и стоит соответственно.\n\n"
-            "Используйте эту модель только тогда, когда другие уже не "
-            "справляются — она стоит каждого токена, но расходует их "
-            "значительно быстрее."
-        ))
-        desc_label.setFont(QFont("Segoe UI", 10))
-        desc_label.setStyleSheet("""
-            QLabel {
-                color: rgba(214, 208, 232, 0.92);
-                background: transparent;
-                border: none;
-            }
-        """)
-        desc_label.setAlignment(Qt.AlignCenter)
-        desc_label.setWordWrap(True)
-        layout.addWidget(desc_label)
-
-        # Плашка с датой релиза
-        release_label = QLabel(tr("Выпущена Anthropic · 09 июня 2026"))
-        release_label.setFont(QFont("Segoe UI", 9))
-        release_label.setStyleSheet("""
-            QLabel {
-                color: rgba(188, 166, 255, 0.85);
-                background: rgba(167, 139, 252, 0.1);
-                border: 1px solid rgba(167, 139, 252, 0.28);
-                border-radius: 6px;
-                padding: 6px 12px;
-            }
-        """)
-        release_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(release_label)
-
-        layout.addSpacing(4)
-
-        # Кнопки
-        btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_cancel = GlowDialogButton(tr("Отмена"),
-                                      base_rgb=(90, 90, 90),
-                                      hover_rgb=(120, 120, 120))
-        btn_cancel.clicked.connect(self.reject)
-        btn_ok = GlowDialogButton(tr("Продолжить"),
-                                  base_rgb=(167, 139, 252),
-                                  hover_rgb=(188, 166, 255))
-        btn_ok.clicked.connect(self.accept)
-        btn_row.addStretch()
-        btn_row.addWidget(btn_cancel)
-        btn_row.addSpacing(12)
-        btn_row.addWidget(btn_ok)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        main_layout.addWidget(container)
-        self.setLayout(main_layout)
-        self.setFixedWidth(480)
-
-        # Анимация появления
-        self.setWindowOpacity(0.0)
-        self.fade_in = QPropertyAnimation(self, b"windowOpacity")
-        self.fade_in.setDuration(220)
-        self.fade_in.setStartValue(0.0)
-        self.fade_in.setEndValue(1.0)
-        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.fade_in.start()
-
-    def accept(self):
-        fade = QPropertyAnimation(self, b"windowOpacity")
-        fade.setDuration(220)
-        fade.setStartValue(1.0)
-        fade.setEndValue(0.0)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(lambda: super(Fable5WarningDialog, self).accept())
-        fade.start()
-        self._fade = fade
-
-    def reject(self):
-        fade = QPropertyAnimation(self, b"windowOpacity")
-        fade.setDuration(220)
-        fade.setStartValue(1.0)
-        fade.setEndValue(0.0)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(lambda: super(Fable5WarningDialog, self).reject())
-        fade.start()
-        self._fade = fade
-
-
-# ============================================================
-# ОКНО-ПРЕДУПРЕЖДЕНИЕ «ОФИЦИАЛЬНЫЙ РЕЖИМ»
-# ============================================================
 
 class OfficialModeWarningDialog(QDialog):
     """Предупреждение при первом переключении на вкладку Claude (official)."""
@@ -5771,7 +5670,7 @@ class EffortDialog(QDialog):
 # только позиций 6 и вместо пульсирующего свечения — фиолетовое подсвечение
 # на Fable 5 (флагманский платный уровень).
 
-MODEL_ORDER = ["Sonnet 4.6", "Sonnet 5", "Opus 4.6", "Opus 4.7", "Opus 4.8", "Opus 5", "Fable 5"]
+MODEL_ORDER = ["Sonnet 4.6", "Sonnet 5", "Opus 4.6", "Opus 4.7", "Opus 4.8", "Opus 5", "Fable 5", "Fable 5.1"]
 
 # Сколько ячеек помещается в первой строке ползунка. Всё, что не влезло,
 # уезжает во вторую строку — она короткая и прижата к левому краю.
@@ -5785,6 +5684,7 @@ MODEL_COLORS_MAP = {
     "Opus 4.8":   (235, 150, 130),
     "Opus 5":     (238, 118, 108),   # чуть краснее Opus 4.8
     "Fable 5":    (167, 139, 252),   # фиолетовый — флагман, как ultracode
+    "Fable 5.1":  (167, 139, 252),   # тот же фиолетовый — обновлённый флагман
 }
 
 MODEL_LABELS_SHORT = {
@@ -5795,6 +5695,7 @@ MODEL_LABELS_SHORT = {
     "Opus 4.8":   "Opus 4.8",
     "Opus 5":     "Opus 5",
     "Fable 5":    "Fable 5",
+    "Fable 5.1":  "Fable 5.1",
 }
 
 # Модели, у которых нет поддержки ultracode (устаревшие 4.6-tier).
@@ -5953,7 +5854,8 @@ class ModelSlider(QWidget):
                 self._hover_alpha[i] = tgt
                 changed = True
         self._pulse = (self._pulse + 0.045) % (math.pi * 2)
-        if self._model == "Fable 5" or abs(self._progress - (len(MODEL_ORDER) - 1)) < 0.5:
+        # Пульс — у флагмана (последняя модель в MODEL_ORDER, сейчас Fable 5.1)
+        if self._model == MODEL_ORDER[-1] or abs(self._progress - (len(MODEL_ORDER) - 1)) < 0.5:
             changed = True
         if changed:
             self.update()
@@ -6021,7 +5923,7 @@ class ModelSlider(QWidget):
 
         p.save()
         p.setClipPath(self._shape(1.4, track_r - 1))
-        is_fable = self._model == "Fable 5" or (self._progress > len(MODEL_ORDER) - 1.5)
+        is_fable = self._model == MODEL_ORDER[-1] or (self._progress > len(MODEL_ORDER) - 1.5)
         pulse_amp = (0.5 + 0.5 * math.sin(self._pulse)) if is_fable else 0.0
         glow_boost = 1.0 + 0.8 * pulse_amp
         for i in range(1, 4):
@@ -6090,6 +5992,7 @@ class ModelDialog(QDialog):
         "Opus 4.8":   "флагманский Opus 4.8 — максимум качества",
         "Opus 5":     "новый флагман Opus 5 — сильнее 4.8 во всём",
         "Fable 5":    "экспериментальная Fable 5 — необычные вопросы",
+        "Fable 5.1":  "для требовательного reasoning и длинных agentic-задач",
     }
     LEVEL_DESCRIPTIONS_EN = {
         "Sonnet 4.6": "fast and cheap — for simple tasks",
@@ -6099,6 +6002,7 @@ class ModelDialog(QDialog):
         "Opus 4.8":   "flagship Opus 4.8 — maximum quality",
         "Opus 5":     "new flagship Opus 5 — stronger than 4.8 all around",
         "Fable 5":    "experimental Fable 5 — unusual questions",
+        "Fable 5.1":  "for demanding reasoning and long-horizon agentic work",
     }
 
     def __init__(self, current_model="Opus 4.8", parent=None, current_effort="high"):
@@ -6317,22 +6221,24 @@ class ModelDialog(QDialog):
 # OPENAI (CODEX CLI) — модели, эфорты, слайдеры, диалог выбора
 # ============================================================
 
-OPENAI_MODEL_ORDER = ["gpt-5.2", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
+OPENAI_MODEL_ORDER = ["gpt-5.2", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
 
 OPENAI_MODEL_COLORS = {
     "gpt-5.2":       (130, 220, 130),
     "gpt-5.5":       (180, 235, 150),
     "gpt-5.6-luna":  (230, 220, 130),
     "gpt-5.6-terra": (235, 180, 110),
-    "gpt-5.6-sol":   (235, 120, 100),
+    "gpt-5.6-sol":   (235, 140, 120),
+    "gpt-6-astra":   (228, 78, 92),
 }
 
 OPENAI_MODEL_LABELS = {
-    "gpt-5.2":       "5.2",
-    "gpt-5.5":       "5.5",
-    "gpt-5.6-luna":  "5.6 Luna",
-    "gpt-5.6-terra": "5.6 Terra",
-    "gpt-5.6-sol":   "5.6 Sol",
+    "gpt-5.2":       "GPT 5.2",
+    "gpt-5.5":       "GPT 5.5",
+    "gpt-5.6-luna":  "GPT 5.6 Luna",
+    "gpt-5.6-terra": "GPT 5.6 Terra",
+    "gpt-5.6-sol":   "GPT 5.6 Sol",
+    "gpt-6-astra":   "GPT 6 Astra",
 }
 
 OPENAI_MODEL_DESCRIPTIONS = {
@@ -6341,6 +6247,7 @@ OPENAI_MODEL_DESCRIPTIONS = {
     "gpt-5.6-luna":  "быстрая и дешёвая agentic-модель для кода",
     "gpt-5.6-terra": "сбалансированная agentic-модель на каждый день",
     "gpt-5.6-sol":   "новейшая флагманская agentic-модель для кода",
+    "gpt-6-astra":   "самая мощная модель — для самой сложной end-to-end работы",
 }
 OPENAI_MODEL_DESCRIPTIONS_EN = {
     "gpt-5.2":       "optimized for professional work and long-running agents",
@@ -6348,6 +6255,7 @@ OPENAI_MODEL_DESCRIPTIONS_EN = {
     "gpt-5.6-luna":  "fast and affordable agentic coding model",
     "gpt-5.6-terra": "balanced agentic coding model for everyday work",
     "gpt-5.6-sol":   "latest frontier agentic coding model",
+    "gpt-6-astra":   "our most capable model, built for the hardest end-to-end work",
 }
 
 OPENAI_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"]
@@ -6669,100 +6577,76 @@ def _oc_short_label(name):
     return name.replace("-contributor", "").replace("-free", "")
 
 
-class _OcInfoRow(QWidget):
-    """Строка-карточка с моделью в информационном окне: цветной бейдж с
-    первой буквой, имя модели подсвечено её цветом, внизу полное имя обычным
-    текстом. При наведении подсвечивается только рамка и слегка — цветное имя."""
+# ── Цвета по компаниям-провайдерам моделей ──────────────────────
+# Все модели одной компании (claude-*, gpt-*, gemini-*, ...) получают
+# один и тот же цвет карточки — список читается как каталог по вендорам.
 
-    def __init__(self, model_name, color, parent=None):
+_OC_VENDOR_COLORS = [
+    # (шаблоны префиксов, (r, g, b))
+    (("claude", "anthropic"),          (217, 119, 87)),   # Anthropic — терракота
+    (("gpt", "openai", "o1", "o3", "o4"), (95, 150, 235)),  # OpenAI — голубой
+    (("gemini", "google", "gemma"),    (66, 133, 244)),   # Google — синий
+    (("grok", "xai"),                  (140, 145, 155)),  # xAI — серый стальной
+    (("deepseek",),                    (70, 110, 235)),   # DeepSeek — индиго
+    (("qwen", "qwq"),                  (165, 110, 230)),  # Qwen — фиолетовый
+    (("llama", "meta"),                (60, 160, 255)),   # Meta — голубой
+    (("mistral", "magistral", "codestral", "ministral", "pixtral"),
+                                       (250, 140, 60)),   # Mistral — оранжевый
+    (("kimi", "moonshot"),             (30, 130, 200)),   # Moonshot — морской
+    (("glm", "zhipu", "chatglm"),      (70, 170, 160)),   # Zhipu — бирюзовый
+    (("command", "cohere"),            (220, 120, 180)),  # Cohere — розовый
+    (("ernie", "baidu"),               (60, 140, 120)),   # Baidu — зелёно-синий
+    (("doubao", "bytedance"),          (235, 100, 110)),  # ByteDance — красный
+    (("hunyuan", "tencent"),           (90, 130, 240)),   # Tencent — синий
+]
+
+_OC_FREE_COLOR = (140, 220, 150)  # бесплатные opencode-модели — зелёный
+
+
+def _oc_vendor_color(name):
+    """Цвет по компании модели. Ищем префикс вендора в начале имени и в
+    качестве fallback внутри имени (vendor/…, …-vendor-…). Неизвестные —
+    стабильный цвет из палитры по хешу."""
+    low = name.lower()
+    # 1) префикс: "claude-...", "gpt-5.6", "gemini-2.5" и т.п.
+    for prefixes, rgb in _OC_VENDOR_COLORS:
+        for p in prefixes:
+            if low.startswith(p):
+                return rgb
+    # 2) vendor внутри имени: "openrouter/openai/gpt-...", "models/gemini/..."
+    for prefixes, rgb in _OC_VENDOR_COLORS:
+        for p in prefixes:
+            if ("/" + p) in low or ("-" + p + "-") in low or ("/" + p) in low:
+                return rgb
+    # 3) неизвестная компания — стабильный цвет по хешу
+    return _oc_model_color(name)
+
+
+class _OcInfoRow(QWidget):
+    """Строка-карточка с моделью в информационном окне. Вид 1-в-1 как у
+    карточек провайдера (PickerCard: фон, рамка 2px, hover), но некликабельная.
+    Цвет карточки — по компании модели (одинаковый у всех моделей вендора)."""
+
+    def __init__(self, model_name, color, parent=None, is_free=False):
         super().__init__(parent)
         self._name = model_name
-        self._color = color
-        self._hover = 0.0
-        self._hover_target = 0.0
-        self._text_k = -1
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(16)
-        self.setMinimumHeight(52)
-
+        if is_free:
+            rgb = _OC_FREE_COLOR
+        else:
+            rgb = _oc_vendor_color(model_name)
+        self._card = PickerCard(
+            _oc_short_label(model_name),
+            color=QColor(*rgb),
+            clickable=False,
+        )
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 6, 12, 6)
-        lay.setSpacing(12)
-
-        badge = QLabel((model_name[0] if model_name else "?").upper())
-        badge.setFixedSize(34, 34)
-        badge.setAlignment(Qt.AlignCenter)
-        badge.setFont(QFont("Segoe UI", 13, QFont.Bold))
-        badge.setAttribute(Qt.WA_TranslucentBackground)
-        badge.setStyleSheet(
-            "color: rgb(%d,%d,%d); background: transparent; border: none;" % color
-        )
-        lay.addWidget(badge)
-
-        col = QVBoxLayout()
-        col.setSpacing(1)
-        name_lbl = QLabel(_oc_short_label(model_name))
-        name_lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        name_lbl.setAttribute(Qt.WA_TranslucentBackground)
-        name_lbl.setStyleSheet(
-            "color: rgb(%d,%d,%d); background: transparent; border: none;" % color
-        )
-        self._name_lbl = name_lbl
-        col.addWidget(name_lbl)
-        sub_lbl = QLabel(model_name)
-        sub_lbl.setFont(QFont("Segoe UI", 9))
-        sub_lbl.setAttribute(Qt.WA_TranslucentBackground)
-        sub_lbl.setStyleSheet("color: rgb(135, 135, 145); background: transparent; border: none;")
-        col.addWidget(sub_lbl)
-        lay.addLayout(col, 1)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self._card)
 
     @property
     def model_name(self):
         return self._name
-
-    def _tick(self):
-        d = self._hover_target - self._hover
-        if abs(d) > 0.003:
-            self._hover += d * 0.3
-            self.update()
-        r, g, b = self._color
-        k = int(self._hover * 55)
-        if k != self._text_k:
-            self._text_k = k
-            if k:
-                self._name_lbl.setStyleSheet(
-                    "color: rgb(%d,%d,%d); background: transparent; border: none;"
-                    % (min(255, r + k), min(255, g + k), min(255, b + k))
-                )
-            else:
-                self._name_lbl.setStyleSheet(
-                    "color: rgb(%d,%d,%d); background: transparent; border: none;"
-                    % (r, g, b)
-                )
-
-    def enterEvent(self, event):
-        self._hover_target = 1.0
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._hover_target = 0.0
-        super().leaveEvent(event)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        r, g, b = self._color
-        # Фон не подсвечивается — только рамка (нарастает при наведении).
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(QColor(r, g, b, 70 + int(120 * self._hover)), 1.2))
-        p.drawRoundedRect(QRectF(1.0, 1.0, w - 2.0, h - 2.0), 10, 10)
-        p.end()
-
-        # Прозрачный фон у дочерних виджетов, чтобы канва была видна.
-        for child in self.findChildren(QLabel):
-            child.setAttribute(Qt.WA_TranslucentBackground, True)
 
 
 class OcModelDialog(QDialog):
@@ -6884,19 +6768,59 @@ class OcModelDialog(QDialog):
         self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
         self._closing = False
 
-    def _add_section_header(self, text, margin=False):
-        lbl = QLabel(text)
+    def _add_section_block(self, title, provider_name=None, margin=False):
+        """Заголовок секции в карточке-обводке. Если задан provider_name —
+        внутри карточки под заголовком идут разделительная линия и крупное
+        цветное имя провайдера. Блок отделён отступами от списка моделей,
+        чтобы не выглядеть его частью."""
+        frame = QFrame()
+        frame.setObjectName("ocSectionBlock")
+        frame.setStyleSheet(
+            "QFrame#ocSectionBlock {"
+            "background-color: rgba(30, 30, 35, 200);"
+            "border: 1px solid rgb(60, 60, 65);"
+            "border-radius: 8px; }"
+        )
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(12, 7, 12, 9)
+        lay.setSpacing(7)
+
+        lbl = QLabel(title)
         lbl.setWordWrap(True)
         lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        lbl.setStyleSheet(
-            "color: rgb(170, 170, 182); background: transparent; border: none;"
-            + ("margin-top: 10px;" if margin else "")
-        )
+        lbl.setStyleSheet("color: rgb(170, 170, 182); background: transparent; border: none;")
         lbl.setTextFormat(Qt.PlainText)
-        self._cards_layout.addWidget(lbl)
+        lay.addWidget(lbl)
 
-    def _add_row(self, name, color):
-        row = _OcInfoRow(name, _oc_model_color(name))
+        if provider_name:
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet(
+                "color: rgba(90, 90, 98, 0.55); background: rgba(90, 90, 98, 0.55);"
+                "border: none; max-height: 1px;"
+            )
+            lay.addWidget(sep)
+
+            pr, pg, pb = assign_provider_color(provider_name)
+            pname = QLabel(provider_name)
+            pname.setFont(QFont("Segoe UI", 12, QFont.Bold))
+            pname.setAlignment(Qt.AlignCenter)
+            pname.setStyleSheet(
+                "color: rgb(%d, %d, %d); background: transparent; border: none;"
+                % (pr, pg, pb)
+            )
+            pname.setTextFormat(Qt.PlainText)
+            lay.addWidget(pname)
+
+        if margin:
+            self._cards_layout.addSpacing(8)
+        self._cards_layout.addWidget(frame)
+        # Зазор между блоком заголовка и первой моделью — блок читается
+        # как «шапка» секции, а не как строка списка.
+        self._cards_layout.addSpacing(6)
+
+    def _add_row(self, name, color, is_free=False):
+        row = _OcInfoRow(name, _oc_model_color(name), is_free=is_free)
         self._cards_layout.addWidget(row)
 
     def update_models(self, endpoint_models, free_models, provider_name=""):
@@ -6915,27 +6839,20 @@ class OcModelDialog(QDialog):
         self._build_instruction()
         self.adjustSize()
 
-    def _add_provider_name(self):
-        """Имя провайдера под заголовком секции — обычным цветом."""
-        if not self._provider_name:
-            return
-        lbl = QLabel(self._provider_name)
-        lbl.setFont(QFont("Segoe UI", 9))
-        lbl.setStyleSheet("color: rgb(120, 120, 132); background: transparent; border: none;")
-        lbl.setTextFormat(Qt.PlainText)
-        self._cards_layout.addWidget(lbl)
-
     def _build_sections(self):
         combined = self._endpoint + self._free
         if self._endpoint:
-            self._add_section_header(tr("Модели провайдера"), margin=True)
-            self._add_provider_name()
+            self._add_section_block(
+                tr("Модели провайдера"),
+                provider_name=self._provider_name,
+                margin=True,
+            )
             for m in self._endpoint:
                 self._add_row(m, _oc_model_color(m))
         if self._free:
-            self._add_section_header("UNLIMIT MODELS", margin=self._endpoint is not None)
+            self._add_section_block("UNLIMIT MODELS", margin=self._endpoint is not None)
             for m in self._free:
-                self._add_row(m, _oc_model_color(m))
+                self._add_row(m, _oc_model_color(m), is_free=True)
         if not combined:
             lbl = QLabel(tr("Модели не найдены"))
             lbl.setStyleSheet("color: rgb(120, 120, 130); background: transparent; border: none;")
@@ -11659,6 +11576,16 @@ class OpencodeProvidersDialog(QDialog):
                 except Exception:
                     pass
 
+        # Запись цвета больше не нужна — при повторном подключении этого же
+        # провайдера (id или host его Base URL) выпадет новый случайный цвет.
+        release_provider_color(pid)
+        base_url = rec.get("base_url") or ""
+        if base_url:
+            host = re.sub(r"[^A-Za-z0-9]", "",
+                          re.sub(r"^https?://", "", base_url).split("/")[0] or "")
+            if host and host != pid:
+                release_provider_color(host)
+
         # Удаляем определение из конфига
         if self.config_path:
             cfg = _load_jsonc(self.config_path)
@@ -11818,7 +11745,7 @@ class CustomTokenDialog(QDialog):
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
-        models = ["Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6", "Sonnet 4"]
+        models = ["Fable 5.1", "Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6", "Sonnet 4"]
         self.model_combo.addItems(models)
         # Цвета для каждой модели (от зелёного к красному)
         _sd_model_colors = {
@@ -11829,7 +11756,8 @@ class CustomTokenDialog(QDialog):
             "Opus 4.7":     QColor(235, 180, 110),
             "Opus 4.8":     QColor(235, 150, 130),
             "Opus 5":       QColor(238, 118, 108),
-            "Fable 5":   QColor(167, 139, 252),
+            "Fable 5":      QColor(167, 139, 252),
+            "Fable 5.1":    QColor(167, 139, 252),
         }
         for i in range(self.model_combo.count()):
             txt = self.model_combo.itemText(i)
@@ -11847,6 +11775,7 @@ class CustomTokenDialog(QDialog):
             "claude-opus-4-6": "Opus 4.6",
             "claude-opus-5": "Opus 5",
             "claude-fable-5": "Fable 5",
+            "claude-fable-5-1": "Fable 5.1",
         }
         # Пустая строка "" (старый дефолт) тоже должна раскрываться в Opus 4.8,
         # иначе комбо остаётся на первом элементе списка (Fable 5).
@@ -14295,7 +14224,7 @@ class ClaudeManager(QMainWindow):
         self.fm_model_combo = ModelPickerComboBox()
         self.fm_model_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
         self.fm_model_combo.setMaxVisibleItems(len(MODEL_ORDER))
-        fm_models = ["Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6"]
+        fm_models = ["Fable 5.1", "Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6"]
         self.fm_model_combo.addItems(fm_models)
         # Цвета для каждой модели (от зелёного к красному — по «дороговизне»)
         model_colors = {
@@ -14306,7 +14235,8 @@ class ClaudeManager(QMainWindow):
             "Opus 4.7":     QColor(235, 180, 110),  # жёлтый с переходом в красноватый
             "Opus 4.8":     QColor(235, 150, 130),  # слабо красноватый
             "Opus 5":       QColor(238, 118, 108),  # чуть краснее 4.8
-            "Fable 5":   QColor(167, 139, 252),  # фиолетовый
+            "Fable 5":      QColor(167, 139, 252),  # фиолетовый
+            "Fable 5.1":    QColor(167, 139, 252),  # тот же фиолетовый — обновлённый флагман
         }
         self._fm_model_colors = model_colors
         model_tooltips = {}
@@ -14335,6 +14265,7 @@ class ClaudeManager(QMainWindow):
             "claude-opus-4-6": "Opus 4.6",
             "claude-opus-5": "Opus 5",
             "claude-fable-5": "Fable 5",
+            "claude-fable-5-1": "Fable 5.1",
         }
         saved_m = remap.get(saved_m, saved_m)
         if saved_m not in fm_models:
@@ -15235,20 +15166,6 @@ class ClaudeManager(QMainWindow):
 
     def _fm_model_changed(self, new_model):
         """Сохраняет выбранную модель FreeModel"""
-        # Показать предупреждение при выборе Fable 5
-        if new_model == "Fable 5":
-            dlg = Fable5WarningDialog(self)
-            if dlg.exec() != QDialog.Accepted:
-                # Пользователь отменил — откатить на ту модель, с которой переключались
-                prev = getattr(self, "_fm_prev_model", "Opus 4.8")
-                self.fm_model_combo.blockSignals(True)
-                self.fm_model_combo.setCurrentText(prev)
-                self.fm_model_combo.blockSignals(False)
-                # Вернуть цвет предыдущей модели
-                if hasattr(self, "_fm_model_colors") and prev in self._fm_model_colors:
-                    self.fm_model_combo.setTextColor(self._fm_model_colors[prev])
-                    self.fm_model_combo.setAccentColor(self._fm_model_colors[prev])
-                return
         if new_model:
             prev_saved = self.settings.get("custom_model")
             self.settings["custom_model"] = new_model
@@ -15541,6 +15458,11 @@ class ClaudeManager(QMainWindow):
             oc_val = self.settings.get("oc_api_key", "")
             self.oc_key_input.setEchoMode(QLineEdit.Password)
             self.oc_key_input.setText(oc_val)
+            # Ключ сменился, а модели эндпоинта зависят от ключа ({base_url}/models
+            # может отдавать разный список) — перезагружаем, как при смене Base URL.
+            if (hasattr(self, "_oc_key_models_loaded")
+                    and oc_val != self._oc_key_models_loaded):
+                self._oc_refresh_models()
         if hasattr(self, "oc_btn_toggle_key") and hasattr(self.oc_btn_toggle_key, "setRevealed"):
             self.oc_btn_toggle_key.setRevealed(False)
 
@@ -15683,6 +15605,9 @@ class ClaudeManager(QMainWindow):
         self._oc_provider_name = host
         api_key = self.settings.get("oc_api_key", "")
         self._oc_loader_url = base_url
+        # Запоминаем ключ, с которым пошла загрузка: _refresh_active_key_display
+        # сравнивает с ним и перезапускает загрузку при смене ключа.
+        self._oc_key_models_loaded = api_key
         self._oc_models_loader = _OcModelsLoader(self, base_url, api_key, host)
         self._oc_models_loader.loaded.connect(self._on_oc_models_loaded)
         self._oc_models_loader.start()
@@ -16125,6 +16050,7 @@ class ClaudeManager(QMainWindow):
         "Opus 4.8 (default)": "claude-opus-4-8",
         "Opus 5": "claude-opus-5",
         "Fable 5": "claude-fable-5",
+        "Fable 5.1": "claude-fable-5-1",
         "Sonnet 5": "claude-sonnet-5",
         "Sonnet 4.6": "claude-sonnet-4-6",
         "Sonnet 4": "claude-sonnet-4",
@@ -16138,7 +16064,7 @@ class ClaudeManager(QMainWindow):
         "Opus 4.8", "Opus 4.8 (default)",
         "Opus 4.7", "Opus 4.6", "Opus 5",
         "Sonnet 5", "Sonnet 4.6",
-        "Fable 5",
+        "Fable 5", "Fable 5.1",
     }
 
     # Модели, для которых НЕ передавать --model (только env), чтобы /model показывал Default
