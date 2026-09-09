@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.8.9"  # Для обновлений
+APP_VERSION = "5.9.0"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -1562,6 +1562,63 @@ TRANSLATIONS = {
     # ── 1M-context toggle
     "1M-контекст включён": "1M context enabled",
     "1M-контекст выключен": "1M context disabled",
+    # ── переводы консоли и диалогов (автодобавление) ──
+    "В системе не найден npm — он входит в состав Node.js. Без npm Claude Code установить нельзя.\n\nНа твоей системе нет winget, поэтому установить автоматически не получится. Нажми «Скачать Node.js» — откроется официальная страница nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, поставь его и перезапусти это приложение.": "npm was not found on this system — it ships with Node.js. Without npm, Claude Code cannot be installed.\n\nwinget is not available on your system, so automatic installation is not possible. Click “Download Node.js” — the official nodejs.org/en/download page will open. Download the Windows Installer (.msi) LTS, install it and restart this app.",
+    "Вы действит  льно хотите переустановить status line? Ваш текущий блок statusLine в ~/.claude/settings.json и файл ~/.claude/statusline-command.sh будут полностью перезаписаны нашей версией. Откатить это нельзя.": "Do you really want to reinstall the status line? Your current statusLine block in ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be fully overwritten with our version. This cannot be undone.",
+    "Вы действительно хотите удалить status line? Блок statusLine уйдёт из ~/.claude/settings.json, а файл ~/.claude/statusline-command.sh — будет стёрт. Остальные настройки Claude Code останутся как есть.": "Do you really want to remove the status line? The statusLine block will be removed from ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be erased. Other Claude Code settings stay as they are.",
+    "Сейчас приложение работает в обычном режиме и часть\nопераций может завершаться ошибкой PermissionDenied.\n\nБез админ-прав могут не сработать:\n  •  установка Node.js (инсталлятор пишет в %ProgramFiles%)\n  •  установка Claude Code (npm i -g в системные папки)\n  •  полное удаление Claude Code и чистка залоченных файлов\n  •  запись в системные папки (%ProgramFiles%, %ProgramData%)\n  •  правки в чужих профилях и общих директориях\n\nБазовые сценарии — Fix Claude, смена модели и API-ключа —\nработают и без админа.": "The app is running in normal mode and some\noperations may fail with PermissionDenied.\n\nWithout admin rights these may not work:\n  •  installing Node.js (the installer writes to %ProgramFiles%)\n  •  installing Claude Code (npm i -g into system folders)\n  •  fully uninstalling Claude Code and cleaning locked files\n  •  writing to system folders (%ProgramFiles%, %ProgramData%)\n  •  editing other users' profiles and shared directories\n\nBasic scenarios — Fix Claude, model and API key switching —\nwork without admin as well.",
+    "проверенная стабильная версия, на которой приложение работает всегда. npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude не пострадают.": "a proven stable version the app always works on. npm will reinstall the package at the required version. Settings in %USERPROFILE%\\.claude are untouched.",
+    "Codex CLI не установлен": "Codex CLI is not installed",
+    "Node.js (npm) не найден — открываю окно с инструкцией": "Node.js (npm) not found — opening the instructions window",
+    "Авто-фикс DISABLE_UPDATES: ~/.claude/settings.json повреждён, пропускаем (используй кнопку Fix Claude)": "Auto-fix DISABLE_UPDATES: ~/.claude/settings.json is corrupted, skipping (use the Fix Claude button)",
+    "Авто-фикс DISABLE_UPDATES=1 добавлен в ~/.claude/settings.json (автообновление Claude Code выключено)": "Auto-fix DISABLE_UPDATES=1 added to ~/.claude/settings.json (Claude Code auto-update disabled)",
+    "Авто-фикс autoUpdates: ~/.claude.json не является JSON-объектом, пропускаем": "Auto-fix autoUpdates: ~/.claude.json is not a JSON object, skipping",
+    "Авто-фикс autoUpdates: ~/.claude.json повреждён, пропускаем (используй кнопку Fix Claude)": "Auto-fix autoUpdates: ~/.claude.json is corrupted, skipping (use the Fix Claude button)",
+    "Запускаю удаление Codex CLI через npm...": "Uninstalling Codex CLI via npm...",
+    "Запускаю удаление opencode через npm...": "Uninstalling opencode via npm...",
+    "Запускаю установку Codex CLI через npm...": "Installing Codex CLI via npm...",
+    "Запускаю установку opencode через npm...": "Installing opencode via npm...",
+    "Не удалось записать конфиг провайдера": "Failed to write the provider config",
+    "Не удалось получить /models — модели будут пустые": "Failed to fetch /models — the model list will be empty",
+    "Base URL {} сохранён": "Base URL {} saved",
+    "Claude Code v{} уже установлен": "Claude Code v{} is already installed",
+    "Claude Code запущен (--model {})": "Claude Code launched (--model {})",
+    "Claude Code запущен ({})": "Claude Code launched ({})",
+    "Codex CLI запущен ({}, effort={})": "Codex CLI launched ({}, effort={})",
+    "Fix Claude: не удалось засеять новый ~/.claude.json: {}": "Fix Claude: failed to seed a new ~/.claude.json: {}",
+    "Fix Claude: не удалось пересоздать settings.json: {}": "Fix Claude: failed to recreate settings.json: {}",
+    "Авто-фикс DISABLE_UPDATES не удался: {}": "Auto-fix DISABLE_UPDATES failed: {}",
+    "Авто-фикс autoUpdates не удался: {}": "Auto-fix autoUpdates failed: {}",
+    "Авто-фикс autoUpdates=false {} в ~/.claude.json": "Auto-fix autoUpdates=false {} in ~/.claude.json",
+    "Добавил в PATH: {}": "Added to PATH: {}",
+    "Запуск Claude Code ({})...": "Launching Claude Code ({})...",
+    "Запуск Claude Code с кастомным токеном...": "Launching Claude Code with a custom token...",
+    "Запуск Codex CLI ({})...": "Launching Codex CLI ({})...",
+    "Запуск заблокирован: установлена v{}, требуется v{}": "Launch blocked: v{} is installed, v{} is required",
+    "Запускаю {} Claude Code v{} через npm...": "Running {} Claude Code v{} via npm...",
+    "Запускаю {} Claude Code через npm (@anthropic-ai/claude-code)...": "Running {} Claude Code via npm (@anthropic-ai/claude-code)...",
+    "Используется кастомный токен для {} (effort={})": "Using a custom token for {} (effort={})",
+    "Не удалось добавить в PATH: {}": "Failed to add to PATH: {}",
+    "Не удалось записать effort в настройки Claude: {}": "Failed to write effort to Claude settings: {}",
+    "Не удалось записать конфиг Codex: {}": "Failed to write the Codex config: {}",
+    "Не удалось записать модель в настройки Claude: {}": "Failed to write the model to Claude settings: {}",
+    "Не удалось запустить удаление: {}": "Failed to start uninstall: {}",
+    "Не удалось запустить установку Node.js: {}": "Failed to start Node.js installation: {}",
+    "Не удалось запустить установку: {}": "Failed to start installation: {}",
+    "Не удалось открыть браузер: {}": "Failed to open the browser: {}",
+    "Не удалось снять safe-pin автообновления: {}": "Failed to remove the auto-update safe-pin: {}",
+    "Обнаружено моделей на {}: {}": "Models found on {}: {}",
+    "Открыта страница скачивания Node.js: {}": "Node.js download page opened: {}",
+    "Ошибка Fix Claude: {}": "Fix Claude error: {}",
+    "Ошибка запуска: {}": "Launch error: {}",
+    "Ошибка удаления status line: {}": "Status line removal error: {}",
+    "Ошибка установки status line: {}": "Status line installation error: {}",
+    "Установлена директория: {}": "Directory set: {}",
+    "Установлена устаревшая Claude Code v{} — рекомендуется обновить до v{}": "Outdated Claude Code v{} installed — updating to v{} is recommended",
+    "переустановку": "reinstall of",
+    "установку": "install of",
+    "обновление": "update of",
+
 }
 
 
@@ -14927,7 +14984,7 @@ class ClaudeManager(QMainWindow):
             self.settings["working_directory"] = directory
             self.dir_input.setText(directory)
             save_settings(self.settings)
-            self.log(f"Установлена директория: {directory}", "success")
+            self.log(tr("Установлена директория: {}").format(directory), "success")
 
     def clear_directory(self):
         """Очищает сохраненную директорию"""
@@ -15129,7 +15186,7 @@ class ClaudeManager(QMainWindow):
             self.settings["custom_base_url"] = new_url
             save_settings(self.settings)
             if prev != new_url:
-                self.log(f"Base URL {new_url} сохранён", "success")
+                self.log(tr("Base URL {} сохранён").format(new_url), "success")
             self._refresh_freemodel_brand_visibility()
 
     def _is_freemodel_endpoint(self, url):
@@ -15496,7 +15553,7 @@ class ClaudeManager(QMainWindow):
             self.settings["openai_base_url"] = new_url
             save_settings(self.settings)
             if prev != new_url:
-                self.log(f"Base URL {new_url} сохранён", "success")
+                self.log(tr("Base URL {} сохранён").format(new_url), "success")
             self._refresh_freemodel_brand_visibility()
 
     def _oa_manage_urls(self):
@@ -15536,7 +15593,7 @@ class ClaudeManager(QMainWindow):
             self.settings["oc_base_url"] = new_url
             save_settings(self.settings)
             if prev != new_url:
-                self.log(f"Base URL {new_url} сохранён", "success")
+                self.log(tr("Base URL {} сохранён").format(new_url), "success")
             # Сменился эндпоинт — перезагружаем список моделей и capabilities.
             self._oc_refresh_models()
 
@@ -16097,7 +16154,7 @@ class ClaudeManager(QMainWindow):
             with open(claude_settings_path, 'w', encoding='utf-8') as f:
                 json.dump(claude_settings, f, indent=2)
         except Exception as e:
-            self.log(f"Не удалось записать модель в настройки Claude: {e}", "warning")
+            self.log(tr("Не удалось записать модель в настройки Claude: {}").format(e), "warning")
 
     def _fix_claude_install_method(self):
         """Если в ~/.claude.json стоит installMethod=native (остаток install.ps1),
@@ -16145,7 +16202,7 @@ class ClaudeManager(QMainWindow):
                 with open(claude_settings_path, 'w', encoding='utf-8') as f:
                     json.dump(claude_settings, f, indent=2)
             except Exception as e:
-                self.log(f"Не удалось записать effort в настройки Claude: {e}", "warning")
+                self.log(tr("Не удалось записать effort в настройки Claude: {}").format(e), "warning")
             return
         if effort not in ("low", "medium", "high", "xhigh", "max"):
             return
@@ -16165,7 +16222,7 @@ class ClaudeManager(QMainWindow):
             with open(claude_settings_path, 'w', encoding='utf-8') as f:
                 json.dump(claude_settings, f, indent=2)
         except Exception as e:
-            self.log(f"Не удалось записать effort в настройки Claude: {e}", "warning")
+            self.log(tr("Не удалось записать effort в настройки Claude: {}").format(e), "warning")
 
     def launch_claude(self):
         """Запускает Claude Code с выбранной моделью"""
@@ -16216,9 +16273,9 @@ class ClaudeManager(QMainWindow):
         use_custom = True
 
         if use_custom:
-            self.log(f"Запуск Claude Code с кастомным токеном...", "info")
+            self.log(tr("Запуск Claude Code с кастомным токеном..."), "info")
         else:
-            self.log(f"Запуск Claude Code ({model})...", "info")
+            self.log(tr("Запуск Claude Code ({})...").format(model), "info")
 
         # Устанавливаем переменные окружения и запускаем
         env = os.environ.copy()
@@ -16281,7 +16338,7 @@ class ClaudeManager(QMainWindow):
             cli_cmd += f" --model {model_id}"
         cli_cmd += effort_flag
 
-        self.log(f"Используется кастомный токен для {custom_base_url} (effort={effort})", "info")
+        self.log(tr("Используется кастомный токен для {} (effort={})").format(custom_base_url, effort), "info")
 
         # Снимаем блок PowerShell ExecutionPolicy для этой сессии — если у пользователя
         # стоит Restricted, claude.ps1 без этого не запустится. Scope Process действует
@@ -16296,11 +16353,11 @@ class ClaudeManager(QMainWindow):
             )
             model_id = self._resolve_model_id(self.settings.get("custom_model", ""))
             if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
-                self.log(f"Claude Code запущен (--model {model_id})", "success")
+                self.log(tr("Claude Code запущен (--model {})").format(model_id), "success")
             else:
-                self.log(f"Claude Code запущен ({model_id or 'default'})", "success")
+                self.log(tr("Claude Code запущен ({})").format(model_id or 'default'), "success")
         except Exception as e:
-            self.log(f"Ошибка запуска: {e}", "error")
+            self.log(tr("Ошибка запуска: {}").format(e), "error")
 
     def _launch_claude_official(self):
         """Официальный запуск Claude Code (под-режим Claude двойной ячейки).
@@ -16360,7 +16417,7 @@ class ClaudeManager(QMainWindow):
                 "success"
             )
         except Exception as e:
-            self.log(f"Ошибка запуска: {e}", "error")
+            self.log(tr("Ошибка запуска: {}").format(e), "error")
 
     def _write_codex_config(self):
         """Пишет ~/.codex/auth.json и config.toml под выбранные ключ/URL/модель/effort.
@@ -16397,7 +16454,7 @@ class ClaudeManager(QMainWindow):
                 f.write(config)
             return True
         except Exception as e:
-            self.log(f"Не удалось записать конфиг Codex: {e}", "error")
+            self.log(tr("Не удалось записать конфиг Codex: {}").format(e), "error")
             return False
 
     def launch_codex(self):
@@ -16419,7 +16476,7 @@ class ClaudeManager(QMainWindow):
 
         model = self.settings.get("openai_model", "gpt-5.6-sol")
         effort = _clamp_openai_effort(model, self.settings.get("openai_effort", "low"))
-        self.log(f"Запуск Codex CLI ({model})...", "info")
+        self.log(tr("Запуск Codex CLI ({})...").format(model), "info")
 
         env = os.environ.copy()
         # Форсируем модель и effort CLI-флагами (как на вкладке Anthropic):
@@ -16438,9 +16495,9 @@ class ClaudeManager(QMainWindow):
                 f"{ps_prefix}{cli_cmd}",
                 env=env
             )
-            self.log(f"Codex CLI запущен ({model}, effort={effort})", "success")
+            self.log(tr("Codex CLI запущен ({}, effort={})").format(model, effort), "success")
         except Exception as e:
-            self.log(f"Ошибка запуска: {e}", "error")
+            self.log(tr("Ошибка запуска: {}").format(e), "error")
 
     # ── Codex CLI: установка / удаление / версии ─────────────────
 
@@ -16629,7 +16686,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку: {e}", "error")
+            self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -16741,7 +16798,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить удаление: {e}", "error")
+            self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -17002,7 +17059,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку: {e}", "error")
+            self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -17105,7 +17162,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить удаление: {e}", "error")
+            self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -17329,7 +17386,7 @@ class ClaudeManager(QMainWindow):
                 env.pop("OPENAI_BASE_URL", None)
                 env.pop("OPENAI_API_KEY", None)
                 if model_ids:
-                    self.log(f"Обнаружено моделей на {base_url}: {len(model_ids)}", "info")
+                    self.log(tr("Обнаружено моделей на {}: {}").format(base_url, len(model_ids)), "info")
                 else:
                     self.log("Не удалось получить /models — модели будут пустые", "warning")
             else:
@@ -17345,7 +17402,7 @@ class ClaudeManager(QMainWindow):
             spawn_powershell_session(working_dir, f"{ps_prefix}{launch_cmd}", env=env)
             self.log(tr("opencode запущен"), "success")
         except Exception as e:
-            self.log(f"Ошибка запуска: {e}", "error")
+            self.log(tr("Ошибка запуска: {}").format(e), "error")
 
     def _statusline_bash_command(self):
         """Возвращает строку для поля statusLine.command в settings.json.
@@ -17441,7 +17498,7 @@ class ClaudeManager(QMainWindow):
             except Exception as e:
                 progress.finished_signal.emit(False, str(e))
                 try:
-                    self.log(f"Ошибка установки status line: {e}", "error")
+                    self.log(tr("Ошибка установки status line: {}").format(e), "error")
                 except Exception:
                     pass
 
@@ -17577,7 +17634,7 @@ class ClaudeManager(QMainWindow):
             except Exception as e:
                 progress.finished_signal.emit(False, str(e))
                 try:
-                    self.log(f"Ошибка удаления status line: {e}", "error")
+                    self.log(tr("Ошибка удаления status line: {}").format(e), "error")
                 except Exception:
                     pass
 
@@ -17654,14 +17711,14 @@ class ClaudeManager(QMainWindow):
             try:
                 action = "обновлён" if existed else "создан"
                 self.log(
-                    f"Авто-фикс autoUpdates=false {action} в ~/.claude.json",
+                    tr("Авто-фикс autoUpdates=false {} в ~/.claude.json").format(action),
                     "success",
                 )
             except Exception:
                 pass
         except Exception as e:
             try:
-                self.log(f"Авто-фикс autoUpdates не удался: {e}", "warning")
+                self.log(tr("Авто-фикс autoUpdates не удался: {}").format(e), "warning")
             except Exception:
                 pass
 
@@ -17730,7 +17787,7 @@ class ClaudeManager(QMainWindow):
             # Любой сбой — это не критично, пользователь всё ещё может
             # руками нажать Fix Claude. Не падаем, не показываем модалок.
             try:
-                self.log(f"Авто-фикс DISABLE_UPDATES не удался: {e}", "warning")
+                self.log(tr("Авто-фикс DISABLE_UPDATES не удался: {}").format(e), "warning")
             except Exception:
                 pass
 
@@ -17845,7 +17902,7 @@ class ClaudeManager(QMainWindow):
                         pass
         except Exception as e:
             try:
-                self.log(f"Не удалось снять safe-pin автообновления: {e}", "warning")
+                self.log(tr("Не удалось снять safe-pin автообновления: {}").format(e), "warning")
             except Exception:
                 pass
 
@@ -18010,7 +18067,7 @@ class ClaudeManager(QMainWindow):
                         stub_ok = False
                         try:
                             self.log(
-                                f"Fix Claude: не удалось засеять новый ~/.claude.json: {seed_err}",
+                                tr("Fix Claude: не удалось засеять новый ~/.claude.json: {}").format(seed_err),
                                 "warning",
                             )
                         except Exception:
@@ -18066,7 +18123,7 @@ class ClaudeManager(QMainWindow):
                         settings_ok = False
                         try:
                             self.log(
-                                f"Fix Claude: не удалось пересоздать settings.json: {seed_err}",
+                                tr("Fix Claude: не удалось пересоздать settings.json: {}").format(seed_err),
                                 "warning",
                             )
                         except Exception:
@@ -18085,7 +18142,7 @@ class ClaudeManager(QMainWindow):
             except Exception as e:
                 progress.finished_signal.emit(False, str(e))
                 try:
-                    self.log(f"Ошибка Fix Claude: {e}", "error")
+                    self.log(tr("Ошибка Fix Claude: {}").format(e), "error")
                 except Exception:
                     pass
 
@@ -18119,7 +18176,7 @@ class ClaudeManager(QMainWindow):
                 is_update = True
 
         if not needs_change:
-            self.log(f"Claude Code v{required} уже установлен", "info")
+            self.log(tr("Claude Code v{} уже установлен").format(required), "info")
             return
 
         if is_downgrade:
@@ -18170,8 +18227,8 @@ class ClaudeManager(QMainWindow):
             self._show_npm_missing_dialog()
             return
 
-        action_word = "переустановку" if installed else "установку"
-        self.log(f"Запускаю {action_word} Claude Code v{required} через npm...", "info")
+        action_word = tr("переустановку") if installed else tr("установку")
+        self.log(tr("Запускаю {} Claude Code v{} через npm...").format(action_word, required), "info")
 
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
@@ -18188,6 +18245,15 @@ class ClaudeManager(QMainWindow):
                 "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
+                # 1b) Убрать битые временные шимы npm (след прерванной установки:
+                #     ".claude.cmd-XXXX" без финального rename) — из-за них claude
+                #     «не установлен», а повторный npm install той же версии
+                #     бывает no-op и шимы не восстанавливает
+                "Write-Host 'Проверяю целостность шимов npm...' -ForegroundColor Cyan; "
+                "$npmBin = Join-Path $env:APPDATA 'npm'; "
+                "if (Test-Path $npmBin) { "
+                "  Get-ChildItem $npmBin -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
                 # 2) Снести старую установку через install.ps1 (живёт в ~/.local/bin и ~/.claude/local) —
                 #    иначе её битый shim перехватывает команду 'claude' в PATH
                 "Write-Host 'Удаляю старую установку Claude Code (install.ps1)...' -ForegroundColor Cyan; "
@@ -18199,15 +18265,17 @@ class ClaudeManager(QMainWindow):
                 "if (Test-Path $claudeLocal) { "
                 "  Remove-Item -Recurse -Force $claudeLocal -ErrorAction SilentlyContinue; "
                 "} "
-                # 3) Установка через npm
+                # 3) Переустановка через npm: uninstall + install гарантирует
+                #    свежие bin-шимы даже если npm считает версию уже установленной
                 f"Write-Host 'Установка Claude Code v{required} через npm...' -ForegroundColor Cyan; "
+                "npm uninstall -g @anthropic-ai/claude-code 2>$null; "
                 f"npm install -g @anthropic-ai/claude-code@{required}; "
                 "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
                 "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку: {e}", "error")
+            self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -18298,8 +18366,8 @@ class ClaudeManager(QMainWindow):
             self.log("Операция отменена", "info")
             return
 
-        action_word = "обновление" if installed else "установку"
-        self.log(f"Запускаю {action_word} Claude Code через npm (@anthropic-ai/claude-code)...", "info")
+        action_word = tr("обновление") if installed else tr("установку")
+        self.log(tr("Запускаю {} Claude Code через npm (@anthropic-ai/claude-code)...").format(action_word), "info")
 
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
@@ -18316,15 +18384,22 @@ class ClaudeManager(QMainWindow):
                 "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
+                # 1b) Битые временные шимы npm — как в safe-установщике
+                "Write-Host 'Проверяю целостность шимов npm...' -ForegroundColor Cyan; "
+                "$npmBin = Join-Path $env:APPDATA 'npm'; "
+                "if (Test-Path $npmBin) { "
+                "  Get-ChildItem $npmBin -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
                 # 2) Установка/обновление последней версии через npm
                 "Write-Host 'Установка/обновление Claude Code через npm...' -ForegroundColor Cyan; "
+                "npm uninstall -g @anthropic-ai/claude-code 2>$null; "
                 "npm install -g @anthropic-ai/claude-code@latest; "
                 "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
                 "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку: {e}", "error")
+            self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -18464,7 +18539,7 @@ class ClaudeManager(QMainWindow):
             parent=self
         )
         self.log(
-            f"Запуск заблокирован: установлена v{current_version}, требуется v{required}",
+            tr("Запуск заблокирован: установлена v{}, требуется v{}").format(current_version, required),
             "warning"
         )
         if dlg.exec() == QDialog.Accepted:
@@ -18564,9 +18639,9 @@ class ClaudeManager(QMainWindow):
             try:
                 import webbrowser
                 webbrowser.open(download_url)
-                self.log(f"Открыта страница скачивания Node.js: {download_url}", "info")
+                self.log(tr("Открыта страница скачивания Node.js: {}").format(download_url), "info")
             except Exception as e:
-                self.log(f"Не удалось открыть браузер: {e}", "warning")
+                self.log(tr("Не удалось открыть браузер: {}").format(e), "warning")
 
     def _install_nodejs_via_winget(self):
         """Запускает PowerShell с winget install OpenJS.NodeJS.LTS — пользователь
@@ -18588,7 +18663,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку Node.js: {e}", "error")
+            self.log(tr("Не удалось запустить установку Node.js: {}").format(e), "error")
 
     def _detect_claude_install_dirs(self):
         """Возвращает список существующих папок где может лежать claude"""
@@ -18710,7 +18785,7 @@ class ClaudeManager(QMainWindow):
             except Exception:
                 pass
 
-            self.log(f"Добавил в PATH: {target}", "success")
+            self.log(tr("Добавил в PATH: {}").format(target), "success")
             done = ConfirmActionDialog(
                 title=tr("Добавлено в PATH"),
                 message=tr(
@@ -18726,7 +18801,7 @@ class ClaudeManager(QMainWindow):
             done.cancel_btn.hide()
             done.exec()
         except Exception as e:
-            self.log(f"Не удалось добавить в PATH: {e}", "error")
+            self.log(tr("Не удалось добавить в PATH: {}").format(e), "error")
             err = ConfirmActionDialog(
                 title=tr("Не удалось добавить в PATH"),
                 message=tr("Что-то пошло не так при записи в реестр:") + f"\n{e}",
@@ -19030,7 +19105,7 @@ class ClaudeManager(QMainWindow):
 
         self._outdated_warning_shown = True
         self.log(
-            f"Установлена устаревшая Claude Code v{local} — рекомендуется обновить до v{required}",
+            tr("Установлена устаревшая Claude Code v{} — рекомендуется обновить до v{}").format(local, required),
             "warning"
         )
         dlg = ConfirmActionDialog(
@@ -19111,7 +19186,8 @@ class ClaudeManager(QMainWindow):
                 "if (Test-Path $npmDir) { "
                 "  Write-Host '`nNPM не смог удалить — удаляю папку напрямую...' -ForegroundColor Yellow; "
                 "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
-                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
                 # 4) Снести установку через install.ps1 (~/.local/bin + ~/.claude/local)
                 "Write-Host '`nУдаление Claude Code (install.ps1)...' -ForegroundColor Cyan; "
@@ -19135,7 +19211,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить удаление: {e}", "error")
+            self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
