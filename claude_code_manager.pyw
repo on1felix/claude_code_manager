@@ -14,7 +14,7 @@
 AUTHOR_NAME = "on1felix"
 AUTHOR_DISCORD = "on1felix"
 AUTHOR_GITHUB = "https://github.com/on1felix/claude_code_manager"
-import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil, re, calendar
+import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil, re, calendar, tempfile
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.8.6"  # Для обновлений
+APP_VERSION = "5.9.1"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -191,6 +191,78 @@ def ensure_settings_dir():
             os.makedirs(SETTINGS_DIR)
         except:
             pass
+
+
+# ── Постоянные случайные цвета провайдеров opencode ─────────────────
+# При первом появлении провайдера (подключение или первое открытие окна
+# моделей) ему один раз случайным образом назначается яркий цвет (не
+# чёрный/белый/серые) и сохраняется в
+# %APPDATA%/ClaudeManager/provider_colors.json. Цвет живёт, пока провайдер
+# подключён: удалил провайдера → запись стёрта; подключил снова → выпал
+# новый случайный цвет.
+
+PROVIDER_COLORS_FILE = os.path.join(SETTINGS_DIR, "provider_colors.json")
+
+
+def _load_provider_colors():
+    try:
+        with open(PROVIDER_COLORS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_provider_colors(colors):
+    try:
+        ensure_settings_dir()
+        with open(PROVIDER_COLORS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(colors, f, indent=2)
+    except Exception:
+        pass
+
+
+def assign_provider_color(pid):
+    """Возвращает сохранённый цвет провайдера или назначает новый случайный.
+    Только светлые оттенки (на тёмном фоне): тёмные цвета запрещены фильтром
+    по яркости, чёрный/белый/серый исключены конструктивно."""
+    colors = _load_provider_colors()
+    if pid in colors:
+        c = colors[pid]
+        if (isinstance(c, list) and len(c) == 3
+                and all(isinstance(v, int) and 0 <= v <= 255 for v in c)):
+            rgb = tuple(c)
+            # Старые тёмные записи перегенерируем на лету.
+            lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+            if lum >= 150 and max(rgb) - min(rgb) >= 30:
+                return rgb
+    while True:
+        h = random.random()          # случайный тон
+        s = random.uniform(0.55, 0.85)   # насыщенный, но не кислотный
+        l = random.uniform(0.68, 0.80)   # светлый пастельный диапазон
+        # HSL → RGB
+        def _f(n):
+            k = (n + h * 12) % 12
+            a = s * min(l, 1 - l)
+            return int(255 * (l - a * max(-1, min(k - 3, 9 - k, 1))))
+        rgb = (_f(0), _f(8), _f(4))
+        lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+        # запрет тёмных (lum >= 150) и серых (разброс каналов >= 30)
+        if lum >= 150 and max(rgb) - min(rgb) >= 30:
+            break
+    colors[pid] = list(rgb)
+    _save_provider_colors(colors)
+    return rgb
+
+
+def release_provider_color(pid):
+    """Удаляет запись цвета (при удалении провайдера). Следующее подключение
+    того же провайдера получит новый случайный цвет."""
+    colors = _load_provider_colors()
+    if pid in colors:
+        del colors[pid]
+        _save_provider_colors(colors)
+
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -808,6 +880,20 @@ TRANSLATIONS = {
     "Провайдеры opencode": "opencode providers",
     "Провайдеры из конфига и auth.json. Удаление убирает и креду, и определение.": "Providers from config and auth.json. Deleting removes both the credential and the definition.",
     "Провайдеров не найдено": "No providers found",
+    "Подключённые провайдеры": "Connected providers",
+    "Доступные провайдеры": "Available providers",
+    "Подключить": "Connect",
+    "Поиск провайдера": "Search provider",
+    "Название провайдера": "Provider name",
+    "Редактировать провайдера": "Edit provider",
+    "подключён": "connected",
+    "Нет совпадений": "No matches",
+    "Каталог провайдеров загружается…": "Loading provider catalog…",
+    "Каталог провайдеров недоступен": "Provider catalog unavailable",
+    "Все провайдеры каталога уже подключены": "All catalog providers are already connected",
+    "Подключение провайдера": "Connect provider",
+    "Ключ сохранится в auth.json — как при opencode auth login.": "The key is saved to auth.json — same as `opencode auth login`.",
+    "Сверху — подключённые провайдеры, ниже — доступные из каталога opencode. Клик по доступному подключает его по API-ключу. Список обновляется при открытии окна.": "Connected providers on top, available ones from the opencode catalog below. Click an available provider to connect it with an API key. The list refreshes when the window opens.",
     "Без Base URL и кредов": "No Base URL or credentials",
     "Вы уверены, что хотите удалить провайдера? Будет удалена и креда (auth.json), и определение из конфига.": "Are you sure you want to delete this provider? Both the credential (auth.json) and the config definition will be removed.",
     # ── главное окно: подписи статусов
@@ -881,6 +967,9 @@ TRANSLATIONS = {
     "флагманский Opus 4.8 — максимум качества": "flagship Opus 4.8 — maximum quality",
     "новый флагман Opus 5 — сильнее 4.8 во всём": "new flagship Opus 5 — stronger than 4.8 all around",
     "экспериментальная Fable 5 — необычные вопросы": "experimental Fable 5 — unusual questions",
+    "для требовательного reasoning и длинных agentic-задач": "for demanding reasoning and long-horizon agentic work",
+    "самая мощная модель — для самой сложной end-to-end работы": "our most capable model, built for the hardest end-to-end work",
+    "новейшая флагманская agentic-модель для кода": "latest frontier agentic coding model",
     # ── EffortDialog: заголовок и подписи уровней
     "Reasoning Effort": "Reasoning Effort",
     "минимум размышлений — быстро и дёшево": "minimal reasoning — fast and cheap",
@@ -1119,28 +1208,6 @@ TRANSLATIONS = {
         "the file ~/.claude/statusline-command.sh has been erased.",
     "Не удалось получить /api/status. Повторим через несколько секунд.":
         "Failed to fetch /api/status. We'll retry in a few seconds.",
-    # ── Fable 5
-    "Fable 5 — Модель высшего класса": "Fable 5 — Top-tier model",
-    "Один запрос при уровне /effort High может потребовать "
-    "до 15% вашего дневного лимита токенов.\n\n"
-    "Fable 5 на среднем уровне /effort (Medium) превосходит "
-    "Opus 4.8 на максимальных настройках (xHigh / Max) — разрыв "
-    "составляет около 5% в пользу Fable 5.\n\n"
-    "По общей мощности Fable 5 превосходит Opus 4.8 примерно "
-    "в 2 раза — но и стоит соответственно.\n\n"
-    "Используйте эту модель только тогда, когда другие уже не "
-    "справляются — она стоит каждого токена, но расходует их "
-    "значительно быстрее.":
-        "A single request at /effort High can burn up to 15% of "
-        "your daily token limit.\n\n"
-        "Fable 5 at /effort Medium beats Opus 4.8 at its maximum "
-        "settings (xHigh / Max) — the gap is about 5% in Fable 5's "
-        "favor.\n\n"
-        "Overall Fable 5 is roughly 2× more powerful than Opus 4.8 — "
-        "and priced accordingly.\n\n"
-        "Use this model only when others no longer keep up — it's "
-        "worth every token, but it spends them much faster.",
-    "Выпущена Anthropic · 09 июня 2026": "Released by Anthropic · June 09, 2026",
     "Продолжить": "Continue",
     # ── Official mode warning
     "Официальный режим — только для подписчиков Anthropic": "Official mode — Anthropic subscribers only",
@@ -1495,6 +1562,80 @@ TRANSLATIONS = {
     # ── 1M-context toggle
     "1M-контекст включён": "1M context enabled",
     "1M-контекст выключен": "1M context disabled",
+    # ── переводы консоли и диалогов (автодобавление) ──
+    "Добавить npm в PATH": "Add npm to PATH",
+    "opencode не найден": "opencode not found",
+    "Не нашёл папку с установленным opencode. Сначала установи opencode кнопкой выше, потом жми «Добавить npm в PATH».":
+        "Could not find the installed opencode folder. Install opencode with the button above first, then press “Add npm to PATH”.",
+    "Папка с opencode уже прописана в пользовательской PATH.": "The opencode folder is already in your user PATH.",
+    "Добавит папку с opencode в пользовательскую PATH, чтобы команду «opencode» можно было запускать из любой консоли. После этого перезапусти терминал.":
+        "Adds the opencode folder to your user PATH so the “opencode” command works from any console. Restart your terminal afterwards.",
+    "Папка с opencode добавлена в пользовательскую PATH. Открой новую консоль и проверь: opencode --version.":
+        "The opencode folder was added to your user PATH. Open a new console and check: opencode --version.",
+    "Не удалось добавить npm в PATH автоматически: {}": "Failed to add npm to PATH automatically: {}",
+    "opencode установлен, но его папка не в PATH — команда не видна новым терминалам":
+        "opencode is installed but its folder is not in PATH — new terminals cannot see the command",
+    "Установка завершена успешно.\nНет команды opencode? Открой новую консоль.":
+        "Installation completed successfully.\nNo opencode command? Open a new console.",
+    "Перезапустите программу": "Please restart the app",
+    "opencode установлен. Перезапусти программу, чтобы она увидела новую команду и обновлённый PATH.":
+        "opencode is installed. Restart the app so it picks up the new command and updated PATH.",
+    "В системе не найден npm — он входит в состав Node.js. Без npm Claude Code установить нельзя.\n\nНа твоей системе нет winget, поэтому установить автоматически не получится. Нажми «Скачать Node.js» — откроется официальная страница nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, поставь его и перезапусти это приложение.": "npm was not found on this system — it ships with Node.js. Without npm, Claude Code cannot be installed.\n\nwinget is not available on your system, so automatic installation is not possible. Click “Download Node.js” — the official nodejs.org/en/download page will open. Download the Windows Installer (.msi) LTS, install it and restart this app.",
+    "Вы действит  льно хотите переустановить status line? Ваш текущий блок statusLine в ~/.claude/settings.json и файл ~/.claude/statusline-command.sh будут полностью перезаписаны нашей версией. Откатить это нельзя.": "Do you really want to reinstall the status line? Your current statusLine block in ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be fully overwritten with our version. This cannot be undone.",
+    "Вы действительно хотите удалить status line? Блок statusLine уйдёт из ~/.claude/settings.json, а файл ~/.claude/statusline-command.sh — будет стёрт. Остальные настройки Claude Code останутся как есть.": "Do you really want to remove the status line? The statusLine block will be removed from ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be erased. Other Claude Code settings stay as they are.",
+    "Сейчас приложение работает в обычном режиме и часть\nопераций может завершаться ошибкой PermissionDenied.\n\nБез админ-прав могут не сработать:\n  •  установка Node.js (инсталлятор пишет в %ProgramFiles%)\n  •  установка Claude Code (npm i -g в системные папки)\n  •  полное удаление Claude Code и чистка залоченных файлов\n  •  запись в системные папки (%ProgramFiles%, %ProgramData%)\n  •  правки в чужих профилях и общих директориях\n\nБазовые сценарии — Fix Claude, смена модели и API-ключа —\nработают и без админа.": "The app is running in normal mode and some\noperations may fail with PermissionDenied.\n\nWithout admin rights these may not work:\n  •  installing Node.js (the installer writes to %ProgramFiles%)\n  •  installing Claude Code (npm i -g into system folders)\n  •  fully uninstalling Claude Code and cleaning locked files\n  •  writing to system folders (%ProgramFiles%, %ProgramData%)\n  •  editing other users' profiles and shared directories\n\nBasic scenarios — Fix Claude, model and API key switching —\nwork without admin as well.",
+    "проверенная стабильная версия, на которой приложение работает всегда. npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude не пострадают.": "a proven stable version the app always works on. npm will reinstall the package at the required version. Settings in %USERPROFILE%\\.claude are untouched.",
+    "Codex CLI не установлен": "Codex CLI is not installed",
+    "Node.js (npm) не найден — открываю окно с инструкцией": "Node.js (npm) not found — opening the instructions window",
+    "Авто-фикс DISABLE_UPDATES: ~/.claude/settings.json повреждён, пропускаем (используй кнопку Fix Claude)": "Auto-fix DISABLE_UPDATES: ~/.claude/settings.json is corrupted, skipping (use the Fix Claude button)",
+    "Авто-фикс DISABLE_UPDATES=1 добавлен в ~/.claude/settings.json (автообновление Claude Code выключено)": "Auto-fix DISABLE_UPDATES=1 added to ~/.claude/settings.json (Claude Code auto-update disabled)",
+    "Авто-фикс autoUpdates: ~/.claude.json не является JSON-объектом, пропускаем": "Auto-fix autoUpdates: ~/.claude.json is not a JSON object, skipping",
+    "Авто-фикс autoUpdates: ~/.claude.json повреждён, пропускаем (используй кнопку Fix Claude)": "Auto-fix autoUpdates: ~/.claude.json is corrupted, skipping (use the Fix Claude button)",
+    "Запускаю удаление Codex CLI через npm...": "Uninstalling Codex CLI via npm...",
+    "Запускаю удаление opencode через npm...": "Uninstalling opencode via npm...",
+    "Запускаю установку Codex CLI через npm...": "Installing Codex CLI via npm...",
+    "Запускаю установку opencode через npm...": "Installing opencode via npm...",
+    "Не удалось записать конфиг провайдера": "Failed to write the provider config",
+    "Не удалось получить /models — модели будут пустые": "Failed to fetch /models — the model list will be empty",
+    "Base URL {} сохранён": "Base URL {} saved",
+    "Claude Code v{} уже установлен": "Claude Code v{} is already installed",
+    "Claude Code запущен (--model {})": "Claude Code launched (--model {})",
+    "Claude Code запущен ({})": "Claude Code launched ({})",
+    "Codex CLI запущен ({}, effort={})": "Codex CLI launched ({}, effort={})",
+    "Fix Claude: не удалось засеять новый ~/.claude.json: {}": "Fix Claude: failed to seed a new ~/.claude.json: {}",
+    "Fix Claude: не удалось пересоздать settings.json: {}": "Fix Claude: failed to recreate settings.json: {}",
+    "Авто-фикс DISABLE_UPDATES не удался: {}": "Auto-fix DISABLE_UPDATES failed: {}",
+    "Авто-фикс autoUpdates не удался: {}": "Auto-fix autoUpdates failed: {}",
+    "Авто-фикс autoUpdates=false {} в ~/.claude.json": "Auto-fix autoUpdates=false {} in ~/.claude.json",
+    "Добавил в PATH: {}": "Added to PATH: {}",
+    "Запуск Claude Code ({})...": "Launching Claude Code ({})...",
+    "Запуск Claude Code с кастомным токеном...": "Launching Claude Code with a custom token...",
+    "Запуск Codex CLI ({})...": "Launching Codex CLI ({})...",
+    "Запуск заблокирован: установлена v{}, требуется v{}": "Launch blocked: v{} is installed, v{} is required",
+    "Запускаю {} Claude Code v{} через npm...": "Running {} Claude Code v{} via npm...",
+    "Запускаю {} Claude Code через npm (@anthropic-ai/claude-code)...": "Running {} Claude Code via npm (@anthropic-ai/claude-code)...",
+    "Используется кастомный токен для {} (effort={})": "Using a custom token for {} (effort={})",
+    "Не удалось добавить в PATH: {}": "Failed to add to PATH: {}",
+    "Не удалось записать effort в настройки Claude: {}": "Failed to write effort to Claude settings: {}",
+    "Не удалось записать конфиг Codex: {}": "Failed to write the Codex config: {}",
+    "Не удалось записать модель в настройки Claude: {}": "Failed to write the model to Claude settings: {}",
+    "Не удалось запустить удаление: {}": "Failed to start uninstall: {}",
+    "Не удалось запустить установку Node.js: {}": "Failed to start Node.js installation: {}",
+    "Не удалось запустить установку: {}": "Failed to start installation: {}",
+    "Не удалось открыть браузер: {}": "Failed to open the browser: {}",
+    "Не удалось снять safe-pin автообновления: {}": "Failed to remove the auto-update safe-pin: {}",
+    "Обнаружено моделей на {}: {}": "Models found on {}: {}",
+    "Открыта страница скачивания Node.js: {}": "Node.js download page opened: {}",
+    "Ошибка Fix Claude: {}": "Fix Claude error: {}",
+    "Ошибка запуска: {}": "Launch error: {}",
+    "Ошибка удаления status line: {}": "Status line removal error: {}",
+    "Ошибка установки status line: {}": "Status line installation error: {}",
+    "Установлена директория: {}": "Directory set: {}",
+    "Установлена устаревшая Claude Code v{} — рекомендуется обновить до v{}": "Outdated Claude Code v{} installed — updating to v{} is recommended",
+    "переустановку": "reinstall of",
+    "установку": "install of",
+    "обновление": "update of",
+
 }
 
 
@@ -1562,14 +1703,18 @@ def check_oc_latest_version():
     except Exception:
         return ''
 
-def get_installed_oc_version():
+def get_installed_oc_version(exe=None):
     """Возвращает установленную версию opencode CLI ('' если не установлен).
 
     opencode — JS-пакет npm, в PATH только шимы opencode.cmd / opencode.ps1
     (без .exe). Python 3.14 не запускает .cmd напрямую через CreateProcess,
-    поэтому гоним через `cmd /c <путь> --version`."""
+    поэтому гоним через `cmd /c <путь> --version`.
+    exe: явный путь к шиму. Нужен, когда папка npm есть на диске, но её нет
+    в PATH текущего процесса — тогда shutil.which() даёт None, а версия
+    по явному пути всё равно читается."""
     try:
-        exe = shutil.which("opencode")
+        if not exe:
+            exe = shutil.which("opencode")
         if not exe:
             return ""
         proc = subprocess.run(
@@ -1582,6 +1727,108 @@ def get_installed_oc_version():
         return m.group(1) if m else ""
     except Exception:
         return ''
+
+def _write_user_path_entry(target):
+    """Добавляет папку в пользовательскую PATH (HKCU\\Environment) и шлёт
+    broadcast WM_SETTINGCHANGE, чтобы оболочки заметили изменение.
+    Возвращает (True, '') или (False, текст_ошибки). Общая для кнопок
+    «в PATH» (Claude Code использует свою обёртку с диалогами)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+            try:
+                val, val_type = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                val, val_type = "", winreg.REG_EXPAND_SZ
+            current = str(val or "")
+            parts = [p for p in current.split(";") if p.strip()]
+            norm_target = os.path.normcase(os.path.normpath(target))
+            if any(os.path.normcase(os.path.normpath(p)) == norm_target for p in parts):
+                return True, "already"
+            new_val = (current + (";" if current and not current.endswith(";") else "") + target)
+            winreg.SetValueEx(key, "Path", 0, val_type or winreg.REG_EXPAND_SZ, new_val)
+        try:
+            import ctypes
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x1A
+            SMTO_ABORTIFHUNG = 0x0002
+            ctypes.windll.user32.SendMessageTimeoutW(
+                HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                ctypes.c_wchar_p("Environment"),
+                SMTO_ABORTIFHUNG, 5000, None
+            )
+        except Exception:
+            pass
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def find_windows_terminal():
+    """Путь к wt.exe (Windows Terminal) или None, если терминал не установлен.
+
+    Windows Terminal входит в состав Windows 11 и часто установлен на
+    Windows 10 (из Store). Его app-execution-alias wt.exe лежит в
+    %LOCALAPPDATA%\\Microsoft\\WindowsApps и обычно находится через PATH."""
+    exe = shutil.which("wt")
+    if exe:
+        return exe
+    local = os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                         "Microsoft", "WindowsApps", "wt.exe")
+    if os.path.isfile(local):
+        return local
+    return None
+
+def spawn_powershell_session(working_dir, ps_body, env=None):
+    """Открывает интерактивное окно PowerShell с ps_body в рабочей директории.
+
+    Движок всегда системный powershell.exe — ровно тот, что запускает поиск
+    в меню «Пуск». Разный вид окна на машинах пользователей задаёт не движок,
+    а хост-терминал Windows: на Win11 с настройками по умолчанию консольные
+    окна рисует Windows Terminal, на Win10 / при выключенной настройке —
+    старый conhost. Чтобы вид не зависел от этих настроек, при наличии
+    wt.exe запускаем окно напрямую через него. Если wt нет — обычный запуск:
+    хост выберет сама Windows (на Win11 это всё равно будет Terminal).
+
+    Нюанс wt: точка с запятой в его командной строке — разделитель команд,
+    поэтому тело -Command через wt передавать нельзя (рвётся на первом ;).
+    Пишем ps_body во временный .ps1 и запускаем -File; рабочий каталог
+    задаём флагом wt -d (cd не нужен)."""
+    wt = find_windows_terminal()
+    if wt:
+        script = os.path.join(
+            tempfile.gettempdir(),
+            "ccm_session_{}_{}.ps1".format(os.getpid(), int(time.time() * 1000))
+        )
+        try:
+            with open(script, 'w', encoding='utf-8-sig') as f:
+                f.write(ps_body)
+        except OSError:
+            # Не смогли записать скрипт — деградируем к обычному запуску.
+            return subprocess.Popen(
+                ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {ps_body}"],
+                env=env
+            )
+        proc = subprocess.Popen(
+            [wt, "-d", working_dir, "powershell", "-NoExit",
+             "-ExecutionPolicy", "Bypass", "-File", script],
+            env=env
+        )
+
+        def _cleanup_script():
+            try:
+                os.remove(script)
+            except OSError:
+                pass
+
+        timer = threading.Timer(60.0, _cleanup_script)
+        timer.daemon = True
+        timer.start()
+        return proc
+    return subprocess.Popen(
+        ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {ps_body}"],
+        env=env
+    )
 
 def check_app_update():
     """Проверяет наличие обновлений приложения через GitHub API"""
@@ -2912,9 +3159,12 @@ class PickerCard(QPushButton):
     """Одна карточка-виджет в окне выбора."""
 
     def __init__(self, text, color=None, tooltip=None, is_current=False,
-                 is_disabled=False, parent=None):
+                 is_disabled=False, clickable=True, parent=None):
         super().__init__(text, parent)
-        self.setCursor(Qt.PointingHandCursor)
+        # clickable=False — информационная карточка (окно моделей opencode):
+        # тот же вид, но курсор обычный и клик не подразумевается.
+        if clickable:
+            self.setCursor(Qt.PointingHandCursor)
         self.setFont(QFont("Segoe UI", 10, QFont.Medium))
         self.setMinimumHeight(42)
         self._full_text = text
@@ -3630,12 +3880,12 @@ class ConfirmDeleteDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        btn_no = GreenButton("Отмена")
+        btn_no = GreenButton(tr("Отмена"))
         btn_no.setMinimumHeight(40)
         btn_no.clicked.connect(self.reject)
         btn_layout.addWidget(btn_no)
 
-        btn_yes = RedButton("Да, удалить")
+        btn_yes = RedButton(tr("Да, удалить"))
         btn_yes.setMinimumHeight(40)
         btn_yes.clicked.connect(self.accept)
         btn_layout.addWidget(btn_yes)
@@ -3681,163 +3931,6 @@ class ConfirmDeleteDialog(QDialog):
         fade.start()
         self._fade = fade
 
-# ============================================================
-# ПРЕДУПРЕЖДЕНИЕ О МОДЕЛИ FABLE 5
-# ============================================================
-
-class Fable5WarningDialog(QDialog):
-    """Предупреждение о модели Fable 5 — модель высшего класса."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setWindowModality(Qt.ApplicationModal)
-
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
-
-        container = QFrame()
-        container.setObjectName("fable5Container")
-        container.setStyleSheet("""
-            QFrame#fable5Container {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(24, 18, 38, 0.99),
-                    stop:1 rgba(16, 11, 27, 0.99));
-                border: 2px solid rgba(167, 139, 252, 0.6);
-                border-radius: 18px;
-            }
-        """)
-
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(32, 26, 32, 26)
-        layout.setSpacing(12)
-
-        # Иконка — огонь
-        icon_label = QLabel("🔥")
-        icon_label.setFont(QFont("Segoe UI Emoji", 38))
-        icon_label.setStyleSheet("background: transparent; border: none;")
-        icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(icon_label)
-
-        # Главный заголовок
-        title_label = QLabel(tr("Fable 5 — Модель высшего класса"))
-        title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        title_label.setStyleSheet("""
-            QLabel {
-                color: rgb(188, 166, 255);
-                background: transparent;
-                border: none;
-            }
-        """)
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
-
-        # Разделитель
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: rgba(167, 139, 252, 0.3); background: rgba(167, 139, 252, 0.3); border: none; max-height: 1px;")
-        layout.addWidget(sep)
-
-        # Основное описание
-        desc_label = QLabel(tr(
-            "Один запрос при уровне /effort High может потребовать "
-            "до 15% вашего дневного лимита токенов.\n\n"
-            "Fable 5 на среднем уровне /effort (Medium) превосходит "
-            "Opus 4.8 на максимальных настройках (xHigh / Max) — разрыв "
-            "составляет около 5% в пользу Fable 5.\n\n"
-            "По общей мощности Fable 5 превосходит Opus 4.8 примерно "
-            "в 2 раза — но и стоит соответственно.\n\n"
-            "Используйте эту модель только тогда, когда другие уже не "
-            "справляются — она стоит каждого токена, но расходует их "
-            "значительно быстрее."
-        ))
-        desc_label.setFont(QFont("Segoe UI", 10))
-        desc_label.setStyleSheet("""
-            QLabel {
-                color: rgba(214, 208, 232, 0.92);
-                background: transparent;
-                border: none;
-            }
-        """)
-        desc_label.setAlignment(Qt.AlignCenter)
-        desc_label.setWordWrap(True)
-        layout.addWidget(desc_label)
-
-        # Плашка с датой релиза
-        release_label = QLabel(tr("Выпущена Anthropic · 09 июня 2026"))
-        release_label.setFont(QFont("Segoe UI", 9))
-        release_label.setStyleSheet("""
-            QLabel {
-                color: rgba(188, 166, 255, 0.85);
-                background: rgba(167, 139, 252, 0.1);
-                border: 1px solid rgba(167, 139, 252, 0.28);
-                border-radius: 6px;
-                padding: 6px 12px;
-            }
-        """)
-        release_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(release_label)
-
-        layout.addSpacing(4)
-
-        # Кнопки
-        btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_cancel = GlowDialogButton(tr("Отмена"),
-                                      base_rgb=(90, 90, 90),
-                                      hover_rgb=(120, 120, 120))
-        btn_cancel.clicked.connect(self.reject)
-        btn_ok = GlowDialogButton(tr("Продолжить"),
-                                  base_rgb=(167, 139, 252),
-                                  hover_rgb=(188, 166, 255))
-        btn_ok.clicked.connect(self.accept)
-        btn_row.addStretch()
-        btn_row.addWidget(btn_cancel)
-        btn_row.addSpacing(12)
-        btn_row.addWidget(btn_ok)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        main_layout.addWidget(container)
-        self.setLayout(main_layout)
-        self.setFixedWidth(480)
-
-        # Анимация появления
-        self.setWindowOpacity(0.0)
-        self.fade_in = QPropertyAnimation(self, b"windowOpacity")
-        self.fade_in.setDuration(220)
-        self.fade_in.setStartValue(0.0)
-        self.fade_in.setEndValue(1.0)
-        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.fade_in.start()
-
-    def accept(self):
-        fade = QPropertyAnimation(self, b"windowOpacity")
-        fade.setDuration(220)
-        fade.setStartValue(1.0)
-        fade.setEndValue(0.0)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(lambda: super(Fable5WarningDialog, self).accept())
-        fade.start()
-        self._fade = fade
-
-    def reject(self):
-        fade = QPropertyAnimation(self, b"windowOpacity")
-        fade.setDuration(220)
-        fade.setStartValue(1.0)
-        fade.setEndValue(0.0)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(lambda: super(Fable5WarningDialog, self).reject())
-        fade.start()
-        self._fade = fade
-
-
-# ============================================================
-# ОКНО-ПРЕДУПРЕЖДЕНИЕ «ОФИЦИАЛЬНЫЙ РЕЖИМ»
-# ============================================================
 
 class OfficialModeWarningDialog(QDialog):
     """Предупреждение при первом переключении на вкладку Claude (official)."""
@@ -5691,7 +5784,7 @@ class EffortDialog(QDialog):
 # только позиций 6 и вместо пульсирующего свечения — фиолетовое подсвечение
 # на Fable 5 (флагманский платный уровень).
 
-MODEL_ORDER = ["Sonnet 4.6", "Sonnet 5", "Opus 4.6", "Opus 4.7", "Opus 4.8", "Opus 5", "Fable 5"]
+MODEL_ORDER = ["Sonnet 4.6", "Sonnet 5", "Opus 4.6", "Opus 4.7", "Opus 4.8", "Opus 5", "Fable 5", "Fable 5.1"]
 
 # Сколько ячеек помещается в первой строке ползунка. Всё, что не влезло,
 # уезжает во вторую строку — она короткая и прижата к левому краю.
@@ -5705,6 +5798,7 @@ MODEL_COLORS_MAP = {
     "Opus 4.8":   (235, 150, 130),
     "Opus 5":     (238, 118, 108),   # чуть краснее Opus 4.8
     "Fable 5":    (167, 139, 252),   # фиолетовый — флагман, как ultracode
+    "Fable 5.1":  (167, 139, 252),   # тот же фиолетовый — обновлённый флагман
 }
 
 MODEL_LABELS_SHORT = {
@@ -5715,6 +5809,7 @@ MODEL_LABELS_SHORT = {
     "Opus 4.8":   "Opus 4.8",
     "Opus 5":     "Opus 5",
     "Fable 5":    "Fable 5",
+    "Fable 5.1":  "Fable 5.1",
 }
 
 # Модели, у которых нет поддержки ultracode (устаревшие 4.6-tier).
@@ -5873,7 +5968,8 @@ class ModelSlider(QWidget):
                 self._hover_alpha[i] = tgt
                 changed = True
         self._pulse = (self._pulse + 0.045) % (math.pi * 2)
-        if self._model == "Fable 5" or abs(self._progress - (len(MODEL_ORDER) - 1)) < 0.5:
+        # Пульс — у флагмана (последняя модель в MODEL_ORDER, сейчас Fable 5.1)
+        if self._model == MODEL_ORDER[-1] or abs(self._progress - (len(MODEL_ORDER) - 1)) < 0.5:
             changed = True
         if changed:
             self.update()
@@ -5941,7 +6037,7 @@ class ModelSlider(QWidget):
 
         p.save()
         p.setClipPath(self._shape(1.4, track_r - 1))
-        is_fable = self._model == "Fable 5" or (self._progress > len(MODEL_ORDER) - 1.5)
+        is_fable = self._model == MODEL_ORDER[-1] or (self._progress > len(MODEL_ORDER) - 1.5)
         pulse_amp = (0.5 + 0.5 * math.sin(self._pulse)) if is_fable else 0.0
         glow_boost = 1.0 + 0.8 * pulse_amp
         for i in range(1, 4):
@@ -6010,6 +6106,7 @@ class ModelDialog(QDialog):
         "Opus 4.8":   "флагманский Opus 4.8 — максимум качества",
         "Opus 5":     "новый флагман Opus 5 — сильнее 4.8 во всём",
         "Fable 5":    "экспериментальная Fable 5 — необычные вопросы",
+        "Fable 5.1":  "для требовательного reasoning и длинных agentic-задач",
     }
     LEVEL_DESCRIPTIONS_EN = {
         "Sonnet 4.6": "fast and cheap — for simple tasks",
@@ -6019,6 +6116,7 @@ class ModelDialog(QDialog):
         "Opus 4.8":   "flagship Opus 4.8 — maximum quality",
         "Opus 5":     "new flagship Opus 5 — stronger than 4.8 all around",
         "Fable 5":    "experimental Fable 5 — unusual questions",
+        "Fable 5.1":  "for demanding reasoning and long-horizon agentic work",
     }
 
     def __init__(self, current_model="Opus 4.8", parent=None, current_effort="high"):
@@ -6237,22 +6335,24 @@ class ModelDialog(QDialog):
 # OPENAI (CODEX CLI) — модели, эфорты, слайдеры, диалог выбора
 # ============================================================
 
-OPENAI_MODEL_ORDER = ["gpt-5.2", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
+OPENAI_MODEL_ORDER = ["gpt-5.2", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
 
 OPENAI_MODEL_COLORS = {
     "gpt-5.2":       (130, 220, 130),
     "gpt-5.5":       (180, 235, 150),
     "gpt-5.6-luna":  (230, 220, 130),
     "gpt-5.6-terra": (235, 180, 110),
-    "gpt-5.6-sol":   (235, 120, 100),
+    "gpt-5.6-sol":   (235, 140, 120),
+    "gpt-6-astra":   (228, 78, 92),
 }
 
 OPENAI_MODEL_LABELS = {
-    "gpt-5.2":       "5.2",
-    "gpt-5.5":       "5.5",
-    "gpt-5.6-luna":  "5.6 Luna",
-    "gpt-5.6-terra": "5.6 Terra",
-    "gpt-5.6-sol":   "5.6 Sol",
+    "gpt-5.2":       "GPT 5.2",
+    "gpt-5.5":       "GPT 5.5",
+    "gpt-5.6-luna":  "GPT 5.6 Luna",
+    "gpt-5.6-terra": "GPT 5.6 Terra",
+    "gpt-5.6-sol":   "GPT 5.6 Sol",
+    "gpt-6-astra":   "GPT 6 Astra",
 }
 
 OPENAI_MODEL_DESCRIPTIONS = {
@@ -6261,6 +6361,7 @@ OPENAI_MODEL_DESCRIPTIONS = {
     "gpt-5.6-luna":  "быстрая и дешёвая agentic-модель для кода",
     "gpt-5.6-terra": "сбалансированная agentic-модель на каждый день",
     "gpt-5.6-sol":   "новейшая флагманская agentic-модель для кода",
+    "gpt-6-astra":   "самая мощная модель — для самой сложной end-to-end работы",
 }
 OPENAI_MODEL_DESCRIPTIONS_EN = {
     "gpt-5.2":       "optimized for professional work and long-running agents",
@@ -6268,6 +6369,7 @@ OPENAI_MODEL_DESCRIPTIONS_EN = {
     "gpt-5.6-luna":  "fast and affordable agentic coding model",
     "gpt-5.6-terra": "balanced agentic coding model for everyday work",
     "gpt-5.6-sol":   "latest frontier agentic coding model",
+    "gpt-6-astra":   "our most capable model, built for the hardest end-to-end work",
 }
 
 OPENAI_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"]
@@ -6589,100 +6691,76 @@ def _oc_short_label(name):
     return name.replace("-contributor", "").replace("-free", "")
 
 
-class _OcInfoRow(QWidget):
-    """Строка-карточка с моделью в информационном окне: цветной бейдж с
-    первой буквой, имя модели подсвечено её цветом, внизу полное имя обычным
-    текстом. При наведении подсвечивается только рамка и слегка — цветное имя."""
+# ── Цвета по компаниям-провайдерам моделей ──────────────────────
+# Все модели одной компании (claude-*, gpt-*, gemini-*, ...) получают
+# один и тот же цвет карточки — список читается как каталог по вендорам.
 
-    def __init__(self, model_name, color, parent=None):
+_OC_VENDOR_COLORS = [
+    # (шаблоны префиксов, (r, g, b))
+    (("claude", "anthropic"),          (217, 119, 87)),   # Anthropic — терракота
+    (("gpt", "openai", "o1", "o3", "o4"), (95, 150, 235)),  # OpenAI — голубой
+    (("gemini", "google", "gemma"),    (66, 133, 244)),   # Google — синий
+    (("grok", "xai"),                  (140, 145, 155)),  # xAI — серый стальной
+    (("deepseek",),                    (70, 110, 235)),   # DeepSeek — индиго
+    (("qwen", "qwq"),                  (165, 110, 230)),  # Qwen — фиолетовый
+    (("llama", "meta"),                (60, 160, 255)),   # Meta — голубой
+    (("mistral", "magistral", "codestral", "ministral", "pixtral"),
+                                       (250, 140, 60)),   # Mistral — оранжевый
+    (("kimi", "moonshot"),             (30, 130, 200)),   # Moonshot — морской
+    (("glm", "zhipu", "chatglm"),      (70, 170, 160)),   # Zhipu — бирюзовый
+    (("command", "cohere"),            (220, 120, 180)),  # Cohere — розовый
+    (("ernie", "baidu"),               (60, 140, 120)),   # Baidu — зелёно-синий
+    (("doubao", "bytedance"),          (235, 100, 110)),  # ByteDance — красный
+    (("hunyuan", "tencent"),           (90, 130, 240)),   # Tencent — синий
+]
+
+_OC_FREE_COLOR = (140, 220, 150)  # бесплатные opencode-модели — зелёный
+
+
+def _oc_vendor_color(name):
+    """Цвет по компании модели. Ищем префикс вендора в начале имени и в
+    качестве fallback внутри имени (vendor/…, …-vendor-…). Неизвестные —
+    стабильный цвет из палитры по хешу."""
+    low = name.lower()
+    # 1) префикс: "claude-...", "gpt-5.6", "gemini-2.5" и т.п.
+    for prefixes, rgb in _OC_VENDOR_COLORS:
+        for p in prefixes:
+            if low.startswith(p):
+                return rgb
+    # 2) vendor внутри имени: "openrouter/openai/gpt-...", "models/gemini/..."
+    for prefixes, rgb in _OC_VENDOR_COLORS:
+        for p in prefixes:
+            if ("/" + p) in low or ("-" + p + "-") in low or ("/" + p) in low:
+                return rgb
+    # 3) неизвестная компания — стабильный цвет по хешу
+    return _oc_model_color(name)
+
+
+class _OcInfoRow(QWidget):
+    """Строка-карточка с моделью в информационном окне. Вид 1-в-1 как у
+    карточек провайдера (PickerCard: фон, рамка 2px, hover), но некликабельная.
+    Цвет карточки — по компании модели (одинаковый у всех моделей вендора)."""
+
+    def __init__(self, model_name, color, parent=None, is_free=False):
         super().__init__(parent)
         self._name = model_name
-        self._color = color
-        self._hover = 0.0
-        self._hover_target = 0.0
-        self._text_k = -1
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(16)
-        self.setMinimumHeight(52)
-
+        if is_free:
+            rgb = _OC_FREE_COLOR
+        else:
+            rgb = _oc_vendor_color(model_name)
+        self._card = PickerCard(
+            _oc_short_label(model_name),
+            color=QColor(*rgb),
+            clickable=False,
+        )
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 6, 12, 6)
-        lay.setSpacing(12)
-
-        badge = QLabel((model_name[0] if model_name else "?").upper())
-        badge.setFixedSize(34, 34)
-        badge.setAlignment(Qt.AlignCenter)
-        badge.setFont(QFont("Segoe UI", 13, QFont.Bold))
-        badge.setAttribute(Qt.WA_TranslucentBackground)
-        badge.setStyleSheet(
-            "color: rgb(%d,%d,%d); background: transparent; border: none;" % color
-        )
-        lay.addWidget(badge)
-
-        col = QVBoxLayout()
-        col.setSpacing(1)
-        name_lbl = QLabel(_oc_short_label(model_name))
-        name_lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        name_lbl.setAttribute(Qt.WA_TranslucentBackground)
-        name_lbl.setStyleSheet(
-            "color: rgb(%d,%d,%d); background: transparent; border: none;" % color
-        )
-        self._name_lbl = name_lbl
-        col.addWidget(name_lbl)
-        sub_lbl = QLabel(model_name)
-        sub_lbl.setFont(QFont("Segoe UI", 9))
-        sub_lbl.setAttribute(Qt.WA_TranslucentBackground)
-        sub_lbl.setStyleSheet("color: rgb(135, 135, 145); background: transparent; border: none;")
-        col.addWidget(sub_lbl)
-        lay.addLayout(col, 1)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self._card)
 
     @property
     def model_name(self):
         return self._name
-
-    def _tick(self):
-        d = self._hover_target - self._hover
-        if abs(d) > 0.003:
-            self._hover += d * 0.3
-            self.update()
-        r, g, b = self._color
-        k = int(self._hover * 55)
-        if k != self._text_k:
-            self._text_k = k
-            if k:
-                self._name_lbl.setStyleSheet(
-                    "color: rgb(%d,%d,%d); background: transparent; border: none;"
-                    % (min(255, r + k), min(255, g + k), min(255, b + k))
-                )
-            else:
-                self._name_lbl.setStyleSheet(
-                    "color: rgb(%d,%d,%d); background: transparent; border: none;"
-                    % (r, g, b)
-                )
-
-    def enterEvent(self, event):
-        self._hover_target = 1.0
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._hover_target = 0.0
-        super().leaveEvent(event)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        r, g, b = self._color
-        # Фон не подсвечивается — только рамка (нарастает при наведении).
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(QColor(r, g, b, 70 + int(120 * self._hover)), 1.2))
-        p.drawRoundedRect(QRectF(1.0, 1.0, w - 2.0, h - 2.0), 10, 10)
-        p.end()
-
-        # Прозрачный фон у дочерних виджетов, чтобы канва была видна.
-        for child in self.findChildren(QLabel):
-            child.setAttribute(Qt.WA_TranslucentBackground, True)
 
 
 class OcModelDialog(QDialog):
@@ -6804,19 +6882,59 @@ class OcModelDialog(QDialog):
         self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
         self._closing = False
 
-    def _add_section_header(self, text, margin=False):
-        lbl = QLabel(text)
+    def _add_section_block(self, title, provider_name=None, margin=False):
+        """Заголовок секции в карточке-обводке. Если задан provider_name —
+        внутри карточки под заголовком идут разделительная линия и крупное
+        цветное имя провайдера. Блок отделён отступами от списка моделей,
+        чтобы не выглядеть его частью."""
+        frame = QFrame()
+        frame.setObjectName("ocSectionBlock")
+        frame.setStyleSheet(
+            "QFrame#ocSectionBlock {"
+            "background-color: rgba(30, 30, 35, 200);"
+            "border: 1px solid rgb(60, 60, 65);"
+            "border-radius: 8px; }"
+        )
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(12, 7, 12, 9)
+        lay.setSpacing(7)
+
+        lbl = QLabel(title)
         lbl.setWordWrap(True)
         lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        lbl.setStyleSheet(
-            "color: rgb(170, 170, 182); background: transparent; border: none;"
-            + ("margin-top: 10px;" if margin else "")
-        )
+        lbl.setStyleSheet("color: rgb(170, 170, 182); background: transparent; border: none;")
         lbl.setTextFormat(Qt.PlainText)
-        self._cards_layout.addWidget(lbl)
+        lay.addWidget(lbl)
 
-    def _add_row(self, name, color):
-        row = _OcInfoRow(name, _oc_model_color(name))
+        if provider_name:
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet(
+                "color: rgba(90, 90, 98, 0.55); background: rgba(90, 90, 98, 0.55);"
+                "border: none; max-height: 1px;"
+            )
+            lay.addWidget(sep)
+
+            pr, pg, pb = assign_provider_color(provider_name)
+            pname = QLabel(provider_name)
+            pname.setFont(QFont("Segoe UI", 12, QFont.Bold))
+            pname.setAlignment(Qt.AlignCenter)
+            pname.setStyleSheet(
+                "color: rgb(%d, %d, %d); background: transparent; border: none;"
+                % (pr, pg, pb)
+            )
+            pname.setTextFormat(Qt.PlainText)
+            lay.addWidget(pname)
+
+        if margin:
+            self._cards_layout.addSpacing(8)
+        self._cards_layout.addWidget(frame)
+        # Зазор между блоком заголовка и первой моделью — блок читается
+        # как «шапка» секции, а не как строка списка.
+        self._cards_layout.addSpacing(6)
+
+    def _add_row(self, name, color, is_free=False):
+        row = _OcInfoRow(name, _oc_model_color(name), is_free=is_free)
         self._cards_layout.addWidget(row)
 
     def update_models(self, endpoint_models, free_models, provider_name=""):
@@ -6835,27 +6953,20 @@ class OcModelDialog(QDialog):
         self._build_instruction()
         self.adjustSize()
 
-    def _add_provider_name(self):
-        """Имя провайдера под заголовком секции — обычным цветом."""
-        if not self._provider_name:
-            return
-        lbl = QLabel(self._provider_name)
-        lbl.setFont(QFont("Segoe UI", 9))
-        lbl.setStyleSheet("color: rgb(120, 120, 132); background: transparent; border: none;")
-        lbl.setTextFormat(Qt.PlainText)
-        self._cards_layout.addWidget(lbl)
-
     def _build_sections(self):
         combined = self._endpoint + self._free
         if self._endpoint:
-            self._add_section_header(tr("Модели провайдера"), margin=True)
-            self._add_provider_name()
+            self._add_section_block(
+                tr("Модели провайдера"),
+                provider_name=self._provider_name,
+                margin=True,
+            )
             for m in self._endpoint:
                 self._add_row(m, _oc_model_color(m))
         if self._free:
-            self._add_section_header("UNLIMIT MODELS", margin=self._endpoint is not None)
+            self._add_section_block("UNLIMIT MODELS", margin=self._endpoint is not None)
             for m in self._free:
-                self._add_row(m, _oc_model_color(m))
+                self._add_row(m, _oc_model_color(m), is_free=True)
         if not combined:
             lbl = QLabel(tr("Модели не найдены"))
             lbl.setStyleSheet("color: rgb(120, 120, 130); background: transparent; border: none;")
@@ -10782,13 +10893,267 @@ def _backup_file(path):
         pass
 
 
-class OpencodeProvidersDialog(QDialog):
-    """Показывает все провайдеры opencode (определения из ~/.config/opencode
-    и креды из ~/.local/share/opencode/auth.json) и позволяет их удалять.
+class _OcClickFrame(QFrame):
+    """QFrame с сигналом clicked: клик левой кнопкой внутри — подключение."""
 
-    Удаление затрагивает оба источника: креду из auth.json, определения из
-    opencode.json/.jsonc (сам блок + упоминание в disabled_providers /
-    enabled_providers)."""
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
+class _OcCatalogLoader(QThread):
+    """Фоновая загрузка глобального каталога провайдеров opencode
+    (~/.cache/opencode/models.json — кэш каталога models.dev). Если файла
+    ещё нет — один раз вызывает `opencode models`, чтобы opencode его
+    создал. Наверх летит облегчённый словарь:
+    {provider_id: {name, npm, env, models_count}}."""
+
+    loaded = Signal(dict)
+
+    def __init__(self, owner):
+        super().__init__()
+        self._owner = owner
+        self._path = (
+            getattr(owner, "catalog_path", None)
+            or os.path.join(
+                os.path.expanduser("~"), ".cache", "opencode", "models.json"
+            )
+        )
+
+    def run(self):
+        path = self._path
+        if not os.path.exists(path):
+            try:
+                exe = shutil.which("opencode")
+                if exe:
+                    subprocess.run(
+                        ["cmd", "/c", exe, "models"],
+                        capture_output=True, timeout=90,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+            except Exception:
+                pass
+        slim = {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for pid, meta in data.items():
+                if not isinstance(meta, dict):
+                    continue
+                models = meta.get("models")
+                slim[str(pid)] = {
+                    "name": str(meta.get("name") or pid),
+                    "npm": str(meta.get("npm") or ""),
+                    "env": list(meta.get("env") or []),
+                    "models_count": len(models) if isinstance(models, dict) else 0,
+                    "models": dict(models) if isinstance(models, dict) else {},
+                }
+        except Exception:
+            slim = {}
+        self.loaded.emit(slim)
+
+
+class OcApiKeyDialog(QDialog):
+    """Ввод имени и API-ключа при подключении/редактировании провайдера
+    opencode: сверху название (можно своё — под ним провайдер и подключится),
+    ниже ключ с глазиком. «ОК» применяет, «Отмена» закрывает без изменений."""
+
+    def __init__(self, provider_id, provider_name, parent=None,
+                 title=None, ok_text=None, initial_name="", initial_key=""):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("ocApiKeyContainer")
+        container.setStyleSheet("""
+            QFrame#ocApiKeyContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(14)
+
+        icon_label = QLabel("🔑")
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("""
+            QLabel {
+                color: rgb(52, 211, 153);
+                font-size: 24px;
+                background: rgba(52, 211, 153, 0.12);
+                border: 2px solid rgba(52, 211, 153, 0.4);
+                border-radius: 25px;
+                min-width: 50px;
+                max-width: 50px;
+                min-height: 50px;
+                max-height: 50px;
+            }
+        """)
+        icon_row = QHBoxLayout()
+        icon_row.addStretch()
+        icon_row.addWidget(icon_label)
+        icon_row.addStretch()
+        layout.addLayout(icon_row)
+
+        title = QLabel(title if title else tr("Подключение провайдера"))
+        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #DDDDDD; background: transparent; border: none;")
+        layout.addWidget(title)
+
+        name_label = QLabel(provider_id)
+        name_label.setFont(QFont("Consolas", 10))
+        name_label.setAlignment(Qt.AlignCenter)
+        name_label.setStyleSheet("""
+            QLabel {
+                color: #E0E0E0;
+                background: rgba(100, 100, 105, 0.1);
+                border: 1.5px solid rgba(100, 100, 105, 0.4);
+                border-radius: 8px;
+                padding: 8px 12px;
+            }
+        """)
+        layout.addWidget(name_label)
+
+        hint = QLabel(tr("Ключ сохранится в auth.json — как при opencode auth login."))
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setStyleSheet("color: rgb(130, 130, 135); background: transparent; border: none;")
+        layout.addWidget(hint)
+
+        # Название провайдера — над полем ключа. Можно оставить как есть
+        # или вписать своё: тогда подключится отдельный экземпляр под этим
+        # именем (одного провайдера можно подключить несколько раз).
+        self.name_edit = QLineEdit()
+        self.name_edit.setText(initial_name if initial_name else provider_name)
+        self.name_edit.setPlaceholderText(tr("Название провайдера"))
+        self.name_edit.setFont(QFont("Segoe UI", 9))
+        self.name_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        self.name_edit.returnPressed.connect(lambda: self.key_edit.setFocus())
+        layout.addWidget(self.name_edit)
+
+        key_row = QHBoxLayout()
+        key_row.setSpacing(8)
+        self.key_edit = QLineEdit()
+        self.key_edit.setPlaceholderText(tr("API ключ:"))
+        self.key_edit.setEchoMode(QLineEdit.Password)
+        if initial_key:
+            self.key_edit.setText(initial_key)
+        self.key_edit.setFont(QFont("Segoe UI", 9))
+        self.key_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        key_row.addWidget(self.key_edit, 1)
+        self.eye_btn = EyeToggleButton()
+        self.eye_btn.clicked.connect(self._toggle_key)
+        key_row.addWidget(self.eye_btn)
+        layout.addLayout(key_row)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+        cancel_btn = GreenButton(tr("Отмена"))
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        ok_btn = GreenButton(ok_text if ok_text else "ОК")
+        ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(ok_btn)
+        layout.addLayout(btn_layout)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setMinimumWidth(460)
+        self.adjustSize()
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        self.name_edit.setFocus()
+        self.key_edit.returnPressed.connect(self.accept)
+
+    def _toggle_key(self):
+        if self.key_edit.echoMode() == QLineEdit.Password:
+            self.key_edit.setEchoMode(QLineEdit.Normal)
+            self.eye_btn.setRevealed(True)
+        else:
+            self.key_edit.setEchoMode(QLineEdit.Password)
+            self.eye_btn.setRevealed(False)
+
+    def key_value(self):
+        return self.key_edit.text()
+
+    def name_value(self):
+        return self.name_edit.text()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+
+    def accept(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(OcApiKeyDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        fade = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade.setDuration(220)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(OcApiKeyDialog, self).reject())
+        fade.start()
+        self._fade_out = fade
+
+
+class OpencodeProvidersDialog(QDialog):
+    """Управление провайдерами opencode.
+
+    Сверху — секция «Подключённые провайдеры»: определения из ~/.config/opencode
+    (opencode.json/.jsonc) и креды из ~/.local/share/opencode/auth.json,
+    у каждой строки есть «Удалить» (убирает и креду, и определение).
+
+    Ниже — секция «Доступные провайдеры»: глобальный каталог opencode
+    (~/.cache/opencode/models.json). Клик по строке открывает ввод API-ключа;
+    после «ОК» провайдер реально подключается — креда пишется в auth.json
+    (тот же механизм, что у `opencode auth login`).
+
+    Списки обновляются при каждом открытии окна: _OcCatalogLoader грузит
+    каталог в фоне, так что если opencode сам добавил/убрал провайдеров —
+    при следующем открытии это сразу видно."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -10806,6 +11171,16 @@ class OpencodeProvidersDialog(QDialog):
             if os.path.exists(cand):
                 self.config_path = cand
                 break
+        self.catalog_path = os.path.join(
+            os.path.expanduser("~"), ".cache", "opencode", "models.json"
+        )
+
+        # Фоновая загрузка каталога провайдеров (список «доступные»).
+        # Окно пересоздаётся при каждом открытии, поэтому каталог и списки
+        # обновляются при каждом открытии окна.
+        self._catalog = {}
+        self._catalog_loader = None
+        self._start_catalog_load()
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -10842,12 +11217,31 @@ class OpencodeProvidersDialog(QDialog):
         title_row.addWidget(_close)
         layout.addLayout(title_row)
 
-        info = QLabel(tr("Провайдеры из конфига и auth.json. Удаление убирает и креду, и определение."))
+        info = QLabel(tr("Сверху — подключённые провайдеры, ниже — доступные из каталога opencode. Клик по доступному подключает его по API-ключу. Список обновляется при открытии окна."))
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
         info.setWordWrap(True)
         info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
         layout.addWidget(info)
+
+        # Живой поиск по обоим спискам: фильтрует мгновенно при вводе,
+        # без кнопки «Поиск». Ищет и среди подключённых, и среди доступных.
+        self._search = ""
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText(tr("Поиск провайдера"))
+        self.search_edit.setFont(QFont("Segoe UI", 9))
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: rgb(200, 200, 200);
+                border: 1px solid rgb(60, 60, 65);
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        self.search_edit.textChanged.connect(self._on_search)
+        layout.addWidget(self.search_edit)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -10940,22 +11334,259 @@ class OpencodeProvidersDialog(QDialog):
             records[rec["id"]] = rec
         return records
 
+    def _start_catalog_load(self):
+        """Фоновая загрузка каталога доступных провайдеров."""
+        if self._catalog_loader is not None:
+            try:
+                if self._catalog_loader.isRunning():
+                    return
+            except Exception:
+                pass
+        self._catalog_loader = _OcCatalogLoader(self)
+        self._catalog_loader.loaded.connect(self._on_catalog_loaded)
+        self._catalog_loader.start()
+
+    def _on_catalog_loaded(self, slim):
+        self._catalog = slim or {}
+        self.refresh()
+
+    def _section_header(self, text, color):
+        lbl = QLabel(text)
+        lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        lbl.setStyleSheet(
+            "color: rgb(%d, %d, %d); background: transparent; border: none;"
+            % color
+        )
+        return lbl
+
+    def _matches(self, pid, *texts):
+        """Живой фильтр: подстрока (без регистра) в id или в любом тексте."""
+        q = (self._search or "").lower().strip()
+        if not q:
+            return True
+        hay = " ".join([str(pid)] + [t for t in texts if t]).lower()
+        return q in hay
+
     def refresh(self):
         while self.list_layout.count():
             item = self.list_layout.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+            elif item.layout() is not None:
+                while item.layout().count():
+                    sub = item.layout().takeAt(0)
+                    if sub.widget() is not None:
+                        sub.widget().deleteLater()
+
         records = self._collect()
-        if not records:
+        connected_ids = set(records.keys())
+        catalog_ids = set(self._catalog.keys())
+        avail = [pid for pid in sorted(catalog_ids - connected_ids)
+                 if self._matches(pid, self._catalog[pid].get("name"))]
+        conn = [pid for pid in sorted(records.keys())
+                if self._matches(pid, records[pid].get("name"),
+                                 records[pid].get("base_url"))]
+
+        if not records and not self._catalog:
+            # Каталог ещё грузится либо недоступен.
             self.empty_label.show()
             self.scroll.hide()
             return
         self.empty_label.hide()
         self.scroll.show()
-        for pid in sorted(records.keys()):
-            self.list_layout.addWidget(self._build_row(records[pid]))
+
+        no_match = bool(self._search.strip()) and not conn and not avail
+
+        # ── Секция 1: подключённые провайдеры ──
+        if not no_match:
+            self.list_layout.addWidget(
+                self._section_header(tr("Подключённые провайдеры"), (52, 211, 153))
+            )
+        if conn:
+            for pid in conn:
+                self.list_layout.addWidget(self._build_row(records[pid]))
+        elif not no_match:
+            none_lbl = QLabel(
+                tr("Нет совпадений") if self._search.strip()
+                else tr("Провайдеров не найдено")
+            )
+            none_lbl.setFont(QFont("Segoe UI", 9))
+            none_lbl.setAlignment(Qt.AlignCenter)
+            none_lbl.setStyleSheet(
+                "color: rgb(120, 120, 120); background: transparent; border: none;"
+            )
+            self.list_layout.addWidget(none_lbl)
+
+        if not no_match:
+            self.list_layout.addSpacing(14)
+
+        # ── Секция 2: доступные провайдеры (клик = подключить) ──
+        if not no_match:
+            self.list_layout.addWidget(
+                self._section_header(tr("Доступные провайдеры"), (120, 160, 235))
+            )
+        if not self._catalog:
+            if not no_match:
+                load_lbl = QLabel(tr("Каталог провайдеров загружается…"))
+                load_lbl.setFont(QFont("Segoe UI", 9))
+                load_lbl.setAlignment(Qt.AlignCenter)
+                load_lbl.setStyleSheet(
+                    "color: rgb(120, 120, 120); background: transparent; border: none;"
+                )
+                self.list_layout.addWidget(load_lbl)
+        elif not avail:
+            if not no_match:
+                all_lbl = QLabel(
+                    tr("Нет совпадений") if self._search.strip()
+                    else tr("Все провайдеры каталога уже подключены")
+                )
+                all_lbl.setFont(QFont("Segoe UI", 9))
+                all_lbl.setAlignment(Qt.AlignCenter)
+                all_lbl.setStyleSheet(
+                    "color: rgb(120, 120, 120); background: transparent; border: none;"
+                )
+                self.list_layout.addWidget(all_lbl)
+        else:
+            for pid in avail:
+                self.list_layout.addWidget(
+                    self._build_available_row(pid, self._catalog[pid])
+                )
+        if no_match:
+            nm_lbl = QLabel(tr("Нет совпадений"))
+            nm_lbl.setFont(QFont("Segoe UI", 10))
+            nm_lbl.setAlignment(Qt.AlignCenter)
+            nm_lbl.setStyleSheet(
+                "color: rgb(120, 120, 120); background: transparent; border: none;"
+            )
+            self.list_layout.addWidget(nm_lbl)
         self.list_layout.addStretch(1)
+
+    def _on_search(self, text):
+        self._search = text
+        self.refresh()
+
+    def _build_available_row(self, pid, meta):
+        """Строка каталога: клик по ней — диалог ввода API-ключа."""
+        row = _OcClickFrame()
+        row.setCursor(Qt.PointingHandCursor)
+        row.setToolTip(tr("Подключить"))
+        row.setStyleSheet("""
+            QFrame { background-color: rgba(30, 30, 35, 130);
+                     border: 1px solid rgb(55, 55, 60); border-radius: 8px; }
+            QFrame:hover { background-color: rgba(40, 40, 48, 200);
+                           border: 1px solid rgb(120, 160, 235); }
+        """)
+        row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(10, 7, 10, 7)
+        lay.setSpacing(8)
+
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        name = QLabel(meta.get("name") or pid)
+        name.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        name.setStyleSheet("color: rgb(190, 190, 195); background: transparent; border: none;")
+        name.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        col.addWidget(name)
+
+        sub_bits = [pid]
+        if meta.get("models_count"):
+            sub_bits.append(tr("Модели:") + " %d" % meta["models_count"])
+        sub = QLabel("  ·  ".join(sub_bits))
+        sub.setFont(QFont("Segoe UI", 9))
+        sub.setStyleSheet("color: rgb(135, 135, 145); background: transparent; border: none;")
+        sub.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        col.addWidget(sub)
+        lay.addLayout(col, 1)
+
+        add_lbl = QLabel("+")
+        add_lbl.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        add_lbl.setStyleSheet("color: rgb(120, 160, 235); background: transparent; border: none;")
+        lay.addWidget(add_lbl)
+
+        row.clicked.connect(lambda p=pid: self._connect_provider(p))
+        return row
+
+    def _connect_provider(self, pid):
+        """Клик по доступному провайдеру: ввод названия и API-ключа →
+        реальное подключение. Название пишется в конфиг (blocks «name»),
+        ключ — в auth.json (как при opencode auth login). Один и тот же
+        провайдер каталога может быть подключён под разными id: к id
+        добавляется суффикс 2, 3, ... если id уже занят."""
+        meta = self._catalog.get(pid, {})
+        dlg = OcApiKeyDialog(pid, meta.get("name") or pid, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        key = dlg.key_value().strip()
+        if not key:
+            return
+        name = dlg.name_value().strip() or (meta.get("name") or pid)
+        new_id = pid
+        existing = self._collect()
+        n = 2
+        while new_id in existing:
+            new_id = "%s%d" % (pid, n)
+            n += 1
+        self._apply_provider_credentials(new_id, name, key, pid)
+        self.refresh()
+
+    def _apply_provider_credentials(self, new_id, name, key, catalog_pid=None):
+        """Реально подключает провайдера: креда в auth.json (формат как у
+        `opencode auth login`), имя — в конфиг. catalog_pid — оригинальный id
+        каталога, new_id — под каким id подключаем (с суффиксом 2, 3, ...
+        если исходный занят). Существующий конфиг-блок не затирается:
+        обновляется только name (+ models для экземпляров с новым id)."""
+        try:
+            os.makedirs(os.path.dirname(self.auth_path), exist_ok=True)
+            auth = {}
+            if os.path.exists(self.auth_path):
+                auth = _load_jsonc(self.auth_path)
+                if not isinstance(auth, dict):
+                    auth = {}
+            _backup_file(self.auth_path)
+            auth[new_id] = {"type": "api", "key": key}
+            _save_json(self.auth_path, auth)
+        except Exception:
+            return
+
+        meta = self._catalog.get(catalog_pid or new_id, {})
+        if self.config_path:
+            try:
+                cfg = _load_jsonc(self.config_path)
+                if not isinstance(cfg, dict):
+                    cfg = {}
+                providers = cfg.get("provider")
+                if not isinstance(providers, dict):
+                    providers = {}
+                    cfg["provider"] = providers
+                block = providers.get(new_id)
+                if not isinstance(block, dict):
+                    block = {}
+                    providers[new_id] = block
+                # Имя обновляем всегда; npm не трогаем, если уже задан
+                # (у кастомных роутеров там свой пакет).
+                block["name"] = name
+                if "npm" not in block:
+                    npm = meta.get("npm") or "@ai-sdk/openai-compatible"
+                    block["npm"] = npm
+                # Экземпляр под новым id не совпадает с каталогом — opencode
+                # не найдёт для него модели сам, переносим из каталога.
+                if new_id != (catalog_pid or new_id):
+                    models = meta.get("models") or {}
+                    if models:
+                        block["models"] = {mid: dict(m) for mid, m in models.items()}
+                disabled = cfg.get("disabled_providers")
+                if isinstance(disabled, list):
+                    for pid_like in (new_id, catalog_pid):
+                        if pid_like in disabled:
+                            disabled.remove(pid_like)
+                _backup_file(self.config_path)
+                _save_json(self.config_path, cfg)
+            except Exception:
+                pass
+
+        self.refresh()
 
     def _build_row(self, rec):
         row = QFrame()
@@ -10998,12 +11629,46 @@ class OpencodeProvidersDialog(QDialog):
         labels.addWidget(sub_lbl)
         lay.addLayout(labels, 1)
 
+        edit_btn = StyledButton(tr("Изменить"))
+        edit_btn.setMinimumHeight(30)
+        edit_btn.setFixedWidth(96)
+        edit_btn.clicked.connect(lambda _, p=rec["id"]: self._edit_provider(p))
+        lay.addWidget(edit_btn)
+
         del_btn = RedButton(tr("Удалить"))
         del_btn.setMinimumHeight(30)
         del_btn.setMaximumWidth(90)
         del_btn.clicked.connect(lambda _, p=rec["id"]: self._delete_provider(p))
         lay.addWidget(del_btn)
         return row
+
+    def _edit_provider(self, pid):
+        """«Изменить»: поменять название и API-ключ подключённого провайдера.
+        Ключ обновляется в auth.json, название — в конфиге (если провайдер
+        там определён)."""
+        rec = self._collect().get(pid, {})
+        current_key = ""
+        try:
+            auth = _load_jsonc(self.auth_path)
+            cred = auth.get(pid) or {}
+            current_key = cred.get("key") or ""
+        except Exception:
+            pass
+        dlg = OcApiKeyDialog(
+            pid, rec.get("name") or pid, self,
+            title=tr("Редактировать провайдера"),
+            ok_text=tr("Сохранить"),
+            initial_name=rec.get("name") or "",
+            initial_key=current_key,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        key = dlg.key_value().strip()
+        name = dlg.name_value().strip() or (rec.get("name") or pid)
+        if not key:
+            return
+        self._apply_provider_credentials(pid, name, key, pid)
+        self.refresh()
 
     def _delete_provider(self, pid):
         confirm = ConfirmDeleteDialog(
@@ -11013,6 +11678,8 @@ class OpencodeProvidersDialog(QDialog):
         )
         if confirm.exec() != QDialog.Accepted:
             return
+
+        rec = self._collect().get(pid, {})
 
         # Удаляем креду
         if os.path.exists(self.auth_path):
@@ -11024,6 +11691,16 @@ class OpencodeProvidersDialog(QDialog):
                     _save_json(self.auth_path, auth)
                 except Exception:
                     pass
+
+        # Запись цвета больше не нужна — при повторном подключении этого же
+        # провайдера (id или host его Base URL) выпадет новый случайный цвет.
+        release_provider_color(pid)
+        base_url = rec.get("base_url") or ""
+        if base_url:
+            host = re.sub(r"[^A-Za-z0-9]", "",
+                          re.sub(r"^https?://", "", base_url).split("/")[0] or "")
+            if host and host != pid:
+                release_provider_color(host)
 
         # Удаляем определение из конфига
         if self.config_path:
@@ -11184,7 +11861,7 @@ class CustomTokenDialog(QDialog):
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
-        models = ["Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6", "Sonnet 4"]
+        models = ["Fable 5.1", "Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6", "Sonnet 4"]
         self.model_combo.addItems(models)
         # Цвета для каждой модели (от зелёного к красному)
         _sd_model_colors = {
@@ -11195,7 +11872,8 @@ class CustomTokenDialog(QDialog):
             "Opus 4.7":     QColor(235, 180, 110),
             "Opus 4.8":     QColor(235, 150, 130),
             "Opus 5":       QColor(238, 118, 108),
-            "Fable 5":   QColor(167, 139, 252),
+            "Fable 5":      QColor(167, 139, 252),
+            "Fable 5.1":    QColor(167, 139, 252),
         }
         for i in range(self.model_combo.count()):
             txt = self.model_combo.itemText(i)
@@ -11213,6 +11891,7 @@ class CustomTokenDialog(QDialog):
             "claude-opus-4-6": "Opus 4.6",
             "claude-opus-5": "Opus 5",
             "claude-fable-5": "Fable 5",
+            "claude-fable-5-1": "Fable 5.1",
         }
         # Пустая строка "" (старый дефолт) тоже должна раскрываться в Opus 4.8,
         # иначе комбо остаётся на первом элементе списка (Fable 5).
@@ -11802,15 +12481,24 @@ class ClaudeInstallProgressDialog(QDialog):
                 self.sub_lbl.setText(tr("Версия") + f" {ver_fmt}")
             else:
                 self.sub_lbl.setText("")
-            self.status_lbl.setText(tr(
-                "Установка завершена успешно.\n"
-                "Если команда claude не найдена — открой новое окно консоли\n"
-                "(npm обычно сам прописывает её в PATH)."
-            ) if self._product == "Claude Code" else tr(
-                "Установка завершена успешно.\n"
-                "Если команда codex не найдена — открой новое окно консоли\n"
-                "(npm обычно сам прописывает её в PATH)."
-            ))
+            if self._product == "Claude Code":
+                status = tr(
+                    "Установка завершена успешно.\n"
+                    "Если команда claude не найдена — открой новое окно консоли\n"
+                    "(npm обычно сам прописывает её в PATH)."
+                )
+            elif "opencode" in self._product:
+                status = tr(
+                    "Установка завершена успешно.\n"
+                    "Нет команды opencode? Открой новую консоль."
+                )
+            else:
+                status = tr(
+                    "Установка завершена успешно.\n"
+                    "Если команда codex не найдена — открой новое окно консоли\n"
+                    "(npm обычно сам прописывает её в PATH)."
+                )
+            self.status_lbl.setText(status)
         self.btn_ok.show()
 
     def mark_cancelled(self):
@@ -13296,6 +13984,16 @@ class ClaudeManager(QMainWindow):
         self.btn_uninstall_oc.hide()
         install_row.addWidget(self.btn_uninstall_oc)
 
+        # Добавить npm в PATH — как кнопка «Добавить в PATH» у Claude Code:
+        # прописывает папку с шимом opencode (%APPDATA%\npm) в PATH
+        # пользователя, если её там нет. Видна только в режиме customurl.
+        self.btn_add_oc_to_path = StyledButton(tr("Добавить npm в PATH"))
+        self.btn_add_oc_to_path.setFixedHeight(34)
+        self.btn_add_oc_to_path.set_hover_color(120, 180, 230)
+        self.btn_add_oc_to_path.clicked.connect(self._on_add_oc_to_path_clicked)
+        self.btn_add_oc_to_path.hide()
+        install_row.addWidget(self.btn_add_oc_to_path)
+
         install_row.addStretch()
         main_layout.addLayout(install_row)
 
@@ -13661,7 +14359,7 @@ class ClaudeManager(QMainWindow):
         self.fm_model_combo = ModelPickerComboBox()
         self.fm_model_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
         self.fm_model_combo.setMaxVisibleItems(len(MODEL_ORDER))
-        fm_models = ["Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6"]
+        fm_models = ["Fable 5.1", "Fable 5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5", "Sonnet 4.6"]
         self.fm_model_combo.addItems(fm_models)
         # Цвета для каждой модели (от зелёного к красному — по «дороговизне»)
         model_colors = {
@@ -13672,7 +14370,8 @@ class ClaudeManager(QMainWindow):
             "Opus 4.7":     QColor(235, 180, 110),  # жёлтый с переходом в красноватый
             "Opus 4.8":     QColor(235, 150, 130),  # слабо красноватый
             "Opus 5":       QColor(238, 118, 108),  # чуть краснее 4.8
-            "Fable 5":   QColor(167, 139, 252),  # фиолетовый
+            "Fable 5":      QColor(167, 139, 252),  # фиолетовый
+            "Fable 5.1":    QColor(167, 139, 252),  # тот же фиолетовый — обновлённый флагман
         }
         self._fm_model_colors = model_colors
         model_tooltips = {}
@@ -13701,6 +14400,7 @@ class ClaudeManager(QMainWindow):
             "claude-opus-4-6": "Opus 4.6",
             "claude-opus-5": "Opus 5",
             "claude-fable-5": "Fable 5",
+            "claude-fable-5-1": "Fable 5.1",
         }
         saved_m = remap.get(saved_m, saved_m)
         if saved_m not in fm_models:
@@ -13955,7 +14655,7 @@ class ClaudeManager(QMainWindow):
         self.dir_input = QLineEdit()
         self.dir_input.setReadOnly(True)
         self.dir_input.setPlaceholderText(tr("Не выбрана (будет запрошена)"))
-        self.dir_input.setText(self.settings.get("working_directory", ""))
+        self.dir_input.setText(self._get_mode_workdir())
         self.dir_input.setFont(QFont("Segoe UI", 9))
         self.dir_input.setStyleSheet("""
             QLineEdit {
@@ -14349,8 +15049,8 @@ class ClaudeManager(QMainWindow):
         self.title.setText(html)
 
     def browse_directory(self):
-        """Открывает диалог выбора директории"""
-        current_dir = self.settings.get("working_directory", "")
+        """Открывает диалог выбора директории (отдельная на каждый режим)"""
+        current_dir = self._get_mode_workdir()
         directory = QFileDialog.getExistingDirectory(
             self,
             "Выберите рабочую директорию для Claude Code",
@@ -14359,17 +15059,39 @@ class ClaudeManager(QMainWindow):
         )
 
         if directory:
-            self.settings["working_directory"] = directory
+            self._set_mode_workdir(directory)
             self.dir_input.setText(directory)
-            save_settings(self.settings)
-            self.log(f"Установлена директория: {directory}", "success")
+            self.log(tr("Установлена директория: {}").format(directory), "success")
 
     def clear_directory(self):
-        """Очищает сохраненную директорию"""
-        self.settings["working_directory"] = ""
+        """Очищает сохраненную директорию текущего режима"""
+        self._set_mode_workdir("")
         self.dir_input.setText("")
-        save_settings(self.settings)
         self.log("Директория очищена", "info")
+
+    def _workdir_key(self, mode=None):
+        """Ключ настройки с рабочей директорией для режима.
+        anthropic/official/openai/customurl — у каждого своя."""
+        mode = mode or self.settings.get("app_mode", "anthropic")
+        if mode not in ("anthropic", "official", "openai", "customurl"):
+            mode = "anthropic"
+        return "working_directory_" + mode
+
+    def _get_mode_workdir(self, mode=None):
+        """Рабочая директория текущего (или заданного) режима.
+        Старый общий ключ working_directory служит фолбэком, чтобы
+        существующие настройки не потерялись при обновлении."""
+        key = self._workdir_key(mode)
+        v = self.settings.get(key, "")
+        if not v:
+            v = self.settings.get("working_directory", "")
+        return v
+
+    def _set_mode_workdir(self, directory, mode=None):
+        """Сохраняет рабочую директорию только для текущего режима —
+        остальные режимы не трогаем."""
+        self.settings[self._workdir_key(mode)] = directory
+        save_settings(self.settings)
 
     def _on_mode_changed(self, mode):
         """Обработчик переключателя режимов в шапке (Anthropic / Claude / OpenAI / Custom URL)"""
@@ -14449,6 +15171,8 @@ class ClaudeManager(QMainWindow):
                 self.btn_install_oc.setText(tr("Установить opencode"))
             if hasattr(self, "btn_uninstall_oc"):
                 self.btn_uninstall_oc.setText(tr("Удалить opencode"))
+            if hasattr(self, "btn_add_oc_to_path"):
+                self.btn_add_oc_to_path.setText(tr("Добавить npm в PATH"))
             if hasattr(self, "oa_btn_manage_urls"):
                 self.oa_btn_manage_urls.setText(tr("Управление"))
             if hasattr(self, "oa_btn_manage_keys"):
@@ -14564,7 +15288,7 @@ class ClaudeManager(QMainWindow):
             self.settings["custom_base_url"] = new_url
             save_settings(self.settings)
             if prev != new_url:
-                self.log(f"Base URL {new_url} сохранён", "success")
+                self.log(tr("Base URL {} сохранён").format(new_url), "success")
             self._refresh_freemodel_brand_visibility()
 
     def _is_freemodel_endpoint(self, url):
@@ -14601,20 +15325,6 @@ class ClaudeManager(QMainWindow):
 
     def _fm_model_changed(self, new_model):
         """Сохраняет выбранную модель FreeModel"""
-        # Показать предупреждение при выборе Fable 5
-        if new_model == "Fable 5":
-            dlg = Fable5WarningDialog(self)
-            if dlg.exec() != QDialog.Accepted:
-                # Пользователь отменил — откатить на ту модель, с которой переключались
-                prev = getattr(self, "_fm_prev_model", "Opus 4.8")
-                self.fm_model_combo.blockSignals(True)
-                self.fm_model_combo.setCurrentText(prev)
-                self.fm_model_combo.blockSignals(False)
-                # Вернуть цвет предыдущей модели
-                if hasattr(self, "_fm_model_colors") and prev in self._fm_model_colors:
-                    self.fm_model_combo.setTextColor(self._fm_model_colors[prev])
-                    self.fm_model_combo.setAccentColor(self._fm_model_colors[prev])
-                return
         if new_model:
             prev_saved = self.settings.get("custom_model")
             self.settings["custom_model"] = new_model
@@ -14907,6 +15617,11 @@ class ClaudeManager(QMainWindow):
             oc_val = self.settings.get("oc_api_key", "")
             self.oc_key_input.setEchoMode(QLineEdit.Password)
             self.oc_key_input.setText(oc_val)
+            # Ключ сменился, а модели эндпоинта зависят от ключа ({base_url}/models
+            # может отдавать разный список) — перезагружаем, как при смене Base URL.
+            if (hasattr(self, "_oc_key_models_loaded")
+                    and oc_val != self._oc_key_models_loaded):
+                self._oc_refresh_models()
         if hasattr(self, "oc_btn_toggle_key") and hasattr(self.oc_btn_toggle_key, "setRevealed"):
             self.oc_btn_toggle_key.setRevealed(False)
 
@@ -14940,7 +15655,7 @@ class ClaudeManager(QMainWindow):
             self.settings["openai_base_url"] = new_url
             save_settings(self.settings)
             if prev != new_url:
-                self.log(f"Base URL {new_url} сохранён", "success")
+                self.log(tr("Base URL {} сохранён").format(new_url), "success")
             self._refresh_freemodel_brand_visibility()
 
     def _oa_manage_urls(self):
@@ -14980,7 +15695,7 @@ class ClaudeManager(QMainWindow):
             self.settings["oc_base_url"] = new_url
             save_settings(self.settings)
             if prev != new_url:
-                self.log(f"Base URL {new_url} сохранён", "success")
+                self.log(tr("Base URL {} сохранён").format(new_url), "success")
             # Сменился эндпоинт — перезагружаем список моделей и capabilities.
             self._oc_refresh_models()
 
@@ -15049,6 +15764,9 @@ class ClaudeManager(QMainWindow):
         self._oc_provider_name = host
         api_key = self.settings.get("oc_api_key", "")
         self._oc_loader_url = base_url
+        # Запоминаем ключ, с которым пошла загрузка: _refresh_active_key_display
+        # сравнивает с ним и перезапускает загрузку при смене ключа.
+        self._oc_key_models_loaded = api_key
         self._oc_models_loader = _OcModelsLoader(self, base_url, api_key, host)
         self._oc_models_loader.loaded.connect(self._on_oc_models_loaded)
         self._oc_models_loader.start()
@@ -15390,7 +16108,7 @@ class ClaudeManager(QMainWindow):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setVisible(is_openai)
-        for attr in ("btn_install_oc", "btn_uninstall_oc"):
+        for attr in ("btn_install_oc", "btn_uninstall_oc", "btn_add_oc_to_path"):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setVisible(is_customurl)
@@ -15406,6 +16124,14 @@ class ClaudeManager(QMainWindow):
         # Видимость бейджа freemodel.dev пересчитывается по реально выбранному
         # URL и режиму.
         self._refresh_freemodel_brand_visibility()
+
+        # Поле рабочей директории показывает директорию активного режима —
+        # у каждого режима своя (выбор в opencode не трогает остальные).
+        try:
+            if hasattr(self, "dir_input"):
+                self.dir_input.setText(self._get_mode_workdir(mode))
+        except Exception:
+            pass
 
         if hasattr(self, "btn_configure_custom"):
             self.btn_configure_custom.setEnabled(mode == "anthropic")
@@ -15491,6 +16217,7 @@ class ClaudeManager(QMainWindow):
         "Opus 4.8 (default)": "claude-opus-4-8",
         "Opus 5": "claude-opus-5",
         "Fable 5": "claude-fable-5",
+        "Fable 5.1": "claude-fable-5-1",
         "Sonnet 5": "claude-sonnet-5",
         "Sonnet 4.6": "claude-sonnet-4-6",
         "Sonnet 4": "claude-sonnet-4",
@@ -15504,7 +16231,7 @@ class ClaudeManager(QMainWindow):
         "Opus 4.8", "Opus 4.8 (default)",
         "Opus 4.7", "Opus 4.6", "Opus 5",
         "Sonnet 5", "Sonnet 4.6",
-        "Fable 5",
+        "Fable 5", "Fable 5.1",
     }
 
     # Модели, для которых НЕ передавать --model (только env), чтобы /model показывал Default
@@ -15537,7 +16264,7 @@ class ClaudeManager(QMainWindow):
             with open(claude_settings_path, 'w', encoding='utf-8') as f:
                 json.dump(claude_settings, f, indent=2)
         except Exception as e:
-            self.log(f"Не удалось записать модель в настройки Claude: {e}", "warning")
+            self.log(tr("Не удалось записать модель в настройки Claude: {}").format(e), "warning")
 
     def _fix_claude_install_method(self):
         """Если в ~/.claude.json стоит installMethod=native (остаток install.ps1),
@@ -15585,7 +16312,7 @@ class ClaudeManager(QMainWindow):
                 with open(claude_settings_path, 'w', encoding='utf-8') as f:
                     json.dump(claude_settings, f, indent=2)
             except Exception as e:
-                self.log(f"Не удалось записать effort в настройки Claude: {e}", "warning")
+                self.log(tr("Не удалось записать effort в настройки Claude: {}").format(e), "warning")
             return
         if effort not in ("low", "medium", "high", "xhigh", "max"):
             return
@@ -15605,7 +16332,7 @@ class ClaudeManager(QMainWindow):
             with open(claude_settings_path, 'w', encoding='utf-8') as f:
                 json.dump(claude_settings, f, indent=2)
         except Exception as e:
-            self.log(f"Не удалось записать effort в настройки Claude: {e}", "warning")
+            self.log(tr("Не удалось записать effort в настройки Claude: {}").format(e), "warning")
 
     def launch_claude(self):
         """Запускает Claude Code с выбранной моделью"""
@@ -15637,7 +16364,7 @@ class ClaudeManager(QMainWindow):
         model = self.settings.get("custom_model", "")
 
         # Рабочая директория
-        working_dir = self.settings.get("working_directory", "")
+        working_dir = self._get_mode_workdir()
 
         if not working_dir:
             # Если директория не установлена - запрашиваем
@@ -15656,9 +16383,9 @@ class ClaudeManager(QMainWindow):
         use_custom = True
 
         if use_custom:
-            self.log(f"Запуск Claude Code с кастомным токеном...", "info")
+            self.log(tr("Запуск Claude Code с кастомным токеном..."), "info")
         else:
-            self.log(f"Запуск Claude Code ({model})...", "info")
+            self.log(tr("Запуск Claude Code ({})...").format(model), "info")
 
         # Устанавливаем переменные окружения и запускаем
         env = os.environ.copy()
@@ -15721,7 +16448,7 @@ class ClaudeManager(QMainWindow):
             cli_cmd += f" --model {model_id}"
         cli_cmd += effort_flag
 
-        self.log(f"Используется кастомный токен для {custom_base_url} (effort={effort})", "info")
+        self.log(tr("Используется кастомный токен для {} (effort={})").format(custom_base_url, effort), "info")
 
         # Снимаем блок PowerShell ExecutionPolicy для этой сессии — если у пользователя
         # стоит Restricted, claude.ps1 без этого не запустится. Scope Process действует
@@ -15729,17 +16456,18 @@ class ClaudeManager(QMainWindow):
         ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
 
         try:
-            subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
+            spawn_powershell_session(
+                working_dir,
+                f"{ps_prefix}{cli_cmd}",
                 env=env
             )
             model_id = self._resolve_model_id(self.settings.get("custom_model", ""))
             if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
-                self.log(f"Claude Code запущен (--model {model_id})", "success")
+                self.log(tr("Claude Code запущен (--model {})").format(model_id), "success")
             else:
-                self.log(f"Claude Code запущен ({model_id or 'default'})", "success")
+                self.log(tr("Claude Code запущен ({})").format(model_id or 'default'), "success")
         except Exception as e:
-            self.log(f"Ошибка запуска: {e}", "error")
+            self.log(tr("Ошибка запуска: {}").format(e), "error")
 
     def _launch_claude_official(self):
         """Официальный запуск Claude Code (под-режим Claude двойной ячейки).
@@ -15750,7 +16478,7 @@ class ClaudeManager(QMainWindow):
         сохраняется между запусками. Модель и effort передаются честными
         CLI-флагами --model/--effort. Пин версии REQUIRED_CLAUDE_VERSION здесь
         не проверяем: официальный запуск работает с любой версией."""
-        working_dir = self.settings.get("working_directory", "")
+        working_dir = self._get_mode_workdir("official")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
                 self,
@@ -15789,8 +16517,9 @@ class ClaudeManager(QMainWindow):
         # остальных режимах, Scope Process ничего не меняет глобально.
         ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
         try:
-            subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
+            spawn_powershell_session(
+                working_dir,
+                f"{ps_prefix}{cli_cmd}",
                 env=env
             )
             self.log(
@@ -15798,7 +16527,7 @@ class ClaudeManager(QMainWindow):
                 "success"
             )
         except Exception as e:
-            self.log(f"Ошибка запуска: {e}", "error")
+            self.log(tr("Ошибка запуска: {}").format(e), "error")
 
     def _write_codex_config(self):
         """Пишет ~/.codex/auth.json и config.toml под выбранные ключ/URL/модель/effort.
@@ -15835,12 +16564,12 @@ class ClaudeManager(QMainWindow):
                 f.write(config)
             return True
         except Exception as e:
-            self.log(f"Не удалось записать конфиг Codex: {e}", "error")
+            self.log(tr("Не удалось записать конфиг Codex: {}").format(e), "error")
             return False
 
     def launch_codex(self):
         """Запускает Codex CLI с выбранной моделью и effort'ом (вкладка OpenAI)."""
-        working_dir = self.settings.get("working_directory", "")
+        working_dir = self._get_mode_workdir("openai")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
                 self,
@@ -15857,7 +16586,7 @@ class ClaudeManager(QMainWindow):
 
         model = self.settings.get("openai_model", "gpt-5.6-sol")
         effort = _clamp_openai_effort(model, self.settings.get("openai_effort", "low"))
-        self.log(f"Запуск Codex CLI ({model})...", "info")
+        self.log(tr("Запуск Codex CLI ({})...").format(model), "info")
 
         env = os.environ.copy()
         # Форсируем модель и effort CLI-флагами (как на вкладке Anthropic):
@@ -15871,13 +16600,14 @@ class ClaudeManager(QMainWindow):
         )
         ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
         try:
-            subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {cli_cmd}"],
+            spawn_powershell_session(
+                working_dir,
+                f"{ps_prefix}{cli_cmd}",
                 env=env
             )
-            self.log(f"Codex CLI запущен ({model}, effort={effort})", "success")
+            self.log(tr("Codex CLI запущен ({}, effort={})").format(model, effort), "success")
         except Exception as e:
-            self.log(f"Ошибка запуска: {e}", "error")
+            self.log(tr("Ошибка запуска: {}").format(e), "error")
 
     # ── Codex CLI: установка / удаление / версии ─────────────────
 
@@ -16066,7 +16796,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку: {e}", "error")
+            self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -16178,7 +16908,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить удаление: {e}", "error")
+            self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -16291,8 +17021,28 @@ class ClaudeManager(QMainWindow):
                     return True
         return False
 
+    def _find_oc_bin(self):
+        """Абсолютный путь к шиму opencode для запуска версии.
+        .ps1 через cmd не запускается — его пропускаем. Пусто, если нет."""
+        for d in self._detect_oc_install_dirs():
+            for name in ("opencode.cmd", "opencode.exe", "opencode", "opencode.bat"):
+                p = os.path.join(d, name)
+                if os.path.isfile(p):
+                    return p
+        return ""
+
+    def _find_oc_bin_dir(self):
+        """Папка с шимом opencode (обычно %APPDATA%\\npm) или пустая строка."""
+        p = self._find_oc_bin()
+        return os.path.dirname(p) if p else ""
+
     def _get_installed_oc_version(self):
-        """Версия установленного opencode или пустая строка."""
+        """Версия установленного opencode или пустая строка.
+        Сначала пробуем явный путь к шиму (работает, даже если папки npm
+        нет в PATH процесса), затем обычный поиск через PATH."""
+        oc_bin = self._find_oc_bin()
+        if oc_bin:
+            return get_installed_oc_version(oc_bin)
         return get_installed_oc_version()
 
     def _check_oc_version(self):
@@ -16439,7 +17189,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку: {e}", "error")
+            self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -16542,7 +17292,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить удаление: {e}", "error")
+            self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -16593,6 +17343,23 @@ class ClaudeManager(QMainWindow):
         is_update = ctx.get("is_update", False)
         old_local = ctx.get("old_local", "")
 
+        # Авто-PATH: файлы opencode на месте, но папки нет в PATH процесса
+        # (типично сразу после установки npm) — прописываем молча, без
+        # диалога: команда станет видна новым терминалам. Папка берётся
+        # только из известных мест (%APPDATA%\npm, ~/.local/bin).
+        if installed_now and not is_uninstall:
+            try:
+                if not shutil.which("opencode"):
+                    _oc_dir = self._find_oc_bin_dir()
+                    if _oc_dir:
+                        _ok, _err = _write_user_path_entry(_oc_dir)
+                        if _ok:
+                            self.log(tr("Добавил в PATH: {}").format(_oc_dir), "success")
+                        else:
+                            self.log(tr("Не удалось добавить npm в PATH автоматически: {}").format(_err), "warning")
+            except Exception:
+                pass
+
         progress_dlg = getattr(self, "_oc_install_dlg", None)
         dlg_alive = False
         if progress_dlg is not None:
@@ -16622,6 +17389,7 @@ class ClaudeManager(QMainWindow):
                     if installed_now and new_local:
                         progress_dlg.mark_finished(actual_version=new_local)
                         self.log(tr("opencode установлен (v{v})").format(v=new_local), "success")
+                        self._offer_restart_after_oc_install()
                     else:
                         progress_dlg.mark_cancelled()
             except Exception:
@@ -16641,6 +17409,27 @@ class ClaudeManager(QMainWindow):
             pass
         try:
             threading.Thread(target=self._check_oc_version, daemon=True).start()
+        except Exception:
+            pass
+
+    def _offer_restart_after_oc_install(self):
+        """После установки opencode — информационная табличка: для применения
+        новой команды и PATH программу нужно перезапустить вручную."""
+        try:
+            dlg = ConfirmActionDialog(
+                title=tr("Перезапустите программу"),
+                message=tr(
+                    "opencode установлен. Перезапусти программу, чтобы она "
+                    "увидела новую команду и обновлённый PATH."
+                ),
+                detail="opencode --version",
+                confirm_text=tr("Ок"),
+                icon="↻",
+                icon_color=(52, 211, 153),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
         except Exception:
             pass
 
@@ -16725,7 +17514,7 @@ class ClaudeManager(QMainWindow):
         - любой другой OpenAI-совместимый эндпоинт (gorouter.app и т.п.) —
           генерируется конфиг-провайдер со списком моделей с /v1/models и
           передаётся через OPENCODE_CONFIG."""
-        working_dir = self.settings.get("working_directory", "")
+        working_dir = self._get_mode_workdir("customurl")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
                 self,
@@ -16766,7 +17555,7 @@ class ClaudeManager(QMainWindow):
                 env.pop("OPENAI_BASE_URL", None)
                 env.pop("OPENAI_API_KEY", None)
                 if model_ids:
-                    self.log(f"Обнаружено моделей на {base_url}: {len(model_ids)}", "info")
+                    self.log(tr("Обнаружено моделей на {}: {}").format(base_url, len(model_ids)), "info")
                 else:
                     self.log("Не удалось получить /models — модели будут пустые", "warning")
             else:
@@ -16779,13 +17568,10 @@ class ClaudeManager(QMainWindow):
         # Модель НЕ форсируем: открывается модель, которую пользователь выбрал
         # внутри opencode в прошлой сессии. Приложение не перезаписывает её.
         try:
-            subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"{ps_prefix}cd '{working_dir}'; {launch_cmd}"],
-                env=env
-            )
+            spawn_powershell_session(working_dir, f"{ps_prefix}{launch_cmd}", env=env)
             self.log(tr("opencode запущен"), "success")
         except Exception as e:
-            self.log(f"Ошибка запуска: {e}", "error")
+            self.log(tr("Ошибка запуска: {}").format(e), "error")
 
     def _statusline_bash_command(self):
         """Возвращает строку для поля statusLine.command в settings.json.
@@ -16881,7 +17667,7 @@ class ClaudeManager(QMainWindow):
             except Exception as e:
                 progress.finished_signal.emit(False, str(e))
                 try:
-                    self.log(f"Ошибка установки status line: {e}", "error")
+                    self.log(tr("Ошибка установки status line: {}").format(e), "error")
                 except Exception:
                     pass
 
@@ -17017,7 +17803,7 @@ class ClaudeManager(QMainWindow):
             except Exception as e:
                 progress.finished_signal.emit(False, str(e))
                 try:
-                    self.log(f"Ошибка удаления status line: {e}", "error")
+                    self.log(tr("Ошибка удаления status line: {}").format(e), "error")
                 except Exception:
                     pass
 
@@ -17094,14 +17880,14 @@ class ClaudeManager(QMainWindow):
             try:
                 action = "обновлён" if existed else "создан"
                 self.log(
-                    f"Авто-фикс autoUpdates=false {action} в ~/.claude.json",
+                    tr("Авто-фикс autoUpdates=false {} в ~/.claude.json").format(action),
                     "success",
                 )
             except Exception:
                 pass
         except Exception as e:
             try:
-                self.log(f"Авто-фикс autoUpdates не удался: {e}", "warning")
+                self.log(tr("Авто-фикс autoUpdates не удался: {}").format(e), "warning")
             except Exception:
                 pass
 
@@ -17170,7 +17956,7 @@ class ClaudeManager(QMainWindow):
             # Любой сбой — это не критично, пользователь всё ещё может
             # руками нажать Fix Claude. Не падаем, не показываем модалок.
             try:
-                self.log(f"Авто-фикс DISABLE_UPDATES не удался: {e}", "warning")
+                self.log(tr("Авто-фикс DISABLE_UPDATES не удался: {}").format(e), "warning")
             except Exception:
                 pass
 
@@ -17285,7 +18071,7 @@ class ClaudeManager(QMainWindow):
                         pass
         except Exception as e:
             try:
-                self.log(f"Не удалось снять safe-pin автообновления: {e}", "warning")
+                self.log(tr("Не удалось снять safe-pin автообновления: {}").format(e), "warning")
             except Exception:
                 pass
 
@@ -17450,7 +18236,7 @@ class ClaudeManager(QMainWindow):
                         stub_ok = False
                         try:
                             self.log(
-                                f"Fix Claude: не удалось засеять новый ~/.claude.json: {seed_err}",
+                                tr("Fix Claude: не удалось засеять новый ~/.claude.json: {}").format(seed_err),
                                 "warning",
                             )
                         except Exception:
@@ -17506,7 +18292,7 @@ class ClaudeManager(QMainWindow):
                         settings_ok = False
                         try:
                             self.log(
-                                f"Fix Claude: не удалось пересоздать settings.json: {seed_err}",
+                                tr("Fix Claude: не удалось пересоздать settings.json: {}").format(seed_err),
                                 "warning",
                             )
                         except Exception:
@@ -17525,7 +18311,7 @@ class ClaudeManager(QMainWindow):
             except Exception as e:
                 progress.finished_signal.emit(False, str(e))
                 try:
-                    self.log(f"Ошибка Fix Claude: {e}", "error")
+                    self.log(tr("Ошибка Fix Claude: {}").format(e), "error")
                 except Exception:
                     pass
 
@@ -17559,7 +18345,7 @@ class ClaudeManager(QMainWindow):
                 is_update = True
 
         if not needs_change:
-            self.log(f"Claude Code v{required} уже установлен", "info")
+            self.log(tr("Claude Code v{} уже установлен").format(required), "info")
             return
 
         if is_downgrade:
@@ -17610,8 +18396,8 @@ class ClaudeManager(QMainWindow):
             self._show_npm_missing_dialog()
             return
 
-        action_word = "переустановку" if installed else "установку"
-        self.log(f"Запускаю {action_word} Claude Code v{required} через npm...", "info")
+        action_word = tr("переустановку") if installed else tr("установку")
+        self.log(tr("Запускаю {} Claude Code v{} через npm...").format(action_word, required), "info")
 
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
@@ -17628,6 +18414,15 @@ class ClaudeManager(QMainWindow):
                 "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
+                # 1b) Убрать битые временные шимы npm (след прерванной установки:
+                #     ".claude.cmd-XXXX" без финального rename) — из-за них claude
+                #     «не установлен», а повторный npm install той же версии
+                #     бывает no-op и шимы не восстанавливает
+                "Write-Host 'Проверяю целостность шимов npm...' -ForegroundColor Cyan; "
+                "$npmBin = Join-Path $env:APPDATA 'npm'; "
+                "if (Test-Path $npmBin) { "
+                "  Get-ChildItem $npmBin -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
                 # 2) Снести старую установку через install.ps1 (живёт в ~/.local/bin и ~/.claude/local) —
                 #    иначе её битый shim перехватывает команду 'claude' в PATH
                 "Write-Host 'Удаляю старую установку Claude Code (install.ps1)...' -ForegroundColor Cyan; "
@@ -17639,15 +18434,17 @@ class ClaudeManager(QMainWindow):
                 "if (Test-Path $claudeLocal) { "
                 "  Remove-Item -Recurse -Force $claudeLocal -ErrorAction SilentlyContinue; "
                 "} "
-                # 3) Установка через npm
+                # 3) Переустановка через npm: uninstall + install гарантирует
+                #    свежие bin-шимы даже если npm считает версию уже установленной
                 f"Write-Host 'Установка Claude Code v{required} через npm...' -ForegroundColor Cyan; "
+                "npm uninstall -g @anthropic-ai/claude-code 2>$null; "
                 f"npm install -g @anthropic-ai/claude-code@{required}; "
                 "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
                 "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку: {e}", "error")
+            self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -17738,8 +18535,8 @@ class ClaudeManager(QMainWindow):
             self.log("Операция отменена", "info")
             return
 
-        action_word = "обновление" if installed else "установку"
-        self.log(f"Запускаю {action_word} Claude Code через npm (@anthropic-ai/claude-code)...", "info")
+        action_word = tr("обновление") if installed else tr("установку")
+        self.log(tr("Запускаю {} Claude Code через npm (@anthropic-ai/claude-code)...").format(action_word), "info")
 
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
@@ -17756,15 +18553,22 @@ class ClaudeManager(QMainWindow):
                 "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
+                # 1b) Битые временные шимы npm — как в safe-установщике
+                "Write-Host 'Проверяю целостность шимов npm...' -ForegroundColor Cyan; "
+                "$npmBin = Join-Path $env:APPDATA 'npm'; "
+                "if (Test-Path $npmBin) { "
+                "  Get-ChildItem $npmBin -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
                 # 2) Установка/обновление последней версии через npm
                 "Write-Host 'Установка/обновление Claude Code через npm...' -ForegroundColor Cyan; "
+                "npm uninstall -g @anthropic-ai/claude-code 2>$null; "
                 "npm install -g @anthropic-ai/claude-code@latest; "
                 "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
                 "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку: {e}", "error")
+            self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
@@ -17904,7 +18708,7 @@ class ClaudeManager(QMainWindow):
             parent=self
         )
         self.log(
-            f"Запуск заблокирован: установлена v{current_version}, требуется v{required}",
+            tr("Запуск заблокирован: установлена v{}, требуется v{}").format(current_version, required),
             "warning"
         )
         if dlg.exec() == QDialog.Accepted:
@@ -18004,9 +18808,9 @@ class ClaudeManager(QMainWindow):
             try:
                 import webbrowser
                 webbrowser.open(download_url)
-                self.log(f"Открыта страница скачивания Node.js: {download_url}", "info")
+                self.log(tr("Открыта страница скачивания Node.js: {}").format(download_url), "info")
             except Exception as e:
-                self.log(f"Не удалось открыть браузер: {e}", "warning")
+                self.log(tr("Не удалось открыть браузер: {}").format(e), "warning")
 
     def _install_nodejs_via_winget(self):
         """Запускает PowerShell с winget install OpenJS.NodeJS.LTS — пользователь
@@ -18028,7 +18832,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить установку Node.js: {e}", "error")
+            self.log(tr("Не удалось запустить установку Node.js: {}").format(e), "error")
 
     def _detect_claude_install_dirs(self):
         """Возвращает список существующих папок где может лежать claude"""
@@ -18150,7 +18954,7 @@ class ClaudeManager(QMainWindow):
             except Exception:
                 pass
 
-            self.log(f"Добавил в PATH: {target}", "success")
+            self.log(tr("Добавил в PATH: {}").format(target), "success")
             done = ConfirmActionDialog(
                 title=tr("Добавлено в PATH"),
                 message=tr(
@@ -18166,7 +18970,7 @@ class ClaudeManager(QMainWindow):
             done.cancel_btn.hide()
             done.exec()
         except Exception as e:
-            self.log(f"Не удалось добавить в PATH: {e}", "error")
+            self.log(tr("Не удалось добавить в PATH: {}").format(e), "error")
             err = ConfirmActionDialog(
                 title=tr("Не удалось добавить в PATH"),
                 message=tr("Что-то пошло не так при записи в реестр:") + f"\n{e}",
@@ -18178,6 +18982,93 @@ class ClaudeManager(QMainWindow):
             )
             err.cancel_btn.hide()
             err.exec()
+
+    def _on_add_oc_to_path_clicked(self):
+        """Как «Добавить в PATH» у Claude Code, только для opencode:
+        прописывает папку с шимом (%APPDATA%\\npm) в пользовательскую PATH."""
+        target = self._find_oc_bin_dir()
+        if not target:
+            dlg = ConfirmActionDialog(
+                title=tr("opencode не найден"),
+                message=tr(
+                    "Не нашёл папку с установленным opencode. "
+                    "Сначала установи opencode кнопкой выше, потом жми «Добавить npm в PATH»."
+                ),
+                detail="",
+                confirm_text=tr("Понятно"),
+                icon="!",
+                icon_color=(235, 150, 90),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
+            return
+
+        entries = self._get_user_path_entries()
+        norm_target = os.path.normcase(os.path.normpath(target))
+        already_present = any(
+            os.path.normcase(os.path.normpath(p)) == norm_target for p in entries
+        )
+        if already_present:
+            dlg = ConfirmActionDialog(
+                title=tr("Уже в PATH"),
+                message=tr("Папка с opencode уже прописана в пользовательской PATH."),
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="✓",
+                icon_color=(52, 211, 153),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
+            return
+
+        dlg = ConfirmActionDialog(
+            title=tr("Добавить npm в PATH"),
+            message=tr(
+                "Добавит папку с opencode в пользовательскую PATH, чтобы "
+                "команду «opencode» можно было запускать из любой консоли. "
+                "После этого перезапусти терминал."
+            ),
+            detail=target,
+            confirm_text=tr("Добавить"),
+            icon="↑",
+            icon_color=(120, 180, 230),
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        ok, err = _write_user_path_entry(target)
+        if ok:
+            self.log(tr("Добавил в PATH: {}").format(target), "success")
+            done = ConfirmActionDialog(
+                title=tr("Добавлено в PATH"),
+                message=tr(
+                    "Папка с opencode добавлена в пользовательскую PATH. "
+                    "Открой новую консоль и проверь: opencode --version."
+                ),
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="✓",
+                icon_color=(52, 211, 153),
+                parent=self
+            )
+            done.cancel_btn.hide()
+            done.exec()
+        else:
+            self.log(tr("Не удалось добавить в PATH: {}").format(err), "error")
+            err_dlg = ConfirmActionDialog(
+                title=tr("Не удалось добавить в PATH"),
+                message=tr("Что-то пошло не так при записи в реестр:") + f"\n{err}",
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="!",
+                icon_color=(235, 90, 90),
+                parent=self
+            )
+            err_dlg.cancel_btn.hide()
+            err_dlg.exec()
 
     def _update_install_button_state(self):
         """Обновляет кнопки и индикатор по состоянию (нет / нужная версия / другая версия)"""
@@ -18470,7 +19361,7 @@ class ClaudeManager(QMainWindow):
 
         self._outdated_warning_shown = True
         self.log(
-            f"Установлена устаревшая Claude Code v{local} — рекомендуется обновить до v{required}",
+            tr("Установлена устаревшая Claude Code v{} — рекомендуется обновить до v{}").format(local, required),
             "warning"
         )
         dlg = ConfirmActionDialog(
@@ -18551,7 +19442,8 @@ class ClaudeManager(QMainWindow):
                 "if (Test-Path $npmDir) { "
                 "  Write-Host '`nNPM не смог удалить — удаляю папку напрямую...' -ForegroundColor Yellow; "
                 "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
-                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
                 # 4) Снести установку через install.ps1 (~/.local/bin + ~/.claude/local)
                 "Write-Host '`nУдаление Claude Code (install.ps1)...' -ForegroundColor Cyan; "
@@ -18575,7 +19467,7 @@ class ClaudeManager(QMainWindow):
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
-            self.log(f"Не удалось запустить удаление: {e}", "error")
+            self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
             progress_dlg.exec()
             return
