@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.9.1"  # Для обновлений
+APP_VERSION = "5.9.2"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -1563,6 +1563,17 @@ TRANSLATIONS = {
     "1M-контекст включён": "1M context enabled",
     "1M-контекст выключен": "1M context disabled",
     # ── переводы консоли и диалогов (автодобавление) ──
+    "Терминал не найден": "Terminal not found",
+    "Для нормальной работы PowerShell нужен Windows Terminal. Без него не работает вставка текста через CTRL+V, вкладки и другие возможности современного терминала.\n\nУстанови Terminal — это официальный установщик Microsoft, всегда последняя версия.":
+        "Windows Terminal is required for PowerShell to work properly. Without it, pasting text with CTRL+V, tabs and other modern terminal features do not work.\n\nInstall Terminal — the official Microsoft installer, always the latest version.",
+    "Установка Windows Terminal...": "Installing Windows Terminal...",
+    "Запуск установщика...": "Starting the installer...",
+    "Идёт установка — это может занять пару минут...": "Installing — this may take a couple of minutes...",
+    "Терминал успешно установлен": "Terminal installed successfully",
+    "Не удалось установить Terminal": "Terminal installation failed",
+    "winget не найден — установи Terminal вручную из Microsoft Store.":
+        "winget was not found — install Terminal manually from the Microsoft Store.",
+    "При отмене запуск пойдёт без терминала.": "Cancelling will launch without the terminal.",
     "Добавить npm в PATH": "Add npm to PATH",
     "opencode не найден": "opencode not found",
     "Не нашёл папку с установленным opencode. Сначала установи opencode кнопкой выше, потом жми «Добавить npm в PATH».":
@@ -3081,14 +3092,32 @@ class StyledComboBox(QComboBox):
         event.ignore()
 
     def enterEvent(self, event):
-        self._is_hovered = True
+        # Disabled combo: no hover highlight at all.
+        if self.isEnabled():
+            self._is_hovered = True
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._is_hovered = False
         super().leaveEvent(event)
 
+    def setEnabled(self, enabled):
+        super().setEnabled(enabled)
+        if not enabled:
+            self._is_hovered = False
+            self._hover_progress = 0.0
+            self.setCursor(Qt.ForbiddenCursor)
+        else:
+            self.setCursor(Qt.PointingHandCursor)
+        self._update_style()
+
     def _animate_hover(self):
+        # Disabled combo: freeze highlight, force it off.
+        if not self.isEnabled():
+            if self._hover_progress != 0.0:
+                self._hover_progress = 0.0
+                self._update_style()
+            return
         if self._is_hovered:
             if self._hover_progress < 1.0:
                 self._hover_progress = min(1.0, self._hover_progress + 0.1)
@@ -3099,6 +3128,20 @@ class StyledComboBox(QComboBox):
                 self._update_style()
 
     def _update_style(self):
+        if not self.isEnabled():
+            self.setStyleSheet("""
+                QComboBox {
+                    background-color: rgba(30, 30, 35, 150);
+                    color: rgb(100, 100, 100);
+                    border: 2px solid rgb(45, 45, 50);
+                    border-radius: 4px;
+                    padding: 6px;
+                }
+                QComboBox::drop-down {
+                    border: none;
+                }
+            """)
+            return
         if self._accent_color is not None:
             # Рамка всегда в цвете акцента (тусклая), при наведении — ярче
             ar, ag, ab = self._accent_color
@@ -4400,6 +4443,267 @@ class ConfirmActionDialog(QDialog):
         fade.finished.connect(lambda: super(ConfirmActionDialog, self).reject())
         fade.start()
         self._fade = fade
+
+class TerminalCheckDialog(QDialog):
+    """Проверка Windows Terminal перед запуском.
+
+    Если wt.exe нет — предупреждение + [Установить] / [Отмена].
+    «Отмена» — запуск без терминала. «Установить» — официальный winget-пакет
+    Microsoft.WindowsTerminal (последняя версия); окно переключается на
+    прогресс-бар (как у обновления приложения), в конце — результат + [ОК].
+    """
+    install_done = Signal(bool, str)
+
+    _ICON_STYLE = """
+        QLabel {{
+            color: rgb({r}, {g}, {b});
+            font-size: 24px;
+            font-weight: bold;
+            background: rgba({r}, {g}, {b}, 0.15);
+            border: 2px solid rgba({r}, {g}, {b}, 0.4);
+            border-radius: 25px;
+            min-width: 50px;
+            max-width: 50px;
+            min-height: 50px;
+            max-height: 50px;
+        }}
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self._pct = 0
+        self._crawl = None
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("terminalCheckContainer")
+        container.setStyleSheet("""
+            QFrame#terminalCheckContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(14)
+
+        self.icon_label = QLabel(">_")
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        self._set_icon(">_", (235, 150, 90))
+        icon_row = QHBoxLayout()
+        icon_row.addStretch()
+        icon_row.addWidget(self.icon_label)
+        icon_row.addStretch()
+        layout.addLayout(icon_row)
+
+        self.title_label = QLabel(tr("Терминал не найден"))
+        self.title_label.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setWordWrap(True)
+        self.title_label.setStyleSheet("color: #DDDDDD; background: transparent; border: none;")
+        layout.addWidget(self.title_label)
+
+        self.message_label = QLabel(tr(
+            "Для нормальной работы PowerShell нужен Windows Terminal. "
+            "Без него не работает вставка текста через CTRL+V, вкладки "
+            "и другие возможности современного терминала.\n\n"
+            "Установи Terminal — это официальный установщик Microsoft, "
+            "всегда последняя версия."
+        ))
+        self.message_label.setFont(QFont("Segoe UI", 10))
+        self.message_label.setAlignment(Qt.AlignCenter)
+        self.message_label.setWordWrap(True)
+        self.message_label.setStyleSheet("color: rgb(170, 170, 170); background: transparent; border: none;")
+        layout.addWidget(self.message_label)
+
+        self.bar = AnimatedProgressBar("#34d399")
+        self.bar.hide()
+        layout.addWidget(self.bar)
+
+        self.status_label = QLabel("")
+        self.status_label.setFont(QFont("Segoe UI", 10))
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        self.status_label.hide()
+        layout.addWidget(self.status_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        self.btn_install = GreenButton(tr("Установить"))
+        self.btn_install.setMinimumHeight(40)
+        self.btn_install.clicked.connect(self._on_install_clicked)
+        btn_row.addWidget(self.btn_install)
+        self.btn_cancel = GreenButton(tr("Отмена"))
+        self.btn_cancel.setMinimumHeight(40)
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(self.btn_cancel)
+        self.btn_ok = GreenButton(tr("Ок"))
+        self.btn_ok.setMinimumHeight(40)
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_ok.hide()
+        btn_row.addWidget(self.btn_ok)
+        layout.addLayout(btn_row)
+
+        self.cancel_hint = QLabel(tr("При отмене запуск пойдёт без терминала."))
+        self.cancel_hint.setFont(QFont("Segoe UI", 9))
+        self.cancel_hint.setAlignment(Qt.AlignCenter)
+        self.cancel_hint.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        layout.addWidget(self.cancel_hint)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.adjustSize()
+        self.setMinimumWidth(460)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+        self._center_on_parent()
+
+    def _center_on_parent(self):
+        """Ставит окно строго по центру главного окна (frameless-диалоги
+        сами не центрируются). Вызывать после каждого adjustSize, иначе
+        при смене страниц окно «уплывает»."""
+        try:
+            self.adjustSize()
+            dw, dh = self.width(), self.height()
+            pw = self.parentWidget()
+            if pw is not None:
+                pg = pw.frameGeometry()
+                c = pg.center()
+                self.move(c.x() - dw // 2, c.y() - dh // 2)
+            else:
+                from PySide6.QtGui import QGuiApplication
+                screen = QGuiApplication.primaryScreen().availableGeometry()
+                self.move(screen.x() + (screen.width() - dw) // 2,
+                          screen.y() + (screen.height() - dh) // 2)
+        except Exception:
+            pass
+
+    def _set_icon(self, text, rgb):
+        r, g, b = rgb
+        self.icon_label.setText(text)
+        self.icon_label.setStyleSheet(self._ICON_STYLE.format(r=r, g=g, b=b))
+
+    def _on_install_clicked(self):
+        self.title_label.setText(tr("Установка Windows Terminal..."))
+        self.message_label.hide()
+        self.cancel_hint.hide()
+        self.btn_install.hide()
+        self.btn_cancel.hide()
+        self.bar.set_progress(4)
+        self._pct = 4
+        self.bar.show()
+        self.status_label.setText(tr("Запуск установщика..."))
+        self.status_label.show()
+        self._center_on_parent()
+        try:
+            self.install_done.connect(self._on_install_done)
+        except Exception:
+            pass
+        self._crawl = QTimer(self)
+        self._crawl.setInterval(160)
+        self._crawl.timeout.connect(self._tick)
+        self._crawl.start()
+        threading.Thread(target=self._install_worker, daemon=True).start()
+
+    def _tick(self):
+        try:
+            if self._pct < 92:
+                self._pct = min(92, self._pct + 2)
+                self.bar.set_progress(self._pct)
+                if self._pct > 30:
+                    self.status_label.setText(tr("Идёт установка — это может занять пару минут..."))
+        except Exception:
+            pass
+
+    def _install_worker(self):
+        ok, err = False, ""
+        try:
+            import shutil as _shutil
+            import subprocess as _sp
+            has_winget = bool(_shutil.which("winget"))
+            if not has_winget:
+                try:
+                    _r = _sp.run(
+                        "winget --version", shell=True,
+                        capture_output=True, text=True, timeout=10,
+                        creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0))
+                    has_winget = (_r.returncode == 0)
+                except Exception:
+                    pass
+            if not has_winget:
+                self.install_done.emit(False, "nowwinget")
+                return
+            _cmd = ("winget install --id Microsoft.WindowsTerminal -e "
+                    "--source winget --accept-source-agreements "
+                    "--accept-package-agreements --silent --disable-interactivity")
+            try:
+                _r = _sp.run(
+                    _cmd, shell=True, capture_output=True, text=True, timeout=600,
+                    creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0))
+                _out = ((_r.stdout or "") + "\n" + (_r.stderr or "")).strip()
+            except _sp.TimeoutExpired:
+                _out = "timeout"
+            # Успех = wt реально появился (покрывает и «уже установлен»,
+            # у которого у winget свой код возврата).
+            try:
+                ok = bool(find_windows_terminal())
+            except Exception:
+                ok = False
+            if not ok:
+                _lines = [l.strip() for l in _out.splitlines() if l.strip()]
+                err = "\n".join(_lines[-4:]) if _lines else "unknown error"
+            self.install_done.emit(ok, err)
+        except Exception as e:
+            try:
+                self.install_done.emit(False, str(e))
+            except Exception:
+                pass
+
+    def _on_install_done(self, ok, err):
+        try:
+            if self._crawl is not None:
+                self._crawl.stop()
+        except Exception:
+            pass
+        try:
+            if ok:
+                self.bar.set_progress(100)
+                self._set_icon("✓", (52, 211, 153))
+                self.title_label.setText(tr("Терминал успешно установлен"))
+                self.status_label.hide()
+            else:
+                self.bar.hide()
+                self._set_icon("!", (235, 90, 90))
+                self.title_label.setText(tr("Не удалось установить Terminal"))
+                if err == "nowwinget":
+                    self.status_label.setText(tr(
+                        "winget не найден — установи Terminal вручную "
+                        "из Microsoft Store."))
+                else:
+                    self.status_label.setText(str(err)[:400])
+                self.status_label.show()
+            self.btn_ok.show()
+            self._center_on_parent()
+        except Exception:
+            pass
 
 # ============================================================
 # ПРОГРЕСС БАР ДЛЯ ОБНОВЛЕНИЯ
@@ -15783,10 +16087,27 @@ class ClaudeManager(QMainWindow):
 
     def _oc_set_info_loading(self, loading):
         """Включает/выключает состояние загрузки на кнопке «Какие модели
-        доступны»: блокирует её и запускает/гасит спиннер."""
+        доступны»: блокирует её и запускает/гасит спиннер. Заодно блокирует
+        кнопки управления (ключи, Base URL, провайдеры) — пока модели
+        грузятся, их нельзя трогать."""
         btn = getattr(self, "oc_info_btn", None)
         if btn is not None and hasattr(btn, "set_loading"):
             btn.set_loading(bool(loading))
+        self._set_oc_manage_enabled(not loading)
+
+    def _set_oc_manage_enabled(self, enabled):
+        """Элементы управления вкладки opencode (эндпоинт, ключи, Base URL,
+        провайдеры): кликабельны и яркие, либо заблокированы и затемнены
+        (:disabled-стиль). Пока модели грузятся — всё заблокировано.
+        Только для вкладки Custom URL."""
+        for attr in ("oc_url_combo", "oc_btn_manage_urls", "oc_btn_manage_keys",
+                     "btn_oc_manage_providers"):
+            try:
+                w = getattr(self, attr, None)
+                if w is not None:
+                    w.setEnabled(bool(enabled))
+            except Exception:
+                pass
 
     def _oc_apply_models(self, model_ids, reasoning_map, free_ids, free_reasoning):
         """Сохраняет списки моделей эндпоинта и бесплатных opencode для
@@ -16202,6 +16523,23 @@ class ClaudeManager(QMainWindow):
                 self._oc_models_loaded_once = True
                 self._oc_refresh_models()
 
+    def _ensure_terminal(self):
+        """Проверка Windows Terminal перед любым запуском.
+        Если терминала нет — красивое окно с предупреждением и кнопками
+        [Установить] / [Отмена]. Возвращает True, если можно запускать
+        (терминал есть, либо пользователь выбрал запуск без него)."""
+        try:
+            if find_windows_terminal():
+                return True
+        except Exception:
+            pass
+        try:
+            dlg = TerminalCheckDialog(self)
+            dlg.exec()
+        except Exception:
+            pass
+        return True
+
     def open_custom_token_dialog(self):
         """Открывает диалог настройки кастомного токена"""
         dialog = CustomTokenDialog(self.settings, self)
@@ -16348,6 +16686,9 @@ class ClaudeManager(QMainWindow):
         if self.settings.get("app_mode", "anthropic") == "official":
             self._launch_claude_official()
             return
+        # Windows Terminal перед запуском (предупредит, если его нет)
+        if not self._ensure_terminal():
+            return
         # Жёсткая проверка: установленная версия не должна быть выше REQUIRED_CLAUDE_VERSION.
         # Пропускаем её, если включены официальные обновления — там версия выше пина ожидаема.
         if not self.settings.get("auto_update_enabled", False):
@@ -16478,6 +16819,9 @@ class ClaudeManager(QMainWindow):
         сохраняется между запусками. Модель и effort передаются честными
         CLI-флагами --model/--effort. Пин версии REQUIRED_CLAUDE_VERSION здесь
         не проверяем: официальный запуск работает с любой версией."""
+        # Windows Terminal перед запуском (предупредит, если его нет)
+        if not self._ensure_terminal():
+            return
         working_dir = self._get_mode_workdir("official")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
@@ -16569,6 +16913,9 @@ class ClaudeManager(QMainWindow):
 
     def launch_codex(self):
         """Запускает Codex CLI с выбранной моделью и effort'ом (вкладка OpenAI)."""
+        # Windows Terminal перед запуском (предупредит, если его нет)
+        if not self._ensure_terminal():
+            return
         working_dir = self._get_mode_workdir("openai")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
@@ -17514,6 +17861,9 @@ class ClaudeManager(QMainWindow):
         - любой другой OpenAI-совместимый эндпоинт (gorouter.app и т.п.) —
           генерируется конфиг-провайдер со списком моделей с /v1/models и
           передаётся через OPENCODE_CONFIG."""
+        # Windows Terminal перед запуском (предупредит, если его нет)
+        if not self._ensure_terminal():
+            return
         working_dir = self._get_mode_workdir("customurl")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
