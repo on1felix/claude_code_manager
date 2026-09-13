@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.9.0"  # Для обновлений
+APP_VERSION = "5.9.1"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -1563,6 +1563,34 @@ TRANSLATIONS = {
     "1M-контекст включён": "1M context enabled",
     "1M-контекст выключен": "1M context disabled",
     # ── переводы консоли и диалогов (автодобавление) ──
+    "Терминал не найден": "Terminal not found",
+    "Для нормальной работы PowerShell нужен Windows Terminal. Без него не работает вставка текста через CTRL+V, вкладки и другие возможности современного терминала.\n\nУстанови Terminal — это официальный установщик Microsoft, всегда последняя версия.":
+        "Windows Terminal is required for PowerShell to work properly. Without it, pasting text with CTRL+V, tabs and other modern terminal features do not work.\n\nInstall Terminal — the official Microsoft installer, always the latest version.",
+    "Установка Windows Terminal...": "Installing Windows Terminal...",
+    "Запуск установщика...": "Starting the installer...",
+    "Идёт установка — это может занять пару минут...": "Installing — this may take a couple of minutes...",
+    "Терминал успешно установлен": "Terminal installed successfully",
+    "Не удалось установить Terminal": "Terminal installation failed",
+    "winget не найден — установи Terminal вручную из Microsoft Store.":
+        "winget was not found — install Terminal manually from the Microsoft Store.",
+    "При отмене запуск пойдёт без терминала.": "Cancelling will launch without the terminal.",
+    "Добавить npm в PATH": "Add npm to PATH",
+    "opencode не найден": "opencode not found",
+    "Не нашёл папку с установленным opencode. Сначала установи opencode кнопкой выше, потом жми «Добавить npm в PATH».":
+        "Could not find the installed opencode folder. Install opencode with the button above first, then press “Add npm to PATH”.",
+    "Папка с opencode уже прописана в пользовательской PATH.": "The opencode folder is already in your user PATH.",
+    "Добавит папку с opencode в пользовательскую PATH, чтобы команду «opencode» можно было запускать из любой консоли. После этого перезапусти терминал.":
+        "Adds the opencode folder to your user PATH so the “opencode” command works from any console. Restart your terminal afterwards.",
+    "Папка с opencode добавлена в пользовательскую PATH. Открой новую консоль и проверь: opencode --version.":
+        "The opencode folder was added to your user PATH. Open a new console and check: opencode --version.",
+    "Не удалось добавить npm в PATH автоматически: {}": "Failed to add npm to PATH automatically: {}",
+    "opencode установлен, но его папка не в PATH — команда не видна новым терминалам":
+        "opencode is installed but its folder is not in PATH — new terminals cannot see the command",
+    "Установка завершена успешно.\nНет команды opencode? Открой новую консоль.":
+        "Installation completed successfully.\nNo opencode command? Open a new console.",
+    "Перезапустите программу": "Please restart the app",
+    "opencode установлен. Перезапусти программу, чтобы она увидела новую команду и обновлённый PATH.":
+        "opencode is installed. Restart the app so it picks up the new command and updated PATH.",
     "В системе не найден npm — он входит в состав Node.js. Без npm Claude Code установить нельзя.\n\nНа твоей системе нет winget, поэтому установить автоматически не получится. Нажми «Скачать Node.js» — откроется официальная страница nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, поставь его и перезапусти это приложение.": "npm was not found on this system — it ships with Node.js. Without npm, Claude Code cannot be installed.\n\nwinget is not available on your system, so automatic installation is not possible. Click “Download Node.js” — the official nodejs.org/en/download page will open. Download the Windows Installer (.msi) LTS, install it and restart this app.",
     "Вы действит  льно хотите переустановить status line? Ваш текущий блок statusLine в ~/.claude/settings.json и файл ~/.claude/statusline-command.sh будут полностью перезаписаны нашей версией. Откатить это нельзя.": "Do you really want to reinstall the status line? Your current statusLine block in ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be fully overwritten with our version. This cannot be undone.",
     "Вы действительно хотите удалить status line? Блок statusLine уйдёт из ~/.claude/settings.json, а файл ~/.claude/statusline-command.sh — будет стёрт. Остальные настройки Claude Code останутся как есть.": "Do you really want to remove the status line? The statusLine block will be removed from ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be erased. Other Claude Code settings stay as they are.",
@@ -1686,14 +1714,18 @@ def check_oc_latest_version():
     except Exception:
         return ''
 
-def get_installed_oc_version():
+def get_installed_oc_version(exe=None):
     """Возвращает установленную версию opencode CLI ('' если не установлен).
 
     opencode — JS-пакет npm, в PATH только шимы opencode.cmd / opencode.ps1
     (без .exe). Python 3.14 не запускает .cmd напрямую через CreateProcess,
-    поэтому гоним через `cmd /c <путь> --version`."""
+    поэтому гоним через `cmd /c <путь> --version`.
+    exe: явный путь к шиму. Нужен, когда папка npm есть на диске, но её нет
+    в PATH текущего процесса — тогда shutil.which() даёт None, а версия
+    по явному пути всё равно читается."""
     try:
-        exe = shutil.which("opencode")
+        if not exe:
+            exe = shutil.which("opencode")
         if not exe:
             return ""
         proc = subprocess.run(
@@ -1706,6 +1738,42 @@ def get_installed_oc_version():
         return m.group(1) if m else ""
     except Exception:
         return ''
+
+def _write_user_path_entry(target):
+    """Добавляет папку в пользовательскую PATH (HKCU\\Environment) и шлёт
+    broadcast WM_SETTINGCHANGE, чтобы оболочки заметили изменение.
+    Возвращает (True, '') или (False, текст_ошибки). Общая для кнопок
+    «в PATH» (Claude Code использует свою обёртку с диалогами)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+            try:
+                val, val_type = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                val, val_type = "", winreg.REG_EXPAND_SZ
+            current = str(val or "")
+            parts = [p for p in current.split(";") if p.strip()]
+            norm_target = os.path.normcase(os.path.normpath(target))
+            if any(os.path.normcase(os.path.normpath(p)) == norm_target for p in parts):
+                return True, "already"
+            new_val = (current + (";" if current and not current.endswith(";") else "") + target)
+            winreg.SetValueEx(key, "Path", 0, val_type or winreg.REG_EXPAND_SZ, new_val)
+        try:
+            import ctypes
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x1A
+            SMTO_ABORTIFHUNG = 0x0002
+            ctypes.windll.user32.SendMessageTimeoutW(
+                HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                ctypes.c_wchar_p("Environment"),
+                SMTO_ABORTIFHUNG, 5000, None
+            )
+        except Exception:
+            pass
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
 
 def find_windows_terminal():
     """Путь к wt.exe (Windows Terminal) или None, если терминал не установлен.
@@ -3024,14 +3092,32 @@ class StyledComboBox(QComboBox):
         event.ignore()
 
     def enterEvent(self, event):
-        self._is_hovered = True
+        # Disabled combo: no hover highlight at all.
+        if self.isEnabled():
+            self._is_hovered = True
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._is_hovered = False
         super().leaveEvent(event)
 
+    def setEnabled(self, enabled):
+        super().setEnabled(enabled)
+        if not enabled:
+            self._is_hovered = False
+            self._hover_progress = 0.0
+            self.setCursor(Qt.ForbiddenCursor)
+        else:
+            self.setCursor(Qt.PointingHandCursor)
+        self._update_style()
+
     def _animate_hover(self):
+        # Disabled combo: freeze highlight, force it off.
+        if not self.isEnabled():
+            if self._hover_progress != 0.0:
+                self._hover_progress = 0.0
+                self._update_style()
+            return
         if self._is_hovered:
             if self._hover_progress < 1.0:
                 self._hover_progress = min(1.0, self._hover_progress + 0.1)
@@ -3042,6 +3128,20 @@ class StyledComboBox(QComboBox):
                 self._update_style()
 
     def _update_style(self):
+        if not self.isEnabled():
+            self.setStyleSheet("""
+                QComboBox {
+                    background-color: rgba(30, 30, 35, 150);
+                    color: rgb(100, 100, 100);
+                    border: 2px solid rgb(45, 45, 50);
+                    border-radius: 4px;
+                    padding: 6px;
+                }
+                QComboBox::drop-down {
+                    border: none;
+                }
+            """)
+            return
         if self._accent_color is not None:
             # Рамка всегда в цвете акцента (тусклая), при наведении — ярче
             ar, ag, ab = self._accent_color
@@ -4343,6 +4443,267 @@ class ConfirmActionDialog(QDialog):
         fade.finished.connect(lambda: super(ConfirmActionDialog, self).reject())
         fade.start()
         self._fade = fade
+
+class TerminalCheckDialog(QDialog):
+    """Проверка Windows Terminal перед запуском.
+
+    Если wt.exe нет — предупреждение + [Установить] / [Отмена].
+    «Отмена» — запуск без терминала. «Установить» — официальный winget-пакет
+    Microsoft.WindowsTerminal (последняя версия); окно переключается на
+    прогресс-бар (как у обновления приложения), в конце — результат + [ОК].
+    """
+    install_done = Signal(bool, str)
+
+    _ICON_STYLE = """
+        QLabel {{
+            color: rgb({r}, {g}, {b});
+            font-size: 24px;
+            font-weight: bold;
+            background: rgba({r}, {g}, {b}, 0.15);
+            border: 2px solid rgba({r}, {g}, {b}, 0.4);
+            border-radius: 25px;
+            min-width: 50px;
+            max-width: 50px;
+            min-height: 50px;
+            max-height: 50px;
+        }}
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self._pct = 0
+        self._crawl = None
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("terminalCheckContainer")
+        container.setStyleSheet("""
+            QFrame#terminalCheckContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(14)
+
+        self.icon_label = QLabel(">_")
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        self._set_icon(">_", (235, 150, 90))
+        icon_row = QHBoxLayout()
+        icon_row.addStretch()
+        icon_row.addWidget(self.icon_label)
+        icon_row.addStretch()
+        layout.addLayout(icon_row)
+
+        self.title_label = QLabel(tr("Терминал не найден"))
+        self.title_label.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setWordWrap(True)
+        self.title_label.setStyleSheet("color: #DDDDDD; background: transparent; border: none;")
+        layout.addWidget(self.title_label)
+
+        self.message_label = QLabel(tr(
+            "Для нормальной работы PowerShell нужен Windows Terminal. "
+            "Без него не работает вставка текста через CTRL+V, вкладки "
+            "и другие возможности современного терминала.\n\n"
+            "Установи Terminal — это официальный установщик Microsoft, "
+            "всегда последняя версия."
+        ))
+        self.message_label.setFont(QFont("Segoe UI", 10))
+        self.message_label.setAlignment(Qt.AlignCenter)
+        self.message_label.setWordWrap(True)
+        self.message_label.setStyleSheet("color: rgb(170, 170, 170); background: transparent; border: none;")
+        layout.addWidget(self.message_label)
+
+        self.bar = AnimatedProgressBar("#34d399")
+        self.bar.hide()
+        layout.addWidget(self.bar)
+
+        self.status_label = QLabel("")
+        self.status_label.setFont(QFont("Segoe UI", 10))
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        self.status_label.hide()
+        layout.addWidget(self.status_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        self.btn_install = GreenButton(tr("Установить"))
+        self.btn_install.setMinimumHeight(40)
+        self.btn_install.clicked.connect(self._on_install_clicked)
+        btn_row.addWidget(self.btn_install)
+        self.btn_cancel = GreenButton(tr("Отмена"))
+        self.btn_cancel.setMinimumHeight(40)
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(self.btn_cancel)
+        self.btn_ok = GreenButton(tr("Ок"))
+        self.btn_ok.setMinimumHeight(40)
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_ok.hide()
+        btn_row.addWidget(self.btn_ok)
+        layout.addLayout(btn_row)
+
+        self.cancel_hint = QLabel(tr("При отмене запуск пойдёт без терминала."))
+        self.cancel_hint.setFont(QFont("Segoe UI", 9))
+        self.cancel_hint.setAlignment(Qt.AlignCenter)
+        self.cancel_hint.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        layout.addWidget(self.cancel_hint)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.adjustSize()
+        self.setMinimumWidth(460)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in.setDuration(220)
+        self.fade_in.setStartValue(0.0)
+        self.fade_in.setEndValue(1.0)
+        self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fade_in.start()
+        self._center_on_parent()
+
+    def _center_on_parent(self):
+        """Ставит окно строго по центру главного окна (frameless-диалоги
+        сами не центрируются). Вызывать после каждого adjustSize, иначе
+        при смене страниц окно «уплывает»."""
+        try:
+            self.adjustSize()
+            dw, dh = self.width(), self.height()
+            pw = self.parentWidget()
+            if pw is not None:
+                pg = pw.frameGeometry()
+                c = pg.center()
+                self.move(c.x() - dw // 2, c.y() - dh // 2)
+            else:
+                from PySide6.QtGui import QGuiApplication
+                screen = QGuiApplication.primaryScreen().availableGeometry()
+                self.move(screen.x() + (screen.width() - dw) // 2,
+                          screen.y() + (screen.height() - dh) // 2)
+        except Exception:
+            pass
+
+    def _set_icon(self, text, rgb):
+        r, g, b = rgb
+        self.icon_label.setText(text)
+        self.icon_label.setStyleSheet(self._ICON_STYLE.format(r=r, g=g, b=b))
+
+    def _on_install_clicked(self):
+        self.title_label.setText(tr("Установка Windows Terminal..."))
+        self.message_label.hide()
+        self.cancel_hint.hide()
+        self.btn_install.hide()
+        self.btn_cancel.hide()
+        self.bar.set_progress(4)
+        self._pct = 4
+        self.bar.show()
+        self.status_label.setText(tr("Запуск установщика..."))
+        self.status_label.show()
+        self._center_on_parent()
+        try:
+            self.install_done.connect(self._on_install_done)
+        except Exception:
+            pass
+        self._crawl = QTimer(self)
+        self._crawl.setInterval(160)
+        self._crawl.timeout.connect(self._tick)
+        self._crawl.start()
+        threading.Thread(target=self._install_worker, daemon=True).start()
+
+    def _tick(self):
+        try:
+            if self._pct < 92:
+                self._pct = min(92, self._pct + 2)
+                self.bar.set_progress(self._pct)
+                if self._pct > 30:
+                    self.status_label.setText(tr("Идёт установка — это может занять пару минут..."))
+        except Exception:
+            pass
+
+    def _install_worker(self):
+        ok, err = False, ""
+        try:
+            import shutil as _shutil
+            import subprocess as _sp
+            has_winget = bool(_shutil.which("winget"))
+            if not has_winget:
+                try:
+                    _r = _sp.run(
+                        "winget --version", shell=True,
+                        capture_output=True, text=True, timeout=10,
+                        creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0))
+                    has_winget = (_r.returncode == 0)
+                except Exception:
+                    pass
+            if not has_winget:
+                self.install_done.emit(False, "nowwinget")
+                return
+            _cmd = ("winget install --id Microsoft.WindowsTerminal -e "
+                    "--source winget --accept-source-agreements "
+                    "--accept-package-agreements --silent --disable-interactivity")
+            try:
+                _r = _sp.run(
+                    _cmd, shell=True, capture_output=True, text=True, timeout=600,
+                    creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0))
+                _out = ((_r.stdout or "") + "\n" + (_r.stderr or "")).strip()
+            except _sp.TimeoutExpired:
+                _out = "timeout"
+            # Успех = wt реально появился (покрывает и «уже установлен»,
+            # у которого у winget свой код возврата).
+            try:
+                ok = bool(find_windows_terminal())
+            except Exception:
+                ok = False
+            if not ok:
+                _lines = [l.strip() for l in _out.splitlines() if l.strip()]
+                err = "\n".join(_lines[-4:]) if _lines else "unknown error"
+            self.install_done.emit(ok, err)
+        except Exception as e:
+            try:
+                self.install_done.emit(False, str(e))
+            except Exception:
+                pass
+
+    def _on_install_done(self, ok, err):
+        try:
+            if self._crawl is not None:
+                self._crawl.stop()
+        except Exception:
+            pass
+        try:
+            if ok:
+                self.bar.set_progress(100)
+                self._set_icon("✓", (52, 211, 153))
+                self.title_label.setText(tr("Терминал успешно установлен"))
+                self.status_label.hide()
+            else:
+                self.bar.hide()
+                self._set_icon("!", (235, 90, 90))
+                self.title_label.setText(tr("Не удалось установить Terminal"))
+                if err == "nowwinget":
+                    self.status_label.setText(tr(
+                        "winget не найден — установи Terminal вручную "
+                        "из Microsoft Store."))
+                else:
+                    self.status_label.setText(str(err)[:400])
+                self.status_label.show()
+            self.btn_ok.show()
+            self._center_on_parent()
+        except Exception:
+            pass
 
 # ============================================================
 # ПРОГРЕСС БАР ДЛЯ ОБНОВЛЕНИЯ
@@ -11622,6 +11983,8 @@ class OpencodeProvidersDialog(QDialog):
         if confirm.exec() != QDialog.Accepted:
             return
 
+        rec = self._collect().get(pid, {})
+
         # Удаляем креду
         if os.path.exists(self.auth_path):
             auth = _load_jsonc(self.auth_path)
@@ -12422,15 +12785,24 @@ class ClaudeInstallProgressDialog(QDialog):
                 self.sub_lbl.setText(tr("Версия") + f" {ver_fmt}")
             else:
                 self.sub_lbl.setText("")
-            self.status_lbl.setText(tr(
-                "Установка завершена успешно.\n"
-                "Если команда claude не найдена — открой новое окно консоли\n"
-                "(npm обычно сам прописывает её в PATH)."
-            ) if self._product == "Claude Code" else tr(
-                "Установка завершена успешно.\n"
-                "Если команда codex не найдена — открой новое окно консоли\n"
-                "(npm обычно сам прописывает её в PATH)."
-            ))
+            if self._product == "Claude Code":
+                status = tr(
+                    "Установка завершена успешно.\n"
+                    "Если команда claude не найдена — открой новое окно консоли\n"
+                    "(npm обычно сам прописывает её в PATH)."
+                )
+            elif "opencode" in self._product:
+                status = tr(
+                    "Установка завершена успешно.\n"
+                    "Нет команды opencode? Открой новую консоль."
+                )
+            else:
+                status = tr(
+                    "Установка завершена успешно.\n"
+                    "Если команда codex не найдена — открой новое окно консоли\n"
+                    "(npm обычно сам прописывает её в PATH)."
+                )
+            self.status_lbl.setText(status)
         self.btn_ok.show()
 
     def mark_cancelled(self):
@@ -13916,6 +14288,16 @@ class ClaudeManager(QMainWindow):
         self.btn_uninstall_oc.hide()
         install_row.addWidget(self.btn_uninstall_oc)
 
+        # Добавить npm в PATH — как кнопка «Добавить в PATH» у Claude Code:
+        # прописывает папку с шимом opencode (%APPDATA%\npm) в PATH
+        # пользователя, если её там нет. Видна только в режиме customurl.
+        self.btn_add_oc_to_path = StyledButton(tr("Добавить npm в PATH"))
+        self.btn_add_oc_to_path.setFixedHeight(34)
+        self.btn_add_oc_to_path.set_hover_color(120, 180, 230)
+        self.btn_add_oc_to_path.clicked.connect(self._on_add_oc_to_path_clicked)
+        self.btn_add_oc_to_path.hide()
+        install_row.addWidget(self.btn_add_oc_to_path)
+
         install_row.addStretch()
         main_layout.addLayout(install_row)
 
@@ -14577,7 +14959,7 @@ class ClaudeManager(QMainWindow):
         self.dir_input = QLineEdit()
         self.dir_input.setReadOnly(True)
         self.dir_input.setPlaceholderText(tr("Не выбрана (будет запрошена)"))
-        self.dir_input.setText(self.settings.get("working_directory", ""))
+        self.dir_input.setText(self._get_mode_workdir())
         self.dir_input.setFont(QFont("Segoe UI", 9))
         self.dir_input.setStyleSheet("""
             QLineEdit {
@@ -14971,8 +15353,8 @@ class ClaudeManager(QMainWindow):
         self.title.setText(html)
 
     def browse_directory(self):
-        """Открывает диалог выбора директории"""
-        current_dir = self.settings.get("working_directory", "")
+        """Открывает диалог выбора директории (отдельная на каждый режим)"""
+        current_dir = self._get_mode_workdir()
         directory = QFileDialog.getExistingDirectory(
             self,
             "Выберите рабочую директорию для Claude Code",
@@ -14981,17 +15363,39 @@ class ClaudeManager(QMainWindow):
         )
 
         if directory:
-            self.settings["working_directory"] = directory
+            self._set_mode_workdir(directory)
             self.dir_input.setText(directory)
-            save_settings(self.settings)
             self.log(tr("Установлена директория: {}").format(directory), "success")
 
     def clear_directory(self):
-        """Очищает сохраненную директорию"""
-        self.settings["working_directory"] = ""
+        """Очищает сохраненную директорию текущего режима"""
+        self._set_mode_workdir("")
         self.dir_input.setText("")
-        save_settings(self.settings)
         self.log("Директория очищена", "info")
+
+    def _workdir_key(self, mode=None):
+        """Ключ настройки с рабочей директорией для режима.
+        anthropic/official/openai/customurl — у каждого своя."""
+        mode = mode or self.settings.get("app_mode", "anthropic")
+        if mode not in ("anthropic", "official", "openai", "customurl"):
+            mode = "anthropic"
+        return "working_directory_" + mode
+
+    def _get_mode_workdir(self, mode=None):
+        """Рабочая директория текущего (или заданного) режима.
+        Старый общий ключ working_directory служит фолбэком, чтобы
+        существующие настройки не потерялись при обновлении."""
+        key = self._workdir_key(mode)
+        v = self.settings.get(key, "")
+        if not v:
+            v = self.settings.get("working_directory", "")
+        return v
+
+    def _set_mode_workdir(self, directory, mode=None):
+        """Сохраняет рабочую директорию только для текущего режима —
+        остальные режимы не трогаем."""
+        self.settings[self._workdir_key(mode)] = directory
+        save_settings(self.settings)
 
     def _on_mode_changed(self, mode):
         """Обработчик переключателя режимов в шапке (Anthropic / Claude / OpenAI / Custom URL)"""
@@ -15071,6 +15475,8 @@ class ClaudeManager(QMainWindow):
                 self.btn_install_oc.setText(tr("Установить opencode"))
             if hasattr(self, "btn_uninstall_oc"):
                 self.btn_uninstall_oc.setText(tr("Удалить opencode"))
+            if hasattr(self, "btn_add_oc_to_path"):
+                self.btn_add_oc_to_path.setText(tr("Добавить npm в PATH"))
             if hasattr(self, "oa_btn_manage_urls"):
                 self.oa_btn_manage_urls.setText(tr("Управление"))
             if hasattr(self, "oa_btn_manage_keys"):
@@ -15681,10 +16087,27 @@ class ClaudeManager(QMainWindow):
 
     def _oc_set_info_loading(self, loading):
         """Включает/выключает состояние загрузки на кнопке «Какие модели
-        доступны»: блокирует её и запускает/гасит спиннер."""
+        доступны»: блокирует её и запускает/гасит спиннер. Заодно блокирует
+        кнопки управления (ключи, Base URL, провайдеры) — пока модели
+        грузятся, их нельзя трогать."""
         btn = getattr(self, "oc_info_btn", None)
         if btn is not None and hasattr(btn, "set_loading"):
             btn.set_loading(bool(loading))
+        self._set_oc_manage_enabled(not loading)
+
+    def _set_oc_manage_enabled(self, enabled):
+        """Элементы управления вкладки opencode (эндпоинт, ключи, Base URL,
+        провайдеры): кликабельны и яркие, либо заблокированы и затемнены
+        (:disabled-стиль). Пока модели грузятся — всё заблокировано.
+        Только для вкладки Custom URL."""
+        for attr in ("oc_url_combo", "oc_btn_manage_urls", "oc_btn_manage_keys",
+                     "btn_oc_manage_providers"):
+            try:
+                w = getattr(self, attr, None)
+                if w is not None:
+                    w.setEnabled(bool(enabled))
+            except Exception:
+                pass
 
     def _oc_apply_models(self, model_ids, reasoning_map, free_ids, free_reasoning):
         """Сохраняет списки моделей эндпоинта и бесплатных opencode для
@@ -16006,7 +16429,7 @@ class ClaudeManager(QMainWindow):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setVisible(is_openai)
-        for attr in ("btn_install_oc", "btn_uninstall_oc"):
+        for attr in ("btn_install_oc", "btn_uninstall_oc", "btn_add_oc_to_path"):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setVisible(is_customurl)
@@ -16022,6 +16445,14 @@ class ClaudeManager(QMainWindow):
         # Видимость бейджа freemodel.dev пересчитывается по реально выбранному
         # URL и режиму.
         self._refresh_freemodel_brand_visibility()
+
+        # Поле рабочей директории показывает директорию активного режима —
+        # у каждого режима своя (выбор в opencode не трогает остальные).
+        try:
+            if hasattr(self, "dir_input"):
+                self.dir_input.setText(self._get_mode_workdir(mode))
+        except Exception:
+            pass
 
         if hasattr(self, "btn_configure_custom"):
             self.btn_configure_custom.setEnabled(mode == "anthropic")
@@ -16091,6 +16522,23 @@ class ClaudeManager(QMainWindow):
             if not getattr(self, "_oc_models_loaded_once", False):
                 self._oc_models_loaded_once = True
                 self._oc_refresh_models()
+
+    def _ensure_terminal(self):
+        """Проверка Windows Terminal перед любым запуском.
+        Если терминала нет — красивое окно с предупреждением и кнопками
+        [Установить] / [Отмена]. Возвращает True, если можно запускать
+        (терминал есть, либо пользователь выбрал запуск без него)."""
+        try:
+            if find_windows_terminal():
+                return True
+        except Exception:
+            pass
+        try:
+            dlg = TerminalCheckDialog(self)
+            dlg.exec()
+        except Exception:
+            pass
+        return True
 
     def open_custom_token_dialog(self):
         """Открывает диалог настройки кастомного токена"""
@@ -16238,6 +16686,9 @@ class ClaudeManager(QMainWindow):
         if self.settings.get("app_mode", "anthropic") == "official":
             self._launch_claude_official()
             return
+        # Windows Terminal перед запуском (предупредит, если его нет)
+        if not self._ensure_terminal():
+            return
         # Жёсткая проверка: установленная версия не должна быть выше REQUIRED_CLAUDE_VERSION.
         # Пропускаем её, если включены официальные обновления — там версия выше пина ожидаема.
         if not self.settings.get("auto_update_enabled", False):
@@ -16254,7 +16705,7 @@ class ClaudeManager(QMainWindow):
         model = self.settings.get("custom_model", "")
 
         # Рабочая директория
-        working_dir = self.settings.get("working_directory", "")
+        working_dir = self._get_mode_workdir()
 
         if not working_dir:
             # Если директория не установлена - запрашиваем
@@ -16368,7 +16819,10 @@ class ClaudeManager(QMainWindow):
         сохраняется между запусками. Модель и effort передаются честными
         CLI-флагами --model/--effort. Пин версии REQUIRED_CLAUDE_VERSION здесь
         не проверяем: официальный запуск работает с любой версией."""
-        working_dir = self.settings.get("working_directory", "")
+        # Windows Terminal перед запуском (предупредит, если его нет)
+        if not self._ensure_terminal():
+            return
+        working_dir = self._get_mode_workdir("official")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
                 self,
@@ -16459,7 +16913,10 @@ class ClaudeManager(QMainWindow):
 
     def launch_codex(self):
         """Запускает Codex CLI с выбранной моделью и effort'ом (вкладка OpenAI)."""
-        working_dir = self.settings.get("working_directory", "")
+        # Windows Terminal перед запуском (предупредит, если его нет)
+        if not self._ensure_terminal():
+            return
+        working_dir = self._get_mode_workdir("openai")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
                 self,
@@ -16911,8 +17368,28 @@ class ClaudeManager(QMainWindow):
                     return True
         return False
 
+    def _find_oc_bin(self):
+        """Абсолютный путь к шиму opencode для запуска версии.
+        .ps1 через cmd не запускается — его пропускаем. Пусто, если нет."""
+        for d in self._detect_oc_install_dirs():
+            for name in ("opencode.cmd", "opencode.exe", "opencode", "opencode.bat"):
+                p = os.path.join(d, name)
+                if os.path.isfile(p):
+                    return p
+        return ""
+
+    def _find_oc_bin_dir(self):
+        """Папка с шимом opencode (обычно %APPDATA%\\npm) или пустая строка."""
+        p = self._find_oc_bin()
+        return os.path.dirname(p) if p else ""
+
     def _get_installed_oc_version(self):
-        """Версия установленного opencode или пустая строка."""
+        """Версия установленного opencode или пустая строка.
+        Сначала пробуем явный путь к шиму (работает, даже если папки npm
+        нет в PATH процесса), затем обычный поиск через PATH."""
+        oc_bin = self._find_oc_bin()
+        if oc_bin:
+            return get_installed_oc_version(oc_bin)
         return get_installed_oc_version()
 
     def _check_oc_version(self):
@@ -17213,6 +17690,23 @@ class ClaudeManager(QMainWindow):
         is_update = ctx.get("is_update", False)
         old_local = ctx.get("old_local", "")
 
+        # Авто-PATH: файлы opencode на месте, но папки нет в PATH процесса
+        # (типично сразу после установки npm) — прописываем молча, без
+        # диалога: команда станет видна новым терминалам. Папка берётся
+        # только из известных мест (%APPDATA%\npm, ~/.local/bin).
+        if installed_now and not is_uninstall:
+            try:
+                if not shutil.which("opencode"):
+                    _oc_dir = self._find_oc_bin_dir()
+                    if _oc_dir:
+                        _ok, _err = _write_user_path_entry(_oc_dir)
+                        if _ok:
+                            self.log(tr("Добавил в PATH: {}").format(_oc_dir), "success")
+                        else:
+                            self.log(tr("Не удалось добавить npm в PATH автоматически: {}").format(_err), "warning")
+            except Exception:
+                pass
+
         progress_dlg = getattr(self, "_oc_install_dlg", None)
         dlg_alive = False
         if progress_dlg is not None:
@@ -17242,6 +17736,7 @@ class ClaudeManager(QMainWindow):
                     if installed_now and new_local:
                         progress_dlg.mark_finished(actual_version=new_local)
                         self.log(tr("opencode установлен (v{v})").format(v=new_local), "success")
+                        self._offer_restart_after_oc_install()
                     else:
                         progress_dlg.mark_cancelled()
             except Exception:
@@ -17261,6 +17756,27 @@ class ClaudeManager(QMainWindow):
             pass
         try:
             threading.Thread(target=self._check_oc_version, daemon=True).start()
+        except Exception:
+            pass
+
+    def _offer_restart_after_oc_install(self):
+        """После установки opencode — информационная табличка: для применения
+        новой команды и PATH программу нужно перезапустить вручную."""
+        try:
+            dlg = ConfirmActionDialog(
+                title=tr("Перезапустите программу"),
+                message=tr(
+                    "opencode установлен. Перезапусти программу, чтобы она "
+                    "увидела новую команду и обновлённый PATH."
+                ),
+                detail="opencode --version",
+                confirm_text=tr("Ок"),
+                icon="↻",
+                icon_color=(52, 211, 153),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
         except Exception:
             pass
 
@@ -17345,7 +17861,10 @@ class ClaudeManager(QMainWindow):
         - любой другой OpenAI-совместимый эндпоинт (gorouter.app и т.п.) —
           генерируется конфиг-провайдер со списком моделей с /v1/models и
           передаётся через OPENCODE_CONFIG."""
-        working_dir = self.settings.get("working_directory", "")
+        # Windows Terminal перед запуском (предупредит, если его нет)
+        if not self._ensure_terminal():
+            return
+        working_dir = self._get_mode_workdir("customurl")
         if not working_dir:
             working_dir = QFileDialog.getExistingDirectory(
                 self,
@@ -18813,6 +19332,93 @@ class ClaudeManager(QMainWindow):
             )
             err.cancel_btn.hide()
             err.exec()
+
+    def _on_add_oc_to_path_clicked(self):
+        """Как «Добавить в PATH» у Claude Code, только для opencode:
+        прописывает папку с шимом (%APPDATA%\\npm) в пользовательскую PATH."""
+        target = self._find_oc_bin_dir()
+        if not target:
+            dlg = ConfirmActionDialog(
+                title=tr("opencode не найден"),
+                message=tr(
+                    "Не нашёл папку с установленным opencode. "
+                    "Сначала установи opencode кнопкой выше, потом жми «Добавить npm в PATH»."
+                ),
+                detail="",
+                confirm_text=tr("Понятно"),
+                icon="!",
+                icon_color=(235, 150, 90),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
+            return
+
+        entries = self._get_user_path_entries()
+        norm_target = os.path.normcase(os.path.normpath(target))
+        already_present = any(
+            os.path.normcase(os.path.normpath(p)) == norm_target for p in entries
+        )
+        if already_present:
+            dlg = ConfirmActionDialog(
+                title=tr("Уже в PATH"),
+                message=tr("Папка с opencode уже прописана в пользовательской PATH."),
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="✓",
+                icon_color=(52, 211, 153),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
+            return
+
+        dlg = ConfirmActionDialog(
+            title=tr("Добавить npm в PATH"),
+            message=tr(
+                "Добавит папку с opencode в пользовательскую PATH, чтобы "
+                "команду «opencode» можно было запускать из любой консоли. "
+                "После этого перезапусти терминал."
+            ),
+            detail=target,
+            confirm_text=tr("Добавить"),
+            icon="↑",
+            icon_color=(120, 180, 230),
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        ok, err = _write_user_path_entry(target)
+        if ok:
+            self.log(tr("Добавил в PATH: {}").format(target), "success")
+            done = ConfirmActionDialog(
+                title=tr("Добавлено в PATH"),
+                message=tr(
+                    "Папка с opencode добавлена в пользовательскую PATH. "
+                    "Открой новую консоль и проверь: opencode --version."
+                ),
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="✓",
+                icon_color=(52, 211, 153),
+                parent=self
+            )
+            done.cancel_btn.hide()
+            done.exec()
+        else:
+            self.log(tr("Не удалось добавить в PATH: {}").format(err), "error")
+            err_dlg = ConfirmActionDialog(
+                title=tr("Не удалось добавить в PATH"),
+                message=tr("Что-то пошло не так при записи в реестр:") + f"\n{err}",
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="!",
+                icon_color=(235, 90, 90),
+                parent=self
+            )
+            err_dlg.cancel_btn.hide()
+            err_dlg.exec()
 
     def _update_install_button_state(self):
         """Обновляет кнопки и индикатор по состоянию (нет / нужная версия / другая версия)"""
