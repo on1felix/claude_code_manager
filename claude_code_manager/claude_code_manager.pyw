@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.9.1"  # Для обновлений
+APP_VERSION = "5.9.3"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -16236,9 +16236,10 @@ class ClaudeManager(QMainWindow):
 
     def _parse_verbose_sections(self, out):
         """Делит вывод `opencode models --verbose` на секции и возвращает список
-        (provider, short_name, reasoning). «Слоёный» текст: каждая модель
+        (provider, short_name, reasoning, is_free). «Слоёный» текст: каждая модель
         начинается неотступленной строкой 'provider/name', за которой идёт
-        JSON-объект, и всё подряд (без пустых строк между блоками)."""
+        JSON-объект, и всё подряд (без пустых строк между блоками).
+        is_free = цена модели нулевая (cost.input == 0 и cost.output == 0)."""
         sections = []
         current = None
         for ln in (out or "").splitlines():
@@ -16255,7 +16256,12 @@ class ClaudeManager(QMainWindow):
             except Exception:
                 meta = {}
             c = meta.get("capabilities") or {}
-            parsed.append((provider, short, bool(c.get("reasoning", False))))
+            cost = meta.get("cost") or {}
+            try:
+                is_free = (cost.get("input") == 0 and cost.get("output") == 0)
+            except Exception:
+                is_free = False
+            parsed.append((provider, short, bool(c.get("reasoning", False)), bool(is_free)))
         return parsed
 
     def _oc_fetch_capabilities(self, provider, config_path):
@@ -16264,7 +16270,7 @@ class ClaudeManager(QMainWindow):
         if not provider:
             return {}
         caps = {}
-        for prov, short, reasoning in self._parse_verbose_sections(self._oc_run_models_cmd(provider, config_path)):
+        for prov, short, reasoning, _free in self._parse_verbose_sections(self._oc_run_models_cmd(provider, config_path)):
             if prov == provider:
                 caps[short] = reasoning
         return caps
@@ -16272,12 +16278,13 @@ class ClaudeManager(QMainWindow):
     def _oc_fetch_free_catalog(self):
         """Бесплатные модели opencode: `opencode models --verbose` БЕЗ
         OPENCODE_CONFIG (глобальный каталог). Возвращает (free_ids,
-        free_reasoning) для провайдера 'opencode'."""
+        free_reasoning) для провайдера 'opencode' — только модели с нулевой
+        ценой (cost.input == 0 и cost.output == 0)."""
         out = self._oc_run_models_cmd(None, None)
         free_ids = []
         free_reasoning = {}
-        for prov, short, reasoning in self._parse_verbose_sections(out):
-            if prov == "opencode":
+        for prov, short, reasoning, is_free in self._parse_verbose_sections(out):
+            if prov == "opencode" and is_free:
                 free_ids.append(short)
                 free_reasoning[short] = reasoning
         return free_ids, free_reasoning
