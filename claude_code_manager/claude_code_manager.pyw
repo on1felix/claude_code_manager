@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.9.3"  # Для обновлений
+APP_VERSION = "5.9.4"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -36,6 +36,192 @@ SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # — по образцу «Fix Claude» с ~/.claude.json.bak.N. Восстанавливать вручную:
 # скопировать нужный .bakN обратно в settings.json.
 GITHUB_API_URL = "https://api.github.com/repos/on1felix/claude_code_manager/releases/latest"
+# ============================================================
+# ДИЗАЙН-СИСТЕМА (единый источник цветов и метрик)
+# ------------------------------------------------------------
+# Все новые и переработанные элементы UI берут цвета отсюда.
+# Значения — те же токены, что раньше были размазаны по 277
+# вызовам setStyleSheet. Меняя словарь ниже, можно перекрасить
+# всё приложение из одного места.
+# ============================================================
+
+THEME = {
+    # Фоны / поверхности
+    "bg_root":          "#0e0e12",  # фон окна под контентом
+    "bg_sidebar":       "#111116",  # сайдбар
+    "bg_card":          "#16161c",  # карточки и секции
+    "bg_card_header":   "#1b1b22",  # шапки карточек, чипы
+    "bg_input":         "#0f0f14",  # поля ввода, консоль
+    "bg_hover":         "#1f1f27",  # hover-подложка элементов списка
+    "bg_button":        "#1a1a21",  # базовая подложка кнопки
+    "bg_button_press":  "#13131a",  # нажатое состояние кнопки
+
+    # Границы
+    "border":           "#262630",
+    "border_soft":      "#1e1e26",
+    "border_strong":    "#34343f",
+
+    # Текст
+    "text_primary":     "#ececf1",
+    "text_body":        "#c6c6cf",
+    "text_secondary":   "#9a9aa6",
+    "text_muted":       "#6a6d78",
+    "text_dim":         "#8a8d96",
+
+    # Акценты
+    "accent":           "#64b4ff",
+    "accent_soft":      "#6aa9ff",
+    "success":          "#34d399",
+    "warning":          "#f5c850",
+    "danger":           "#eb5a5a",
+
+    # Метрики (в пикселях)
+    "radius_card":      12,
+    "radius_control":   8,
+    "radius_small":     6,
+    "radius_pill":      999,
+    "sidebar_width":    252,
+
+    # Шрифты
+    "font_ui":          "Segoe UI",
+    "font_mono":        "Cascadia Mono",
+}
+
+# Акцентные цвета режимов — сознательно совпадают с прежними цветами
+# ModeToggle, чтобы пользователь не «терял» привычную навигацию.
+MODE_ACCENTS = {
+    "anthropic": (255, 170, 40),   # оранжевый
+    "official":  (217, 119, 87),   # коралловый
+    "openai":    (52, 211, 153),   # зелёный
+    "customurl": (100, 150, 255),  # голубой
+}
+
+# Заголовки и подписи режимов для шапки страницы и сайдбара.
+MODE_TITLES = {
+    "anthropic": "Anthropic",
+    "official":  "Claude Code",
+    "openai":    "OpenAI",
+    "customurl": "Custom URL",
+}
+
+
+def theme_value(key, default=None):
+    """Возвращает значение токена темы (строка цвета или число)."""
+    return THEME.get(key, default)
+
+
+def theme_qcolor(key, alpha=None):
+    """QColor по имени токена. alpha — 0..255 для полупрозрачных подложек."""
+    c = QColor(THEME.get(key, "#000000"))
+    if alpha is not None:
+        c.setAlpha(int(alpha))
+    return c
+
+
+def theme_mix(c1, c2, t):
+    """Линейная интерполяция двух RGB-кортежей: t=0 -> c1, t=1 -> c2."""
+    t = max(0.0, min(1.0, float(t)))
+    return (
+        int(c1[0] + (c2[0] - c1[0]) * t),
+        int(c1[1] + (c2[1] - c1[1]) * t),
+        int(c1[2] + (c2[2] - c1[2]) * t),
+    )
+
+
+def mode_accent(mode):
+    """RGB-акцент режима (по умолчанию — голубой)."""
+    return MODE_ACCENTS.get(mode, MODE_ACCENTS["customurl"])
+
+
+def accent_qcolor(mode, alpha=None):
+    """QColor акцента режима."""
+    r, g, b = mode_accent(mode)
+    c = QColor(r, g, b)
+    if alpha is not None:
+        c.setAlpha(int(alpha))
+    return c
+
+
+def build_app_qss():
+    """Глобальная таблица стилей: закрывает «щели» между локальными QSS
+    (тултипы, скроллбары, меню, диалоги, чекбоксы). Локальные setStyleSheet
+    у конкретных виджетов по-прежнему имеют приоритет."""
+    t = THEME
+    return f"""
+    QToolTip {{
+        background-color: {t['bg_card_header']};
+        color: {t['text_body']};
+        border: 1px solid {t['border']};
+        border-radius: {t['radius_small']}px;
+        padding: 6px 8px;
+    }}
+    QDialog {{
+        background-color: {t['bg_card']};
+    }}
+    QMessageBox {{
+        background-color: {t['bg_card']};
+    }}
+    QMessageBox QLabel {{
+        color: {t['text_body']};
+        background: transparent;
+    }}
+    QMenu {{
+        background-color: {t['bg_card_header']};
+        color: {t['text_body']};
+        border: 1px solid {t['border']};
+        border-radius: {t['radius_control']}px;
+        padding: 6px;
+    }}
+    QMenu::item {{
+        padding: 6px 18px 6px 12px;
+        border-radius: {t['radius_small']}px;
+    }}
+    QMenu::item:selected {{
+        background-color: {t['bg_hover']};
+        color: {t['text_primary']};
+    }}
+    QCheckBox {{
+        color: {t['text_body']};
+        spacing: 8px;
+    }}
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 8px;
+        margin: 0px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {t['border_strong']};
+        border-radius: 8px;
+        min-height: 28px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background: {t['text_muted']};
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0px;
+    }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: transparent;
+    }}
+    QScrollBar:horizontal {{
+        background: transparent;
+        height: 8px;
+        margin: 0px;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: {t['border_strong']};
+        border-radius: 8px;
+        min-width: 28px;
+    }}
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+        width: 0px;
+    }}
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+        background: transparent;
+    }}
+    """
+
+
 
 # ВСТРОЕННЫЙ status line. Раньше лежал в C:\cc\statusline-command.sh — теперь
 # вшит в .exe, чтобы дистрибутив был самодостаточным. При установке записывается
@@ -314,25 +500,22 @@ def load_settings():
                         loaded["openai_base_urls"].insert(0, u)
             if not loaded.get("openai_base_url"):
                 loaded["openai_base_url"] = loaded["openai_base_urls"][0]
-            # models не может быть пустым — если старая настройка съела список,
-            # восстанавливаем дефолтную модель
-            if not loaded.get("models"):
-                loaded["models"] = list(_default_settings()["models"])
-            if not loaded.get("selected_model") or loaded["selected_model"] not in loaded["models"]:
-                loaded["selected_model"] = loaded["models"][0]
+            # models/selected_model — наследие omniroute (статический список
+            # с kr/-моделью), кодом не читаются. Существующие строки в чужих
+            # файлах не трогаем; в новые файлы они не попадают, потому что
+            # их нет в _default_settings(). Живьём используется custom_model.
             migrate_api_keys(loaded)
             migrate_oc_keys(loaded)
+            # Мёртвые ключи эпохи omniroute (omniroute_path, oc_effort/
+            # oc_model/oc_models, auth_token, custom_endpoint) из чужих
+            # файлов не вычищаем — оставляем как есть. В новые файлы они
+            # не попадают (их нет в _default_settings), код их не читает.
             return loaded
     return _default_settings()
 
 def _default_settings():
     return {
-        "models": [
-            "kr/claude-sonnet-4.5"
-        ],
-        "selected_model": "kr/claude-sonnet-4.5",
         "working_directory": "",
-        "auth_token": "",
         "use_custom_token": True,
         "custom_api_key": "",
         "custom_base_url": "https://cc.freemodel.dev",
@@ -340,7 +523,6 @@ def _default_settings():
             "https://cc.freemodel.dev"
         ],
         "custom_model": "Opus 4.8",
-        "custom_endpoint": "",
         "app_language": "ru",
         "auto_update_enabled": True,
         "use_1m_context": False,
@@ -1211,18 +1393,18 @@ TRANSLATIONS = {
     "Продолжить": "Continue",
     # ── Official mode warning
     "Официальный режим — только для подписчиков Anthropic": "Official mode — Anthropic subscribers only",
-    "Этот режим запускает Claude Code через ваш личный аккаунт Anthropic.\n\n"
-    "Он подходит только если у вас есть активная подписка на Anthropic\n"
-    "(Claude Pro, Max или корпоративный план).\n\n"
-    "Для работы с API-ключами сторонних провайдеров\n"
-    "используйте вкладку Anthropic — там можно указать\n"
-    "любой Base URL и ключ.":
-        "This mode launches Claude Code through your personal Anthropic account.\n\n"
-        "It only works if you have an active Anthropic subscription\n"
-        "(Claude Pro, Max, or a business plan).\n\n"
-        "To use API keys from third-party providers,\n"
-        "switch to the Anthropic tab — you can set\n"
-        "any Base URL and key there.",
+    "Этот режим — официальный запуск через ваш аккаунт Anthropic, "
+    "нужна активная подписка (Pro, Max или корпоративный план).\n\n"
+    "Для API-ключей есть свои вкладки: Anthropic — только модели "
+    "Anthropic (Claude Code), OpenAI — только GPT (Codex).\n\n"
+    "А любые модели без привязки — GPT, Anthropic, GLM, DeepSeek "
+    "и другие — запускаются через Custom URL.":
+        "This mode is the official launch through your Anthropic account — "
+        "an active subscription is required (Pro, Max or Enterprise).\n\n"
+        "API keys have their own tabs: Anthropic is only for Anthropic "
+        "models (Claude Code), OpenAI is only for GPT (Codex).\n\n"
+        "And any models with no strings attached — GPT, Anthropic, GLM, "
+        "DeepSeek and more — run through Custom URL.",
     "Больше не показывать": "Don't show again",
     "Обновить все ключи": "Refresh all keys",
     # ── Admin warning
@@ -2474,18 +2656,18 @@ class StyledButton(QPushButton):
 
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
+                background-color: rgba(26, 26, 33, 200);
+                color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
-                border-radius: 6px;
-                padding: 8px;
+                border-radius: 8px;
+                padding: 8px 12px;
             }}
             QPushButton:pressed {{
                 background-color: rgba(30, 30, 35, 200);
             }}
             QPushButton:disabled {{
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
+                background-color: rgba(20, 20, 26, 200);
+                color: #6a6d78;
                 border: 2px solid rgb(40, 40, 45);
             }}
         """)
@@ -2610,18 +2792,18 @@ class GreenButton(QPushButton):
 
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
+                background-color: rgba(26, 26, 33, 200);
+                color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
-                border-radius: 6px;
-                padding: 8px;
+                border-radius: 8px;
+                padding: 8px 12px;
             }}
             QPushButton:pressed {{
                 background-color: rgba(30, 30, 35, 200);
             }}
             QPushButton:disabled {{
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
+                background-color: rgba(20, 20, 26, 200);
+                color: #6a6d78;
                 border: 2px solid rgb(40, 40, 45);
             }}
         """)
@@ -2629,6 +2811,100 @@ class GreenButton(QPushButton):
 # ============================================================
 # КНОПКА С ГОЛУБЫМ ЭФФЕКТОМ (ДЛЯ ОБНОВЛЕНИЯ)
 # ============================================================
+
+class PrimaryActionButton(QPushButton):
+    """Главное действие экрана («Запустить ...»): залита акцентом режима.
+
+    Единственная «залитая» кнопка в окне — остальные действия остаются
+    нейтральными рамками. Акцент приходит из дизайн-системы и меняется вместе
+    с режимом через set_accent(), поэтому CTA всегда в цвете вкладки.
+    """
+
+    def __init__(self, text, accent=None, parent=None):
+        super().__init__(text, parent)
+        self.setFont(QFont(theme_value("font_ui"), 10, QFont.Bold))
+        self.setMinimumHeight(42)
+        self.setCursor(Qt.PointingHandCursor)
+        self._accent = accent or mode_accent("customurl")
+        self._hover_progress = 0.0
+        self._hover_timer = QTimer()
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+        self._is_hovered = False
+        self.setMouseTracking(True)
+        self._update_style()
+
+    def set_accent(self, accent):
+        """Меняет акцент (например, при переключении режима)."""
+        if accent and tuple(accent) != tuple(self._accent):
+            self._accent = tuple(accent)
+            self._update_style()
+
+    def enterEvent(self, event):
+        if self.isEnabled():
+            self._is_hovered = True
+        super().enterEvent(event)
+
+    def setEnabled(self, enabled):
+        super().setEnabled(enabled)
+        if not enabled:
+            self._is_hovered = False
+            self._hover_progress = 0.0
+            self._update_style()
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        if self._is_hovered and self.isEnabled():
+            if self._hover_progress < 1.0:
+                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._update_style()
+        else:
+            if self._hover_progress > 0.0:
+                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._update_style()
+
+    @staticmethod
+    def _rgba(rgb, alpha):
+        return "rgba(%d, %d, %d, %d)" % (rgb[0], rgb[1], rgb[2], alpha)
+
+    def _update_style(self):
+        accent = self._accent
+        base = QColor(theme_value("bg_button")).getRgb()[:3]
+        t = self._hover_progress
+
+        # Подложка: спокойный оттенок акцента в покое, ярче при наведении
+        fill = theme_mix(base, accent, 0.16 + 0.20 * t)
+        # Рамка: заметная, у наведения почти чистый акцент
+        border = theme_mix(base, accent, 0.50 + 0.38 * t)
+        # Текст: почти белый с лёгким оттенком акцента
+        text = theme_mix((214, 214, 222), accent, 0.18)
+        # Непрозрачность рамки в покое/наведении
+        border_alpha = int(150 + 105 * t)
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba({fill[0]}, {fill[1]}, {fill[2]}, 200);
+                color: rgb({text[0]}, {text[1]}, {text[2]});
+                border: 2px solid rgba({border[0]}, {border[1]}, {border[2]}, {border_alpha});
+                border-radius: 8px;
+                padding: 9px 16px;
+            }}
+            QPushButton:pressed {{
+                background-color: rgba({int(fill[0] * 0.88)}, {int(fill[1] * 0.88)}, {int(fill[2] * 0.88)}, 200);
+                border: 2px solid rgba({border[0]}, {border[1]}, {border[2]}, {border_alpha});
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(20, 20, 26, 200);
+                color: #6a6d78;
+                border: 2px solid rgb(40, 40, 45);
+            }}
+        """)
+        self.ensurePolished()
+
+
 
 class GhostGreenButton(QPushButton):
     """Как GreenButton, но без фона: при наведении плавно загораются
@@ -2682,7 +2958,7 @@ class GhostGreenButton(QPushButton):
                 background: transparent;
                 color: rgb({tr_}, {tg_}, {tb_});
                 border: 2px solid rgb({r}, {g}, {b});
-                border-radius: 6px;
+                border-radius: 8px;
                 padding: 4px 12px;
             }}
             QPushButton:pressed {{
@@ -2734,18 +3010,18 @@ class BlueButton(QPushButton):
 
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
+                background-color: rgba(26, 26, 33, 200);
+                color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
-                border-radius: 6px;
-                padding: 8px;
+                border-radius: 8px;
+                padding: 8px 12px;
             }}
             QPushButton:pressed {{
                 background-color: rgba(30, 30, 35, 200);
             }}
             QPushButton:disabled {{
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
+                background-color: rgba(20, 20, 26, 200);
+                color: #6a6d78;
                 border: 2px solid rgb(40, 40, 45);
             }}
         """)
@@ -2797,18 +3073,18 @@ class RedButton(QPushButton):
 
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
+                background-color: rgba(26, 26, 33, 200);
+                color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
-                border-radius: 6px;
-                padding: 8px;
+                border-radius: 8px;
+                padding: 8px 12px;
             }}
             QPushButton:pressed {{
                 background-color: rgba(30, 30, 35, 200);
             }}
             QPushButton:disabled {{
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
+                background-color: rgba(20, 20, 26, 200);
+                color: #6a6d78;
                 border: 2px solid rgb(40, 40, 45);
             }}
         """)
@@ -2857,18 +3133,18 @@ class YellowButton(QPushButton):
 
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
+                background-color: rgba(26, 26, 33, 200);
+                color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
-                border-radius: 6px;
-                padding: 8px;
+                border-radius: 8px;
+                padding: 8px 12px;
             }}
             QPushButton:pressed {{
                 background-color: rgba(30, 30, 35, 200);
             }}
             QPushButton:disabled {{
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
+                background-color: rgba(20, 20, 26, 200);
+                color: #6a6d78;
                 border: 2px solid rgb(40, 40, 45);
             }}
         """)
@@ -2917,18 +3193,18 @@ class OrangeButton(QPushButton):
 
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
+                background-color: rgba(26, 26, 33, 200);
+                color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
-                border-radius: 6px;
-                padding: 8px;
+                border-radius: 8px;
+                padding: 8px 12px;
             }}
             QPushButton:pressed {{
                 background-color: rgba(30, 30, 35, 200);
             }}
             QPushButton:disabled {{
-                background-color: rgba(30, 30, 35, 150);
-                color: rgb(100, 100, 100);
+                background-color: rgba(20, 20, 26, 200);
+                color: #6a6d78;
                 border: 2px solid rgb(40, 40, 45);
             }}
         """)
@@ -3009,7 +3285,7 @@ class EyeToggleButton(QPushButton):
         b = int(base[2] + (hover[2] - base[2]) * t)
 
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(40, 40, 45, 200))
+        p.setBrush(QColor(26, 26, 33, 200))
         p.drawRoundedRect(1, 1, w - 2, h - 2, 6, 6)
 
         pen = QPen(QColor(r, g, b))
@@ -3054,10 +3330,10 @@ class StyledComboBox(QComboBox):
 
         self.setStyleSheet("""
             QComboBox {
-                background-color: rgba(40, 40, 45, 200);
+                background-color: rgba(26, 26, 33, 200);
                 color: %s;
                 border: 2px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                border-radius: 8px;
                 padding: 6px;
             }
             QComboBox::drop-down {
@@ -3065,7 +3341,7 @@ class StyledComboBox(QComboBox):
             }
             QComboBox QAbstractItemView {
                 background-color: rgb(30, 30, 35);
-                color: rgb(200, 200, 200);
+                color: #d6d6de;
                 selection-background-color: rgb(50, 50, 55);
             }
             QComboBox QAbstractItemView::item {
@@ -3074,11 +3350,11 @@ class StyledComboBox(QComboBox):
             QComboBox QAbstractItemView QScrollBar:vertical {
                 width: 8px;
                 background: rgba(20, 20, 25, 200);
-                border-radius: 4px;
+                border-radius: 8px;
             }
             QComboBox QAbstractItemView QScrollBar::handle:vertical {
                 background: rgba(80, 200, 255, 150);
-                border-radius: 4px;
+                border-radius: 8px;
             }
             QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {
                 background: rgba(80, 200, 255, 200);
@@ -3131,10 +3407,10 @@ class StyledComboBox(QComboBox):
         if not self.isEnabled():
             self.setStyleSheet("""
                 QComboBox {
-                    background-color: rgba(30, 30, 35, 150);
-                    color: rgb(100, 100, 100);
+                    background-color: rgba(20, 20, 26, 200);
+                    color: #6a6d78;
                     border: 2px solid rgb(45, 45, 50);
-                    border-radius: 4px;
+                    border-radius: 8px;
                     padding: 6px;
                 }
                 QComboBox::drop-down {
@@ -3159,10 +3435,10 @@ class StyledComboBox(QComboBox):
 
         self.setStyleSheet(f"""
             QComboBox {{
-                background-color: rgba(40, 40, 45, 200);
+                background-color: rgba(26, 26, 33, 200);
                 color: {self._text_color};
                 border: 2px solid rgb({r}, {g}, {b});
-                border-radius: 4px;
+                border-radius: 8px;
                 padding: 6px;
             }}
             QComboBox::drop-down {{
@@ -3170,7 +3446,7 @@ class StyledComboBox(QComboBox):
             }}
             QComboBox QAbstractItemView {{
                 background-color: rgb(30, 30, 35);
-                color: rgb(200, 200, 200);
+                color: #d6d6de;
                 selection-background-color: rgb(50, 50, 55);
             }}
         """)
@@ -3778,7 +4054,7 @@ class AddModelDialog(QDialog):
 
         label = QLabel(tr("Введите название модели:"))
         label.setFont(QFont("Segoe UI", 11))
-        label.setStyleSheet("color: rgb(180, 180, 180); background: transparent; border: none;")
+        label.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
         layout.addWidget(label)
 
         self.input = QLineEdit()
@@ -3786,10 +4062,10 @@ class AddModelDialog(QDialog):
         self.input.setFont(QFont("Segoe UI", 10))
         self.input.setStyleSheet("""
             QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
+                background-color: #18181f;
+                color: #ececf1;
                 border: 2px solid rgb(60, 60, 65);
-                border-radius: 6px;
+                border-radius: 8px;
                 padding: 10px;
             }
             QLineEdit:focus {
@@ -4039,12 +4315,12 @@ class OfficialModeWarningDialog(QDialog):
         layout.addWidget(sep)
 
         desc_label = QLabel(tr(
-            "Этот режим запускает Claude Code через ваш личный аккаунт Anthropic.\n\n"
-            "Он подходит только если у вас есть активная подписка на Anthropic\n"
-            "(Claude Pro, Max или корпоративный план).\n\n"
-            "Для работы с API-ключами сторонних провайдеров\n"
-            "используйте вкладку Anthropic — там можно указать\n"
-            "любой Base URL и ключ."
+            "Этот режим — официальный запуск через ваш аккаунт Anthropic, "
+            "нужна активная подписка (Pro, Max или корпоративный план).\n\n"
+            "Для API-ключей есть свои вкладки: Anthropic — только модели "
+            "Anthropic (Claude Code), OpenAI — только GPT (Codex).\n\n"
+            "А любые модели без привязки — GPT, Anthropic, GLM, DeepSeek "
+            "и другие — запускаются через Custom URL."
         ))
         desc_label.setFont(QFont("Segoe UI", 10))
         desc_label.setStyleSheet("""
@@ -4238,7 +4514,7 @@ class AdminWarningDialog(QDialog):
                 color: rgba(245, 196, 74, 0.9);
                 background: rgba(245, 196, 74, 0.1);
                 border: 1px solid rgba(245, 196, 74, 0.28);
-                border-radius: 6px;
+                border-radius: 8px;
                 padding: 6px 12px;
             }
         """)
@@ -4453,6 +4729,8 @@ class TerminalCheckDialog(QDialog):
     прогресс-бар (как у обновления приложения), в конце — результат + [ОК].
     """
     install_done = Signal(bool, str)
+    install_status = Signal(str)
+    install_progress = Signal(int)
 
     _ICON_STYLE = """
         QLabel {{
@@ -4476,6 +4754,12 @@ class TerminalCheckDialog(QDialog):
         self.setModal(True)
         self._pct = 0
         self._crawl = None
+        self._proc = None
+        self._abort_requested = False
+        self._status_connected = False
+        self._progress_connected = False
+        self._target_pct = 4
+        self._creep_n = 0
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -4531,7 +4815,7 @@ class TerminalCheckDialog(QDialog):
         self.status_label.setFont(QFont("Segoe UI", 10))
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        self.status_label.setStyleSheet("color: #9a9aa6; background: transparent; border: none;")
         self.status_label.hide()
         layout.addWidget(self.status_label)
 
@@ -4555,7 +4839,7 @@ class TerminalCheckDialog(QDialog):
         self.cancel_hint = QLabel(tr("При отмене запуск пойдёт без терминала."))
         self.cancel_hint.setFont(QFont("Segoe UI", 9))
         self.cancel_hint.setAlignment(Qt.AlignCenter)
-        self.cancel_hint.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        self.cancel_hint.setStyleSheet("color: #6a6d78; background: transparent; border: none;")
         layout.addWidget(self.cancel_hint)
 
         main_layout.addWidget(container)
@@ -4606,17 +4890,45 @@ class TerminalCheckDialog(QDialog):
         self.message_label.hide()
         self.cancel_hint.hide()
         self.btn_install.hide()
-        self.btn_cancel.hide()
         self.bar.set_progress(4)
         self._pct = 4
         self.bar.show()
         self.status_label.setText(tr("Запуск установщика..."))
         self.status_label.show()
+        # Кнопка «Отмена» на время установки становится «Прервать»:
+        # зависший winget можно убить, а не ждать таймаут вслепую.
+        self._abort_requested = False
+        self._proc = None
+        self._target_pct = 4
+        self._creep_n = 0
+        try:
+            self.btn_cancel.clicked.disconnect()
+        except Exception:
+            pass
+        self.btn_cancel.setText(tr("Прервать"))
+        try:
+            self.btn_cancel.clicked.connect(self._on_abort_clicked)
+        except Exception:
+            pass
+        self.btn_cancel.setEnabled(True)
+        self.btn_cancel.show()
         self._center_on_parent()
         try:
             self.install_done.connect(self._on_install_done)
         except Exception:
             pass
+        if not self._status_connected:
+            try:
+                self.install_status.connect(self._on_install_status)
+                self._status_connected = True
+            except Exception:
+                pass
+        if not self._progress_connected:
+            try:
+                self.install_progress.connect(self._on_install_progress)
+                self._progress_connected = True
+            except Exception:
+                pass
         self._crawl = QTimer(self)
         self._crawl.setInterval(160)
         self._crawl.timeout.connect(self._tick)
@@ -4624,20 +4936,145 @@ class TerminalCheckDialog(QDialog):
         threading.Thread(target=self._install_worker, daemon=True).start()
 
     def _tick(self):
+        # Бар плавно дотягивается к реальной цели (как при обновлении
+        # приложения), а не ползёт вслепую: parsed-цель ставит воркер по
+        # выводу winget, плюс медленное ползание при тишине — максимум 96,
+        # сотню ставит только финиш.
         try:
-            if self._pct < 92:
-                self._pct = min(92, self._pct + 2)
+            if self._pct < self._target_pct:
+                self._pct = min(self._target_pct, self._pct + 3)
                 self.bar.set_progress(self._pct)
-                if self._pct > 30:
-                    self.status_label.setText(tr("Идёт установка — это может занять пару минут..."))
+            elif self._pct < 96:
+                self._creep_n = getattr(self, "_creep_n", 0) + 1
+                if self._creep_n >= 4:
+                    self._creep_n = 0
+                    self._pct += 1
+                    self.bar.set_progress(self._pct)
         except Exception:
             pass
+
+    def _on_install_progress(self, pct):
+        """Новая цель прогресса из парсера winget (монотонно, максимум 97)."""
+        try:
+            p = max(0, min(97, int(pct)))
+            if p > self._target_pct:
+                self._target_pct = p
+        except Exception:
+            pass
+
+    @staticmethod
+    def _kill_tree(proc):
+        """Убить процесс ВМЕСТЕ с детьми (taskkill /T).
+
+        Голый proc.kill() убивает только cmd-обёртку (shell=True), а дети
+        вроде ping/winget остаются висеть И держат stdout-пайп открытым —
+        тогда чтение пайпа висит вечно и диалог не завершается никогда.
+        """
+        try:
+            import subprocess as _sp
+            _sp.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, timeout=15,
+                creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0))
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    def _on_abort_clicked(self):
+        """Прерывание установки: убиваем winget, воркер сам доведёт диалог
+        до состояния «Прервано» через install_done."""
+        self._abort_requested = True
+        try:
+            self.btn_cancel.setEnabled(False)
+            self.status_label.setText(tr("Прерывание установки..."))
+        except Exception:
+            pass
+        try:
+            if self._proc is not None:
+                self._kill_tree(self._proc)
+        except Exception:
+            pass
+
+    def _on_install_status(self, text):
+        """Живая строка из вывода winget — вместо немого зависания на 92%."""
+        try:
+            self.status_label.setText(str(text)[:220])
+        except Exception:
+            pass
+
+    @staticmethod
+    def _winget_progress_hint(line, phase):
+        """Цель бара 4..97 по одной строке вывода winget (EN/RU).
+
+        Возвращает (phase, hint|None). Фазы только вперёд:
+        start → src (подготовка) → dl (закачка 15→75) → inst (установка
+        75→95). Пол фазы страхует от просадок: «Downloading» (15) →
+        «10%» (21), а не наоборот; «Installing» (75) → «0%» (75).
+        """
+        import re as _re
+        _FLOOR = {"start": 4, "src": 10, "dl": 15, "inst": 75}
+        _RANK = {"start": 0, "src": 1, "dl": 2, "inst": 3}
+        low = (line or "").lower()
+        if "success" in low or "успешно" in low or "succeeded" in low:
+            return phase, 97
+        best = None
+        _new_phase = None
+        if "install" in low or "установ" in low:
+            _new_phase = "inst"
+        elif ("download" in low or "скачива" in low or "загруз" in low):
+            _new_phase = "dl"
+        elif ("source" in low or "источник" in low or "updating" in low
+                or "found" in low or "найден" in low or "version" in low
+                or "версия" in low):
+            _new_phase = "src"
+        if _new_phase is not None and _RANK.get(_new_phase, 0) >= _RANK.get(phase, 0):
+            phase = _new_phase
+            best = _FLOOR[phase]
+        try:
+            for _m in _re.finditer(r"(\d{1,3})\s*%", line or ""):
+                try:
+                    _p = int(_m.group(1))
+                except Exception:
+                    continue
+                if _p < 0 or _p > 100:
+                    continue
+                if phase == "inst":
+                    _v = 75 + int(_p * 0.2)
+                else:
+                    _v = 15 + int(_p * 0.6)
+                _v = max(_v, _FLOOR.get(phase, 4))
+                best = _v if best is None else max(best, _v)
+        except Exception:
+            pass
+        return phase, best
+
+    @staticmethod
+    def _winget_meaningful_lines(out):
+        """Чистим вывод winget от мусора прогресс-бара, оставляем суть."""
+        kept = []
+        for raw in (out or "").splitlines():
+            l = raw.strip()
+            if not l:
+                continue
+            if "█" in l or "▒" in l or "░" in l:
+                continue
+            # Строки вида "  123 MB / 456 MB" и проценты — шум закачки
+            s = l.replace(" ", "")
+            if s and all(c in "0123456789.,%/\\MBs-~>" for c in s):
+                continue
+            kept.append(l)
+        return kept
 
     def _install_worker(self):
         ok, err = False, ""
         try:
             import shutil as _shutil
             import subprocess as _sp
+            import threading as _th
+            import time as _time
             has_winget = bool(_shutil.which("winget"))
             if not has_winget:
                 try:
@@ -4654,23 +5091,85 @@ class TerminalCheckDialog(QDialog):
             _cmd = ("winget install --id Microsoft.WindowsTerminal -e "
                     "--source winget --accept-source-agreements "
                     "--accept-package-agreements --silent --disable-interactivity")
+            _flags = getattr(_sp, "CREATE_NO_WINDOW", 0)
             try:
-                _r = _sp.run(
-                    _cmd, shell=True, capture_output=True, text=True, timeout=600,
-                    creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0))
-                _out = ((_r.stdout or "") + "\n" + (_r.stderr or "")).strip()
-            except _sp.TimeoutExpired:
-                _out = "timeout"
+                proc = _sp.Popen(
+                    _cmd, shell=True, stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                    text=True, bufsize=1, encoding="utf-8", errors="replace",
+                    creationflags=_flags)
+            except Exception as e:
+                self.install_done.emit(False, str(e))
+                return
+            self._proc = proc
+            _collected = []
+
+            def _pump():
+                # Свой демон-поток, чтобы главный воркер мог ждать с таймаутом.
+                # Внизу — только короткие честные статусы фаз («Скачивание…» /
+                # «Установка…»), а не простыни winget: длинные строки уходят
+                # только в текст ошибки при неудаче. Фазы и проценты гонят
+                # цель бара, как мегабайты при обновлении приложения.
+                _phase = "start"
+                _last_shown = "start"
+                try:
+                    for _line in proc.stdout:
+                        _t = (_line or "").strip()
+                        if not _t:
+                            continue
+                        _collected.append(_t)
+                        try:
+                            _phase, _hint = self._winget_progress_hint(_t, _phase)
+                            if _hint is not None:
+                                self.install_progress.emit(_hint)
+                            if _phase != _last_shown:
+                                _last_shown = _phase
+                                if _phase == "dl":
+                                    self.install_status.emit(tr("Скачивание терминала…"))
+                                elif _phase == "inst":
+                                    self.install_status.emit(tr("Установка терминала…"))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            _th.Thread(target=_pump, daemon=True).start()
+            try:
+                proc.wait(timeout=600)
+            except Exception:
+                # Виснет дольше 10 минут (скрытый UAC/Store-авторизация/
+                # мёртвая закачка) — убиваем деревом и честно говорим об этом.
+                # БЕЗ дочитывания пайпа (.read): оторванные дети могут держать
+                # его открытым вечно — это вешало даже обработку таймаута.
+                self._kill_tree(proc)
+                try:
+                    self.install_done.emit(False, "timeout")
+                except Exception:
+                    pass
+                return
+            # Pump-демон сам дочитает остатки до EOF; .read() здесь не зовём
+            # по той же причине (наследники пайпа у мёртвых инсталляторов).
+            _out = "\n".join(_collected).strip()
             # Успех = wt реально появился (покрывает и «уже установлен»,
-            # у которого у winget свой код возврата).
+            # у которого у winget свой код возврата). Даём App Installer
+            # пару секунд на финализацию алиаса wt.exe.
             try:
                 ok = bool(find_windows_terminal())
+                for _ in range(3):
+                    if ok or self._abort_requested:
+                        break
+                    _time.sleep(2)
+                    ok = bool(find_windows_terminal())
             except Exception:
                 ok = False
-            if not ok:
-                _lines = [l.strip() for l in _out.splitlines() if l.strip()]
-                err = "\n".join(_lines[-4:]) if _lines else "unknown error"
-            self.install_done.emit(ok, err)
+            if ok:
+                self.install_done.emit(True, "")
+                return
+            if self._abort_requested:
+                self.install_done.emit(False, "aborted")
+                return
+            _lines = self._winget_meaningful_lines(_out)
+            err = "\n".join(_lines[-8:]) if _lines else "unknown error"
+            self.install_done.emit(False, err)
         except Exception as e:
             try:
                 self.install_done.emit(False, str(e))
@@ -4684,31 +5183,80 @@ class TerminalCheckDialog(QDialog):
         except Exception:
             pass
         try:
+            self.btn_cancel.hide()
+        except Exception:
+            pass
+        try:
             if ok:
-                self.bar.set_progress(100)
-                self._set_icon("✓", (52, 211, 153))
-                self.title_label.setText(tr("Терминал успешно установлен"))
-                self.status_label.hide()
+                # Финиш — быстрым дотягиванием до 100, а не щелчком:
+                # начало медленное, резкого завершения нет.
+                self._glide_to_100_then_finish()
             else:
                 self.bar.hide()
                 self._set_icon("!", (235, 90, 90))
-                self.title_label.setText(tr("Не удалось установить Terminal"))
                 if err == "nowwinget":
+                    self.title_label.setText(tr("Не удалось установить Terminal"))
                     self.status_label.setText(tr(
                         "winget не найден — установи Terminal вручную "
                         "из Microsoft Store."))
+                elif err == "aborted":
+                    self.title_label.setText(tr("Установка прервана"))
+                    self.status_label.setText(tr(
+                        "Установка остановлена. Можно попробовать снова "
+                        "или поставить Terminal вручную из Microsoft Store."))
+                elif err == "timeout":
+                    self.title_label.setText(tr("Не удалось установить Terminal"))
+                    self.status_label.setText(tr(
+                        "winget не отвечает дольше 10 минут — обычно это "
+                        "скрытый запрос прав или Store-авторизация. "
+                        "Попробуй ещё раз или поставь Terminal вручную "
+                        "из Microsoft Store."))
                 else:
-                    self.status_label.setText(str(err)[:400])
+                    self.title_label.setText(tr("Не удалось установить Terminal"))
+                    self.status_label.setText(str(err)[:600])
                 self.status_label.show()
             self.btn_ok.show()
             self._center_on_parent()
         except Exception:
             pass
 
+    def _glide_to_100_then_finish(self):
+        """Финишная дотяжка бара до 100 мелкими шагами (~0.5 c).
+
+        Убирает «резкое завершение»: вместо щелчка 96→100 бар добегает
+        сам, затем показывается экран успеха.
+        """
+        try:
+            if self._pct >= 100:
+                self._show_install_success()
+                return
+            self._pct = min(100, self._pct + 5)
+            self.bar.set_progress(self._pct)
+        except Exception:
+            try:
+                self._show_install_success()
+            except Exception:
+                pass
+            return
+        try:
+            QTimer.singleShot(45, self._glide_to_100_then_finish)
+        except Exception:
+            pass
+
+    def _show_install_success(self):
+        """Экран успеха установки терминала (после дотяжки бара)."""
+        try:
+            self.bar.set_progress(100)
+            self._set_icon("✓", (52, 211, 153))
+            self.title_label.setText(tr("Терминал успешно установлен"))
+            self.status_label.hide()
+        except Exception:
+            pass
+
+
 # ============================================================
 # ПРОГРЕСС БАР ДЛЯ ОБНОВЛЕНИЯ
 # ============================================================
-
 class AnimatedProgressBar(QWidget):
     def __init__(self, color="#64B4FF", parent=None):
         super().__init__(parent)
@@ -7195,8 +7743,8 @@ class OcModelDialog(QDialog):
         frame.setObjectName("ocSectionBlock")
         frame.setStyleSheet(
             "QFrame#ocSectionBlock {"
-            "background-color: rgba(30, 30, 35, 200);"
-            "border: 1px solid rgb(60, 60, 65);"
+            "background-color: #18181f;"
+            "border: 2px solid rgb(60, 60, 65);"
             "border-radius: 8px; }"
         )
         lay = QVBoxLayout(frame)
@@ -8047,7 +8595,7 @@ class KeyCard(QFrame):
             r, g, bl = accent
             b.setStyleSheet(
                 f"QPushButton{{color: rgb({r},{g},{bl}); background: rgba({r},{g},{bl},28);"
-                f"border: 1px solid rgba({r},{g},{bl},110); border-radius: 6px; padding: 3px 12px;}}"
+                f"border: 1px solid rgba({r},{g},{bl},110); border-radius: 8px; padding: 3px 12px;}}"
                 f"QPushButton:hover{{background: rgba({r},{g},{bl},55);}}"
                 "QPushButton:disabled{color: rgb(110,110,116); border-color: rgb(70,70,76); background: transparent;}")
             return b
@@ -9182,7 +9730,7 @@ class KeyLimitDurationDialog(QDialog):
             f"color: rgba({color[0]}, {color[1]}, {color[2]}, 220);"
             f"background: rgba({color[0]}, {color[1]}, {color[2]}, 28);"
             f"border: 1px solid rgba({color[0]}, {color[1]}, {color[2]}, 90);"
-            "border-radius: 6px; padding: 4px 12px;")
+            "border-radius: 8px; padding: 4px 12px;")
         lay.addWidget(hint)
 
         self.err_lbl = QLabel("")
@@ -9650,7 +10198,7 @@ class FreemodelResetTimeDialog(QDialog):
             f"color: rgba({color[0]}, {color[1]}, {color[2]}, 230);"
             f"background: rgba({color[0]}, {color[1]}, {color[2]}, 26);"
             f"border: 1px solid rgba({color[0]}, {color[1]}, {color[2]}, 80);"
-            "border-radius: 6px; padding: 6px 12px;")
+            "border-radius: 8px; padding: 6px 12px;")
         lay.addWidget(self.preview_lbl)
 
         btn_row = QHBoxLayout()
@@ -9803,10 +10351,10 @@ class FreemodelOtpDialog(QDialog):
 
         _input_style = """
             QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
+                background-color: #18181f;
                 color: rgb(210, 210, 210);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 6px;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 9px 10px;
             }
             QLineEdit:focus { border: 1px solid rgb(52,211,153); }
@@ -10018,10 +10566,10 @@ class KeyEditDialog(QDialog):
 
         _input_style = """
             QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
+                background-color: #18181f;
                 color: rgb(210, 210, 210);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 6px;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 9px 10px;
             }
             QLineEdit:focus { border: 1px solid rgb(52,211,153); }
@@ -10172,6 +10720,11 @@ class ApiKeyManagerDialog(QDialog):
         self.btn_refresh_all.setFixedWidth(180)
         self.btn_refresh_all.setFixedHeight(32)
         self.btn_refresh_all.clicked.connect(self._on_refresh_all_clicked)
+        # Кнопка видна только на freemodel-эндпоинте — то же условие, что у
+        # надписи freemodel.dev (is_freemodel прилетает из вызывающей вкладки:
+        # Anthropic/OpenAI по своему Base URL, Custom URL — всегда False).
+        # Обновление метрик имеет смысл только для freemodel-ключей.
+        self.btn_refresh_all.setVisible(self._is_freemodel)
         title_row.addWidget(self.btn_refresh_all)
         title = QLabel(tr("Управление API ключами"))
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
@@ -10192,7 +10745,7 @@ class ApiKeyManagerDialog(QDialog):
         info = QLabel(tr("Зелёный — активен. Жёлтый — 5-часовой лимит. Красный — 7-дневный лимит."))
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
-        info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        info.setStyleSheet("color: #6a6d78; background: transparent; border: none;")
         layout.addWidget(info)
 
         # Скролл-область с карточками
@@ -10202,7 +10755,7 @@ class ApiKeyManagerDialog(QDialog):
         self.scroll.setStyleSheet("""
             QScrollArea { border: none; background: transparent; }
             QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
-            QScrollBar::handle:vertical { background: rgb(70,70,78); border-radius: 4px; min-height: 30px; }
+            QScrollBar::handle:vertical { background: rgb(70,70,78); border-radius: 8px; min-height: 30px; }
             QScrollBar::handle:vertical:hover { background: rgb(95,95,105); }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
@@ -10229,15 +10782,15 @@ class ApiKeyManagerDialog(QDialog):
         # Секция добавления
         add_label = QLabel(tr("Добавить новый ключ:"))
         add_label.setFont(QFont("Segoe UI", 10))
-        add_label.setStyleSheet("color: rgb(180, 180, 180); background: transparent; border: none;")
+        add_label.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
         layout.addWidget(add_label)
 
         _input_style = """
             QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                background-color: #18181f;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
         """
@@ -10851,18 +11404,18 @@ class AnimatedComboBox(QComboBox):
         b = int(65 + (200 - 65) * p)
         self.setStyleSheet(f"""
             QComboBox {{
-                background-color: rgba(40, 40, 45, 200);
-                color: rgb(200, 200, 200);
+                background-color: rgba(26, 26, 33, 200);
+                color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
-                border-radius: 6px;
+                border-radius: 8px;
                 padding: 8px 12px;
             }}
             QComboBox::drop-down {{ border: none; }}
             QComboBox QAbstractItemView {{
                 background-color: rgb(30, 30, 35);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                color: #d6d6de;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 4px;
                 outline: none;
                 selection-background-color: rgba(60, 140, 200, 140);
@@ -10980,7 +11533,7 @@ class BaseUrlManagerDialog(QDialog):
         info = QLabel(tr("Добавьте или удалите URL из списка"))
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
-        info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        info.setStyleSheet("color: #6a6d78; background: transparent; border: none;")
         layout.addWidget(info)
 
         # Combo со списком URL — с плавной анимацией рамки
@@ -11002,7 +11555,7 @@ class BaseUrlManagerDialog(QDialog):
         # Разделитель — добавление нового
         add_label = QLabel(tr("Добавить новый URL:"))
         add_label.setFont(QFont("Segoe UI", 10))
-        add_label.setStyleSheet("color: rgb(180, 180, 180); background: transparent; border: none;")
+        add_label.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
         layout.addWidget(add_label)
 
         add_row = QHBoxLayout()
@@ -11011,10 +11564,10 @@ class BaseUrlManagerDialog(QDialog):
         self.url_input.setFont(QFont("Segoe UI", 9))
         self.url_input.setStyleSheet("""
             QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                background-color: #18181f;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
         """)
@@ -11346,10 +11899,10 @@ class OcApiKeyDialog(QDialog):
         self.name_edit.setFont(QFont("Segoe UI", 9))
         self.name_edit.setStyleSheet("""
             QLineEdit {
-                background-color: rgba(20, 20, 25, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                background-color: #0f0f14;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
         """)
@@ -11366,10 +11919,10 @@ class OcApiKeyDialog(QDialog):
         self.key_edit.setFont(QFont("Segoe UI", 9))
         self.key_edit.setStyleSheet("""
             QLineEdit {
-                background-color: rgba(20, 20, 25, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                background-color: #0f0f14;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
         """)
@@ -11525,7 +12078,7 @@ class OpencodeProvidersDialog(QDialog):
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
         info.setWordWrap(True)
-        info.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        info.setStyleSheet("color: #6a6d78; background: transparent; border: none;")
         layout.addWidget(info)
 
         # Живой поиск по обоим спискам: фильтрует мгновенно при вводе,
@@ -11537,10 +12090,10 @@ class OpencodeProvidersDialog(QDialog):
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.setStyleSheet("""
             QLineEdit {
-                background-color: rgba(20, 20, 25, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                background-color: #0f0f14;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
         """)
@@ -11552,10 +12105,10 @@ class OpencodeProvidersDialog(QDialog):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.scroll.setStyleSheet("""
-            QScrollArea { background: transparent; border: 1px solid rgb(60, 60, 65); border-radius: 8px; }
+            QScrollArea { background: transparent; border: 2px solid rgb(60, 60, 65); border-radius: 8px; }
             QScrollArea > QWidget > QWidget { background: transparent; }
             QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
-            QScrollBar::handle:vertical { background: rgb(70, 70, 75); border-radius: 4px; min-height: 30px; }
+            QScrollBar::handle:vertical { background: rgb(70, 70, 75); border-radius: 8px; min-height: 30px; }
             QScrollBar::handle:vertical:hover { background: rgb(95, 95, 100); }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
@@ -11570,7 +12123,7 @@ class OpencodeProvidersDialog(QDialog):
         self.empty_label = QLabel(tr("Провайдеров не найдено"))
         self.empty_label.setFont(QFont("Segoe UI", 10))
         self.empty_label.setAlignment(Qt.AlignCenter)
-        self.empty_label.setStyleSheet("color: rgb(120, 120, 120); background: transparent; border: none;")
+        self.empty_label.setStyleSheet("color: #6a6d78; background: transparent; border: none;")
         layout.addWidget(self.empty_label)
         self.empty_label.hide()
 
@@ -11718,7 +12271,7 @@ class OpencodeProvidersDialog(QDialog):
             none_lbl.setFont(QFont("Segoe UI", 9))
             none_lbl.setAlignment(Qt.AlignCenter)
             none_lbl.setStyleSheet(
-                "color: rgb(120, 120, 120); background: transparent; border: none;"
+                "color: #6a6d78; background: transparent; border: none;"
             )
             self.list_layout.addWidget(none_lbl)
 
@@ -11736,7 +12289,7 @@ class OpencodeProvidersDialog(QDialog):
                 load_lbl.setFont(QFont("Segoe UI", 9))
                 load_lbl.setAlignment(Qt.AlignCenter)
                 load_lbl.setStyleSheet(
-                    "color: rgb(120, 120, 120); background: transparent; border: none;"
+                    "color: #6a6d78; background: transparent; border: none;"
                 )
                 self.list_layout.addWidget(load_lbl)
         elif not avail:
@@ -11748,7 +12301,7 @@ class OpencodeProvidersDialog(QDialog):
                 all_lbl.setFont(QFont("Segoe UI", 9))
                 all_lbl.setAlignment(Qt.AlignCenter)
                 all_lbl.setStyleSheet(
-                    "color: rgb(120, 120, 120); background: transparent; border: none;"
+                    "color: #6a6d78; background: transparent; border: none;"
                 )
                 self.list_layout.addWidget(all_lbl)
         else:
@@ -11761,7 +12314,7 @@ class OpencodeProvidersDialog(QDialog):
             nm_lbl.setFont(QFont("Segoe UI", 10))
             nm_lbl.setAlignment(Qt.AlignCenter)
             nm_lbl.setStyleSheet(
-                "color: rgb(120, 120, 120); background: transparent; border: none;"
+                "color: #6a6d78; background: transparent; border: none;"
             )
             self.list_layout.addWidget(nm_lbl)
         self.list_layout.addStretch(1)
@@ -11895,8 +12448,8 @@ class OpencodeProvidersDialog(QDialog):
     def _build_row(self, rec):
         row = QFrame()
         row.setStyleSheet("""
-            QFrame { background-color: rgba(30, 30, 35, 200);
-                     border: 1px solid rgb(60, 60, 65); border-radius: 8px; }
+            QFrame { background-color: #18181f;
+                     border: 2px solid rgb(60, 60, 65); border-radius: 8px; }
         """)
         row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         lay = QHBoxLayout(row)
@@ -11927,7 +12480,7 @@ class OpencodeProvidersDialog(QDialog):
             sub.append(f"[{', '.join(tags)}]")
         sub_lbl = QLabel("  ".join(sub) if sub else tr("Без Base URL и кредов"))
         sub_lbl.setFont(QFont("Segoe UI", 9))
-        sub_lbl.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        sub_lbl.setStyleSheet("color: #9a9aa6; background: transparent; border: none;")
         sub_lbl.setWordWrap(True)
         sub_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         labels.addWidget(sub_lbl)
@@ -12067,7 +12620,7 @@ class CustomTokenDialog(QDialog):
         # Base URL — выбор + кнопка управления
         url_label = QLabel("Base URL:")
         url_label.setFont(QFont("Segoe UI", 10))
-        url_label.setStyleSheet("color: rgb(180, 180, 180);")
+        url_label.setStyleSheet("color: #c6c6cf;")
         layout.addWidget(url_label)
 
         url_layout = QHBoxLayout()
@@ -12077,16 +12630,16 @@ class CustomTokenDialog(QDialog):
         self.url_combo.setFont(QFont("Segoe UI", 9))
         self.url_combo.setStyleSheet("""
             QComboBox {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                background-color: #18181f;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
             QComboBox::drop-down { border: none; }
             QComboBox QAbstractItemView {
                 background-color: rgb(30, 30, 35);
-                color: rgb(200, 200, 200);
+                color: #ececf1;
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
@@ -12110,7 +12663,7 @@ class CustomTokenDialog(QDialog):
         # API ключ
         key_label = QLabel(tr("API ключ:"))
         key_label.setFont(QFont("Segoe UI", 10))
-        key_label.setStyleSheet("color: rgb(180, 180, 180);")
+        key_label.setStyleSheet("color: #c6c6cf;")
         layout.addWidget(key_label)
 
         key_layout = QHBoxLayout()
@@ -12121,10 +12674,10 @@ class CustomTokenDialog(QDialog):
         self.key_input.setFont(QFont("Segoe UI", 9))
         self.key_input.setStyleSheet("""
             QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                background-color: #18181f;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
         """)
@@ -12141,8 +12694,8 @@ class CustomTokenDialog(QDialog):
         model_label = QLabel(tr("Модель:"))
         model_label.setFont(QFont("Segoe UI", 10))
         model_label.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: #18181f; "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         layout.addWidget(model_label)
 
@@ -12152,16 +12705,16 @@ class CustomTokenDialog(QDialog):
         self.model_combo.setMaxVisibleItems(4)
         self.model_combo.setStyleSheet("""
             QComboBox {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                background-color: #18181f;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
             QComboBox::drop-down { border: none; }
             QComboBox QAbstractItemView {
                 background-color: rgb(30, 30, 35);
-                color: rgb(200, 200, 200);
+                color: #ececf1;
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
@@ -12296,7 +12849,6 @@ class CustomTokenDialog(QDialog):
         self.settings["custom_base_url"] = self.url_combo.currentText()
         self.settings["custom_base_urls"] = list(self.base_urls)
         self.settings["custom_model"] = chosen_model
-        self.settings["custom_endpoint"] = ""
 
         self.accept()
 
@@ -13011,7 +13563,7 @@ class StatusLineInstallDialog(QDialog):
                     color: rgba(220, 180, 100, 0.85);
                     background: rgba(245, 200, 80, 0.08);
                     border: 1px dashed rgba(245, 200, 80, 0.35);
-                    border-radius: 6px;
+                    border-radius: 8px;
                     padding: 6px 10px;
                 }
             """)
@@ -13401,7 +13953,7 @@ class ClaudeJsonFixDialog(QDialog):
                 color: rgba(235, 140, 140, 0.95);
                 background: rgba({r}, {g}, {b}, 0.08);
                 border: 1px dashed rgba({r}, {g}, {b}, 0.35);
-                border-radius: 6px;
+                border-radius: 8px;
                 padding: 8px 12px;
             }}
         """)
@@ -14078,6 +14630,435 @@ class DottedFrame(QFrame):
         _paint_icon_placements(painter, self._get_placements(inner_w, inner_h), icon)
 
 
+# ============================================================
+# НОВАЯ ОБОЛОЧКА: САЙДБАР + ШАПКА СТРАНИЦЫ
+# ============================================================
+
+def lang_is_en():
+    """True, если активен английский интерфейс. Безопасно до создания LANG."""
+    try:
+        return getattr(LANG, "lang", "ru") == "en"
+    except Exception:
+        return False
+
+
+def ltr(ru, en):
+    """Выбор строки RU/EN без завязки на TRANSLATIONS."""
+    return en if lang_is_en() else ru
+
+
+# Подписи режимов для сайдбара и шапки страницы: (русский, английский)
+NAV_SUBTITLES = {
+    "anthropic": ("Claude Code - Base URL, API ключи", "Claude Code - Base URL, API keys"),
+    "official":  ("Официальный вход", "Official account"),
+    "openai":    ("Codex через Base URL и API ключи", "Codex via Base URL and API keys"),
+    "customurl": ("Любая модель по Base URL и API ключам", "Any model via Base URL and API keys"),
+}
+
+PAGE_SUBTITLES = {
+    "anthropic": ("Запуск Claude Code через Base URL и API ключи",
+                  "Run Claude Code via Base URL and API keys"),
+    "official":  ("Официальный запуск Claude Code через аккаунт Anthropic",
+                  "Official Claude Code launch through your Anthropic account"),
+    "openai":    ("Запуск Codex через Base URL и API ключи",
+                  "Run Codex via Base URL and API keys"),
+    "customurl": ("Запуск любой модели по Base URL и API",
+                  "Run any model via Base URL and API keys"),
+}
+
+
+class _AccentDot(QWidget):
+    """Маленький акцентный кружок в шапке страницы (цвет режима)."""
+
+    def __init__(self, color=(100, 150, 255), size=10, parent=None):
+        super().__init__(parent)
+        self._color = color
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def set_color(self, color):
+        self._color = color
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r, g, b = self._color
+        dial = min(self.width(), self.height()) / 2.0
+        # Мягкое свечение вокруг ядра
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(r, g, b, 55))
+        p.drawEllipse(QRectF(0, 0, self.width(), self.height()))
+        p.setBrush(QColor(r, g, b))
+        p.drawEllipse(QRectF(dial / 2.0, dial / 2.0, dial, dial))
+        p.end()
+class _NavItem(QPushButton):
+    """Строка навигации в сайдбаре.
+
+    Рисуется вручную: цветная точка-индикатор, акцентная полоса слева у
+    активного пункта, плавная hover-подложка. Сделано в стиле остального
+    UI приложения (QPainter, ~60fps), чтобы не выбиваться из анимаций.
+    """
+
+    def __init__(self, mode, title, subtitle, accent, parent=None):
+        super().__init__(parent)
+        self.mode_id = mode
+        self._title = title
+        self._subtitle = subtitle
+        self._accent = accent
+        self._active = False
+        self._active_t = 0.0
+        self._active_target = 0.0
+        self._hover = 0.0
+        self._hover_target = 0.0
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setFixedHeight(52)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def set_subtitle(self, text):
+        self._subtitle = text
+        self.update()
+
+    def set_active(self, active, snap=False):
+        active = bool(active)
+        if self._active != active:
+            self._active = active
+            self.update()
+        self._active_target = 1.0 if active else 0.0
+        if snap:
+            self._active_t = self._active_target
+            self.update()
+
+    def _tick(self):
+        moved = False
+        d = self._hover_target - self._hover
+        if abs(d) > 0.005:
+            self._hover += d * 0.2
+            moved = True
+        elif self._hover != self._hover_target:
+            self._hover = self._hover_target
+            moved = True
+        da = self._active_target - self._active_t
+        if abs(da) > 0.004:
+            self._active_t += da * 0.16
+            moved = True
+        elif self._active_t != self._active_target:
+            self._active_t = self._active_target
+            moved = True
+        if moved:
+            self.update()
+
+    def enterEvent(self, event):
+        if self.isEnabled():
+            self._hover_target = 1.0
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_target = 0.0
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        w, h = self.width(), self.height()
+        r, g, b = self._accent
+        dot_x = 28.0
+        cy = h / 2.0
+
+        # Подложка: яркая при наведении, плотная у активного (плавные прогрессы)
+        aa, ha = self._active_t, self._hover
+        if aa > 0.01 or ha > 0.01:
+            alpha = max(int(40 * aa), int(46 * ha))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(r, g, b, alpha))
+            p.drawRoundedRect(QRectF(8.0, 4.0, w - 14.0, h - 8.0), 9.0, 9.0)
+
+        # Окантовка пункта: едва видимая серая в покое, плавно уходит
+        # в акцент при наведении/активации (тот же прогресс, без рывков)
+        k = max(aa, ha)
+        br = int(70 + (r - 70) * k)
+        bg = int(70 + (g - 70) * k)
+        bb = int(80 + (b - 80) * k)
+        p.setPen(QPen(QColor(br, bg, bb, int(100 + 100 * k)), 1.4))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(8.0, 4.0, w - 14.0, h - 8.0), 9.0, 9.0)
+
+        # Акцентную полосу рисует родитель (SidebarNav) — она плавно скользит
+        # между пунктами, поэтому здесь её нет.
+
+        # Кольцо вокруг точки — проявляется и растёт по мере активации
+        if aa > 0.01:
+            p.setPen(QPen(QColor(r, g, b, int(80 * aa)), 1.2))
+            p.setBrush(Qt.NoBrush)
+            _rr = 5.0 + 2.6 * aa
+            p.drawEllipse(QPointF(dot_x, cy), _rr, _rr)
+
+        # Точка-индикатор режима: яркость и размер морфируются в активные
+        dot = QColor(r, g, b)
+        dot.setAlpha(int(95 + 160 * aa))
+        p.setPen(Qt.NoPen)
+        p.setBrush(dot)
+        radius = 3.8 + 0.8 * aa
+        p.drawEllipse(QPointF(dot_x, cy), radius, radius)
+
+        # Заголовок пункта
+        if not self.isEnabled():
+            title_col = QColor(theme_value("text_muted"))
+        elif self._active:
+            title_col = QColor(theme_value("text_primary"))
+        else:
+            title_col = QColor(theme_value("text_body"))
+        p.setFont(QFont(theme_value("font_ui"), 10, QFont.DemiBold))
+        p.setPen(title_col)
+        p.drawText(QRectF(dot_x + 16.0, 8.0, w - dot_x - 22.0, 18.0),
+                   Qt.AlignLeft | Qt.AlignVCenter, self._title)
+
+        # Подпись пункта
+        if not self.isEnabled():
+            sub_col = QColor(theme_value("text_muted"))
+            sub_col.setAlpha(140)
+        elif self._active:
+            sub_col = QColor(r, g, b)
+            sub_col.setAlpha(215)
+        else:
+            sub_col = QColor(theme_value("text_muted"))
+        p.setFont(QFont(theme_value("font_ui"), 8))
+        p.setPen(sub_col)
+        sub_rect = QRectF(dot_x + 16.0, 27.0, w - dot_x - 22.0, 16.0)
+        # Длинные подписи аккуратно обрезаем многоточием, а не рвём по краю
+        sub_text = QFontMetrics(p.font()).elidedText(
+            self._subtitle, Qt.ElideRight, int(sub_rect.width())
+        )
+        p.drawText(sub_rect, Qt.AlignLeft | Qt.AlignVCenter, sub_text)
+        p.end()
+
+
+
+
+_DIVIDER_QSS = "background-color: %s; border: none;" % theme_value("border_soft")
+
+
+def _make_divider():
+    """Горизонтальная линия-разделитель 2px (как вертикальный у сайдбара)."""
+    line = QFrame()
+    line.setFixedHeight(2)
+    line.setStyleSheet(_DIVIDER_QSS)
+    return line
+
+
+class SidebarNav(QFrame):
+    """Левый сайдбар: бренд, навигация по режимам, нижний блок ресурсов.
+
+    Публичный API совместим с прежним ModeToggle — setMode(mode), mode() и
+    сигнал modeChanged, поэтому остальной код окна править не нужно.
+    """
+
+    modeChanged = Signal(str)
+
+    NAV_ITEMS = [
+        ("official", "Claude Code"),
+        ("anthropic", "Anthropic"),
+        ("openai", "OpenAI"),
+        ("customurl", "Custom URL"),
+    ]
+
+    def __init__(self, mode="anthropic", parent=None):
+        super().__init__(parent)
+        self.setObjectName("app_sidebar")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedWidth(int(theme_value("sidebar_width", 252)))
+        # Своей подложки нет: сквозь прозрачный фон виден общий узор окна.
+        # Поверх — тёмная вуаль, чтобы панель читалась темнее контента.
+        # Разделитель рисуем сами в paintEvent: QFrame с кастомным paintEvent
+        # QSS-рамку не отрисовывает (проверено тестом).
+        self.setStyleSheet(
+            "QFrame#app_sidebar { background: transparent; border: none; }"
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(4, 16, 4, 14)
+        root.setSpacing(0)
+
+        # ─ Бренд: иконка + шиммер-заголовок + версия ──
+        brand = QHBoxLayout()
+        brand.setContentsMargins(12, 0, 10, 0)
+        brand.setSpacing(10)
+
+        self.brand_icon = QLabel()
+        self.brand_icon.setFixedSize(34, 34)
+        self.brand_icon.setStyleSheet("background: transparent; border: none;")
+        self.brand_icon.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        brand.addWidget(self.brand_icon, 0, Qt.AlignVCenter)
+
+        brand_col = QVBoxLayout()
+        brand_col.setContentsMargins(0, 0, 0, 0)
+        brand_col.setSpacing(3)
+        self.brand_title = QLabel()
+        self.brand_title.setTextFormat(Qt.RichText)
+        self.brand_title.setFont(QFont(theme_value("font_mono"), 10, QFont.Bold))
+        self.brand_title.setStyleSheet("background: transparent; border: none;")
+        brand_col.addWidget(self.brand_title)
+        self.brand_meta = QLabel("v" + APP_VERSION)
+        self.brand_meta.setFont(QFont(theme_value("font_ui"), 8))
+        self.brand_meta.setStyleSheet(
+            "color: %s; background: transparent; border: none;" % theme_value("text_muted")
+        )
+        brand_col.addWidget(self.brand_meta)
+        brand.addLayout(brand_col, 1)
+        root.addLayout(brand)
+
+        root.addSpacing(14)
+        root.addWidget(_make_divider())
+        root.addSpacing(12)
+
+        # ── Навигация по режимам ──
+        self._items = {}
+        for mid, title in self.NAV_ITEMS:
+            # Подпись берём по текущему языку: при старте на EN русский текст
+            # здесь выглядел бы «недопереведённым».
+            ru, en = NAV_SUBTITLES[mid]
+            item = _NavItem(mid, title, ltr(ru, en), mode_accent(mid))
+            item.clicked.connect(lambda _=False, m=mid: self._on_item_clicked(m))
+            self._items[mid] = item
+            root.addWidget(item)
+
+        root.addStretch(1)
+
+        # ── Блок ресурсов (бейдж freemodel, язык, обновления) ──
+        self.resources = QVBoxLayout()
+        self.resources.setContentsMargins(12, 0, 12, 0)
+        self.resources.setSpacing(8)
+        root.addLayout(self.resources)
+
+        root.addSpacing(10)
+        root.addWidget(_make_divider())
+        root.addSpacing(8)
+
+        # ── Низ сайдбара (ссылки, автор) ──
+        self.footer = QVBoxLayout()
+        self.footer.setContentsMargins(12, 0, 12, 0)
+        self.footer.setSpacing(6)
+        root.addLayout(self.footer)
+
+        self._mode = mode if mode in MODE_ACCENTS else "anthropic"
+
+        self.setMode(self._mode, animate=False)
+
+    def paintEvent(self, event):
+        # Затемняющая вуаль поверх общего узора окна: панель темнее контента,
+        # но узор сквозь неё продолжается (единое целое, без своего фона).
+        # Плюс разделитель 2px справа: QFrame с кастомным paintEvent QSS-рамку
+        # не рисует, поэтому линию кладём вручную тем же цветом border_soft.
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 85))
+        try:
+            _brgb = theme_value("border_soft", "#1e1e26")
+            _bc = QColor(_brgb) if isinstance(_brgb, str) else QColor(30, 30, 38)
+        except Exception:
+            _bc = QColor(30, 30, 38)
+        p.fillRect(self.width() - 2, 0, 2, self.height(), _bc)
+        p.end()
+        super().paintEvent(event)
+
+    def mode(self):
+        return self._mode
+
+    def setMode(self, mode, animate=True):
+        """Совместимо с прежним ModeToggle: переключает подсветку пункта."""
+        if mode not in MODE_ACCENTS:
+            return
+        self._mode = mode
+        for mid, item in self._items.items():
+            item.set_active(mid == mode, snap=not animate)
+
+    def _on_item_clicked(self, mode):
+        if mode == self._mode:
+            return
+        self.setMode(mode)
+        self.modeChanged.emit(mode)
+
+    def set_brand_icon(self, pixmap):
+        """Устанавливает иконку приложения в бренд сайдбара."""
+        try:
+            if pixmap is not None and not pixmap.isNull():
+                self.brand_icon.setPixmap(
+                    pixmap.scaled(34, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+        except Exception:
+            pass
+
+    def add_resource_widget(self, widget, align=None):
+        """Добавляет виджет в блок над нижним разделителем."""
+        if align is None:
+            self.resources.addWidget(widget)
+        else:
+            self.resources.addWidget(widget, 0, align)
+
+    def add_footer_widget(self, widget, align=None):
+        """Добавляет виджет в нижний блок сайдбара."""
+        if align is None:
+            self.footer.addWidget(widget)
+        else:
+            self.footer.addWidget(widget, 0, align)
+
+    def refresh_lang(self):
+        """Обновляет подписи навигации при смене языка RU/EN."""
+        for mid, item in self._items.items():
+            ru, en = NAV_SUBTITLES[mid]
+            item.set_subtitle(ltr(ru, en))
+class PageHeader(QFrame):
+    """Шапка контентной области: акцентная точка, название режима, подпись."""
+
+    def __init__(self, mode="anthropic", parent=None):
+        super().__init__(parent)
+        self.setObjectName("page_header")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("QFrame#page_header { background: transparent; border: none; }")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 2)
+        layout.setSpacing(3)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(9)
+
+        self.dot = _AccentDot(mode_accent(mode), 10, self)
+        row.addWidget(self.dot, 0, Qt.AlignVCenter)
+
+        self.title_label = QLabel()
+        self.title_label.setFont(QFont(theme_value("font_ui"), 16, QFont.Bold))
+        self.title_label.setStyleSheet(
+            "color: %s; background: transparent; border: none;" % theme_value("text_primary")
+        )
+        row.addWidget(self.title_label)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.subtitle_label = QLabel()
+        self.subtitle_label.setFont(QFont(theme_value("font_ui"), 9))
+        self.subtitle_label.setStyleSheet(
+            "color: %s; background: transparent; border: none;" % theme_value("text_secondary")
+        )
+        layout.addWidget(self.subtitle_label)
+
+        self.set_mode(mode)
+
+    def set_mode(self, mode):
+        """Переключает заголовок и подпись под выбранный режим."""
+        if mode not in MODE_ACCENTS:
+            mode = "anthropic"
+        self.dot.set_color(mode_accent(mode))
+        self.title_label.setText(MODE_TITLES.get(mode, "Anthropic"))
+        ru, en = PAGE_SUBTITLES.get(mode, ("", ""))
+        self.subtitle_label.setText(ltr(ru, en))
+
+
 class ClaudeManager(QMainWindow):
     update_available = Signal(dict)  # Новый сигнал для обновлений
     claude_version_checked = Signal(str, str, str)  # local_version, latest_version, latest_date_iso
@@ -14092,9 +15073,16 @@ class ClaudeManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Claude Code Manager")
-        self.setFixedWidth(740)
-        # Стартовая высота — зависит от сохранённого режима
-        self.resize(740, 905)
+        # Новая оболочка: сайдбар фиксирован, тянется контентная колонка.
+        # Минимум берём с запасом от самой широкой раскладки: ряд кнопок во
+        # вкладке Anthropic на русском требует ~1002 px при 100% масштабе,
+        # поэтому 1014 — ряд гарантированно не обрезается.
+        _sb_w = int(theme_value("sidebar_width", 252))
+        self.setMinimumWidth(_sb_w + 762)
+        # Стартуем сразу в ширине 1027 (замер с открытого окна пользователя):
+        # окно открывается таким, каким его держат, — тянуть при каждом
+        # запуске не нужно. Высота ниже всё равно пересчитается под режим.
+        self.resize(1027, 950)
 
         # Устанавливаем иконку - ищем в разных местах
         icon_paths = [
@@ -14119,60 +15107,65 @@ class ClaudeManager(QMainWindow):
 
         # Подключаем сигналы к слотам
         self.update_available.connect(self._show_update_notification)
-        self.update_available.connect(self._show_update_notification)
 
-        # Центральный виджет — фон в крапинку
-        central = DottedBackground()
-        self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        # ══ Оболочка: сайдбар + контентная колонка ═══
+        # Фон-узоры — ОДИН на всё окно (как в оригинале): их рисует сам root
+        # (DottedBackground), а сайдбар и контент прозрачные — узор идёт
+        # сплошняком через разделитель, без швов и вторых сеток.
+        root = DottedBackground()
+        root.setObjectName("app_root")
+        self.setCentralWidget(root)
+        shell = QHBoxLayout(root)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
 
-        # Заголовок с иконкой
-        title_layout = QHBoxLayout()
-        title_layout.setSpacing(10)
+        # Сайдбар: бренд, навигация по режимам, нижний блок ресурсов.
+        # Имя mode_toggle сохранено для обратной совместимости: setMode() и
+        # сигнал modeChanged у SidebarNav такие же, как у прежнего ModeToggle.
+        self.sidebar = SidebarNav(mode=_mode)
+        self.sidebar.modeChanged.connect(self._on_mode_changed)
+        self.mode_toggle = self.sidebar
+        shell.addWidget(self.sidebar)
 
-        # Добавляем растяжку слева для центрирования
-        title_layout.addStretch()
+        # Контентная колонка прозрачная: сквозь неё виден общий узор root.
+        content = QWidget()
+        content.setObjectName("app_content")
+        content.setStyleSheet("QWidget#app_content { background: transparent; border: none; }")
+        main_layout = QVBoxLayout(content)
+        main_layout.setContentsMargins(24, 22, 24, 14)
+        main_layout.setSpacing(14)
+        shell.addWidget(content, 1)
 
-        # Иконка
-        icon_label = QLabel()
-        icon_paths = [
-            os.path.join(os.path.dirname(__file__), "icon.png"),
-            os.path.join(os.path.dirname(sys.executable), "icon.png"),
-            "icon.png"
-        ]
+        # Иконка приложения — в бренд сайдбара
+        for _icon_name in ("icon.png", "icon.ico"):
+            for _icon_path in (
+                os.path.join(os.path.dirname(__file__), _icon_name),
+                os.path.join(os.path.dirname(sys.executable), _icon_name),
+                _icon_name,
+            ):
+                if os.path.exists(_icon_path):
+                    _icon_pixmap = QPixmap(_icon_path)
+                    if not _icon_pixmap.isNull():
+                        self.sidebar.set_brand_icon(_icon_pixmap)
+                        break
+            else:
+                continue
+            break
 
-        for icon_path in icon_paths:
-            if os.path.exists(icon_path):
-                icon_pixmap = QPixmap(icon_path)
-                if not icon_pixmap.isNull():
-                    icon_label.setPixmap(icon_pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                break
+        # Шапка страницы: название и подпись активного режима
+        self.page_header = PageHeader(_mode)
+        main_layout.addWidget(self.page_header)
 
-        title_layout.addWidget(icon_label)
-
-        # Текст заголовка с шиммером
-        self.title = QLabel()
-        self.title.setFont(QFont("Consolas", 17, QFont.Bold))
-        self.title.setAlignment(Qt.AlignCenter)
+        # ── Бренд сайдбара: шиммер-заголовок приложения ──
+        # Приём тот же, что и раньше, но заголовок живёт в сайдбаре, а не
+        # по центру шапки окна. Кегль меньше — под ширину сайдбара.
+        self.title = self.sidebar.brand_title
+        self.title.setFont(QFont(theme_value("font_mono"), 9, QFont.Bold))
+        self.title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         # Сразу устанавливаем HTML чтобы не было прыжков
         text = "CLAUDE CODE MANAGER"
         html = ''.join([f'<span style="color: rgb(140, 140, 145);">{char}</span>' for char in text])
         self.title.setText(html)
-        self.title.setFixedHeight(30)
-        title_layout.addWidget(self.title)
-
-        # Балансир под иконку: пустой виджет той же ширины (48px) справа от текста.
-        # Без него иконка слева оптически сдвигает текст вправо относительно центра
-        # окна — с балансиром тайтл стоит строго по центру.
-        title_balance = QWidget()
-        title_balance.setFixedWidth(48)
-        title_balance.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        title_layout.addWidget(title_balance)
-
-        # Растяжка справа
-        title_layout.addStretch()
 
         # Таймер для шиммера
         self._shimmer_offset = -0.3
@@ -14204,17 +15197,6 @@ class ClaudeManager(QMainWindow):
             # игнорируется CLI, но если вдруг его уважает — нам ничего не стоит
             # его поставить. Основное выключение всё равно идёт через DISABLE_UPDATES.
             threading.Thread(target=self._ensure_auto_updates_false_in_claude_json, daemon=True).start()
-
-        main_layout.addLayout(title_layout)
-
-        # Переключатель режимов (под заголовком, по центру)
-        mode_row = QHBoxLayout()
-        mode_row.addStretch()
-        self.mode_toggle = ModeToggle(mode=self.settings.get("app_mode", "anthropic"))
-        self.mode_toggle.modeChanged.connect(self._on_mode_changed)
-        mode_row.addWidget(self.mode_toggle)
-        mode_row.addStretch()
-        main_layout.addLayout(mode_row)
 
         # Ряд кнопок: установка фиксированной версии Claude Code + удаление
         install_row = QHBoxLayout()
@@ -14301,15 +15283,32 @@ class ClaudeManager(QMainWindow):
         install_row.addStretch()
         main_layout.addLayout(install_row)
 
-        # Индикатор обновления (абсолютная позиция в правом верхнем углу)
-        self.update_indicator = UpdateIndicator(self)
-        self.update_indicator.clicked.connect(self._on_update_indicator_clicked)
-        self.update_indicator.move(self.width() - 78 - 8 - 45 + 4, 10)  # к левому краю ползунка языка
-        self.update_indicator.raise_()
+        # ── Ресурсы сайдбара: обновление, язык, бейдж freemodel ─
 
-        # Переключатель языка интерфейса EN / RU — абсолютная позиция в правом
-        # верхнем углу, чуть левее индикатора обновлений. Цвет пилюли меняется
-        # плавно: EN — зелёный (#34d399, унифицированный), RU — голубоватый.
+        # Индикатор обновления: раньше висел абсолютной позицией в углу окна,
+        # теперь это строка в нижнем блоке сайдбара. Скрываем/показываем
+        # строку целиком (self.update_row), а не один индикатор.
+        self.update_indicator = UpdateIndicator()
+        self.update_indicator.clicked.connect(self._on_update_indicator_clicked)
+        self.update_row = QWidget()
+        self.update_row.setStyleSheet("background: transparent; border: none;")
+        _update_row_layout = QHBoxLayout(self.update_row)
+        _update_row_layout.setContentsMargins(0, 0, 0, 0)
+        _update_row_layout.setSpacing(6)
+        _update_row_layout.addWidget(self.update_indicator, 0, Qt.AlignVCenter)
+        self.update_label = QLabel(ltr("Доступно обновление", "Update available"))
+        self.update_label.setFont(QFont(theme_value("font_ui"), 9))
+        self.update_label.setStyleSheet(
+            "color: %s; background: transparent; border: none;" % theme_value("warning")
+        )
+        _update_row_layout.addWidget(self.update_label, 1)
+        self.sidebar.add_resource_widget(self.update_row, Qt.AlignLeft)
+        self.update_row.setVisible(False)
+
+        # Переключатель языка интерфейса EN / RU — как в прежней версии:
+        # пилюля в правом верхнем углу окна (позицию держим в resizeEvent,
+        # потому что окно теперь можно растягивать по ширине). Цвет пилюли
+        # меняется плавно: EN — зелёный, RU — голубоватый.
         self.language_toggle = LanguageToggle(LANG.lang if LANG else "ru", self)
         self.language_toggle.move(self.width() - 78 - 8, 12)
         self.language_toggle.raise_()
@@ -14317,13 +15316,11 @@ class ClaudeManager(QMainWindow):
         if LANG is not None:
             LANG.language_changed.connect(self._on_language_changed)
 
-        # Бейдж freemodel.dev — абсолютная позиция в левом верхнем углу.
-        # Виден только когда выбран freemodel-эндпоинт (cc.freemodel.dev,
-        # api-cc.freemodel.dev и другие поддомены). Просто надпись, без
-        # индикатора статуса и клика — окно статистики больше не работает.
-        self.freemodel_brand = FreemodelBrand(self)
-        self.freemodel_brand.move(12, 22)
-        self.freemodel_brand.raise_()
+        # Бейдж freemodel.dev — в блоке ресурсов сайдбара. Виден только когда
+        # выбран freemodel-эндпоинт (cc.freemodel.dev, api-cc.freemodel.dev и
+        # другие поддомены). Просто надпись, без индикатора статуса и клика.
+        self.freemodel_brand = FreemodelBrand()
+        self.sidebar.add_resource_widget(self.freemodel_brand, Qt.AlignLeft)
         QTimer.singleShot(0, self._refresh_freemodel_brand_visibility)
 
         # Секция Claude Code
@@ -14331,9 +15328,9 @@ class ClaudeManager(QMainWindow):
         claude_frame.setObjectName("claude_frame")
         claude_frame.setStyleSheet("""
             QFrame#claude_frame {
-                background-color: rgba(30, 30, 35, 200);
+                background-color: rgba(24, 24, 31, 200);
                 border: 2px solid rgb(60, 60, 65);
-                border-radius: 8px;
+                border-radius: 12px;
             }
         """)
         claude_layout = QVBoxLayout(claude_frame)
@@ -14341,7 +15338,7 @@ class ClaudeManager(QMainWindow):
         claude_header_chip = QFrame()
         claude_header_chip.setObjectName("claude_header_chip")
         claude_header_chip.setStyleSheet(
-            "QFrame#claude_header_chip { background-color: rgba(30, 30, 35, 200); "
+            "QFrame#claude_header_chip { background-color: rgba(24, 24, 31, 200); "
             "border: 2px solid rgb(60, 60, 65); border-radius: 8px; }"
         )
         claude_header_inner = QHBoxLayout(claude_header_chip)
@@ -14350,7 +15347,7 @@ class ClaudeManager(QMainWindow):
 
         claude_label = QLabel("Claude Code")
         claude_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        claude_label.setStyleSheet("color: rgb(200, 200, 200); background: transparent; border: none;")
+        claude_label.setStyleSheet("color: #d6d6de; background: transparent; border: none;")
         claude_header_inner.addWidget(claude_label)
 
         self.claude_install_indicator = StatusIndicator()
@@ -14358,7 +15355,7 @@ class ClaudeManager(QMainWindow):
 
         self.claude_install_status_label = QLabel(tr("Не установлен"))
         self.claude_install_status_label.setFont(QFont("Segoe UI", 10))
-        self.claude_install_status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        self.claude_install_status_label.setStyleSheet("color: #9a9aa6; background: transparent; border: none;")
         claude_header_inner.addWidget(self.claude_install_status_label)
 
         claude_header_inner.addStretch()
@@ -14367,7 +15364,7 @@ class ClaudeManager(QMainWindow):
         # вместо пина на REQUIRED_CLAUDE_VERSION. Живёт справа внутри chip.
         autoupdate_lbl = QLabel(tr("Авто-обновление"))
         autoupdate_lbl.setFont(QFont("Segoe UI", 9))
-        autoupdate_lbl.setStyleSheet("color: rgb(180, 180, 180); background: transparent; border: none;")
+        autoupdate_lbl.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
         self._track_tr(autoupdate_lbl, "Авто-обновление")
         claude_header_inner.addWidget(autoupdate_lbl)
         self.autoupdate_toggle = ToggleSwitch(checked=self.settings.get("auto_update_enabled", False))
@@ -14381,7 +15378,7 @@ class ClaudeManager(QMainWindow):
         codex_header_chip = QFrame()
         codex_header_chip.setObjectName("codex_header_chip")
         codex_header_chip.setStyleSheet(
-            "QFrame#codex_header_chip { background-color: rgba(30, 30, 35, 200); "
+            "QFrame#codex_header_chip { background-color: rgba(24, 24, 31, 200); "
             "border: 2px solid rgb(60, 60, 65); border-radius: 8px; }"
         )
         codex_header_inner = QHBoxLayout(codex_header_chip)
@@ -14390,7 +15387,7 @@ class ClaudeManager(QMainWindow):
 
         codex_label = QLabel("Codex CLI")
         codex_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        codex_label.setStyleSheet("color: rgb(200, 200, 200); background: transparent; border: none;")
+        codex_label.setStyleSheet("color: #d6d6de; background: transparent; border: none;")
         codex_header_inner.addWidget(codex_label)
 
         self.codex_install_indicator = StatusIndicator()
@@ -14398,7 +15395,7 @@ class ClaudeManager(QMainWindow):
 
         self.codex_install_status_label = QLabel(tr("Не установлен"))
         self.codex_install_status_label.setFont(QFont("Segoe UI", 10))
-        self.codex_install_status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        self.codex_install_status_label.setStyleSheet("color: #9a9aa6; background: transparent; border: none;")
         codex_header_inner.addWidget(self.codex_install_status_label)
 
         codex_header_inner.addStretch()
@@ -14411,7 +15408,7 @@ class ClaudeManager(QMainWindow):
         oc_header_chip = QFrame()
         oc_header_chip.setObjectName("oc_header_chip")
         oc_header_chip.setStyleSheet(
-            "QFrame#oc_header_chip { background-color: rgba(30, 30, 35, 200); "
+            "QFrame#oc_header_chip { background-color: rgba(24, 24, 31, 200); "
             "border: 2px solid rgb(60, 60, 65); border-radius: 8px; }"
         )
         oc_header_inner = QHBoxLayout(oc_header_chip)
@@ -14420,7 +15417,7 @@ class ClaudeManager(QMainWindow):
 
         oc_label = QLabel(tr("Custom URL (opencode)"))
         oc_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        oc_label.setStyleSheet("color: rgb(200, 200, 200); background: transparent; border: none;")
+        oc_label.setStyleSheet("color: #d6d6de; background: transparent; border: none;")
         self._track_tr(oc_label, "Custom URL (opencode)")
         oc_header_inner.addWidget(oc_label)
 
@@ -14429,7 +15426,7 @@ class ClaudeManager(QMainWindow):
 
         self.oc_install_status_label = QLabel(tr("Не установлен"))
         self.oc_install_status_label.setFont(QFont("Segoe UI", 10))
-        self.oc_install_status_label.setStyleSheet("color: rgb(150, 150, 150); background: transparent; border: none;")
+        self.oc_install_status_label.setStyleSheet("color: #9a9aa6; background: transparent; border: none;")
         oc_header_inner.addWidget(self.oc_install_status_label)
 
         oc_header_inner.addStretch()
@@ -14448,8 +15445,8 @@ class ClaudeManager(QMainWindow):
         oc_url_lbl = QLabel(tr("Base URL:"))
         oc_url_lbl.setFont(QFont("Segoe UI", 10))
         oc_url_lbl.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         self._track_tr(oc_url_lbl, "Base URL:")
         oc_url_lbl.setFixedWidth(90)
@@ -14480,8 +15477,8 @@ class ClaudeManager(QMainWindow):
         oc_key_lbl = QLabel(tr("API ключ:"))
         oc_key_lbl.setFont(QFont("Segoe UI", 10))
         oc_key_lbl.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         self._track_tr(oc_key_lbl, "API ключ:")
         oc_key_lbl.setFixedWidth(90)
@@ -14499,9 +15496,9 @@ class ClaudeManager(QMainWindow):
         self.oc_key_input.setStyleSheet("""
             QLineEdit {
                 background-color: rgba(20, 20, 25, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                color: #d6d6de;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
         """)
@@ -14528,8 +15525,8 @@ class ClaudeManager(QMainWindow):
         oc_model_lbl = QLabel(tr("Модели:"))
         oc_model_lbl.setFont(QFont("Segoe UI", 10))
         oc_model_lbl.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         self._track_tr(oc_model_lbl, "Модели:")
         oc_model_lbl.setFixedWidth(90)
@@ -14575,8 +15572,8 @@ class ClaudeManager(QMainWindow):
         url_lbl = QLabel("Base URL:")
         url_lbl.setFont(QFont("Segoe UI", 10))
         url_lbl.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         url_lbl.setFixedWidth(90)
         url_row.addWidget(url_lbl)
@@ -14604,8 +15601,8 @@ class ClaudeManager(QMainWindow):
         key_lbl = QLabel(tr("API ключ:"))
         key_lbl.setFont(QFont("Segoe UI", 10))
         key_lbl.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         key_lbl.setFixedWidth(90)
         self._track_tr(key_lbl, "API ключ:")
@@ -14623,9 +15620,9 @@ class ClaudeManager(QMainWindow):
         self.fm_key_input.setStyleSheet("""
             QLineEdit {
                 background-color: rgba(20, 20, 25, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                color: #d6d6de;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
         """)
@@ -14649,8 +15646,8 @@ class ClaudeManager(QMainWindow):
         model_lbl = QLabel(tr("Модель:"))
         model_lbl.setFont(QFont("Segoe UI", 10))
         model_lbl.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         self._track_tr(model_lbl, "Модель:")
         model_lbl.setFixedWidth(90)
@@ -14806,8 +15803,8 @@ class ClaudeManager(QMainWindow):
         oa_url_lbl = QLabel("Base URL:")
         oa_url_lbl.setFont(QFont("Segoe UI", 10))
         oa_url_lbl.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         oa_url_lbl.setFixedWidth(90)
         oa_url_row.addWidget(oa_url_lbl)
@@ -14834,8 +15831,8 @@ class ClaudeManager(QMainWindow):
         oa_key_lbl = QLabel(tr("API ключ:"))
         oa_key_lbl.setFont(QFont("Segoe UI", 10))
         oa_key_lbl.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         oa_key_lbl.setFixedWidth(90)
         self._track_tr(oa_key_lbl, "API ключ:")
@@ -14852,9 +15849,9 @@ class ClaudeManager(QMainWindow):
         self.oa_key_input.setStyleSheet("""
             QLineEdit {
                 background-color: rgba(20, 20, 25, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                color: #d6d6de;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 8px;
             }
         """)
@@ -14876,8 +15873,8 @@ class ClaudeManager(QMainWindow):
         oa_model_lbl = QLabel(tr("Модель:"))
         oa_model_lbl.setFont(QFont("Segoe UI", 10))
         oa_model_lbl.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         self._track_tr(oa_model_lbl, "Модель:")
         oa_model_lbl.setFixedWidth(90)
@@ -14951,8 +15948,8 @@ class ClaudeManager(QMainWindow):
         self._track_tr(dir_label, "Директория:")
         dir_label.setFont(QFont("Segoe UI", 10))
         dir_label.setStyleSheet(
-            "color: rgb(180, 180, 180); background-color: rgba(30, 30, 35, 200); "
-            "border: 2px solid rgb(60, 60, 65); border-radius: 6px; padding: 4px 8px;"
+            "color: #c6c6cf; background-color: rgba(24, 24, 31, 200); "
+            "border: 2px solid rgb(60, 60, 65); border-radius: 8px; padding: 4px 8px;"
         )
         dir_layout.addWidget(dir_label)
 
@@ -14963,23 +15960,25 @@ class ClaudeManager(QMainWindow):
         self.dir_input.setFont(QFont("Segoe UI", 9))
         self.dir_input.setStyleSheet("""
             QLineEdit {
-                background-color: rgba(30, 30, 35, 200);
-                color: rgb(200, 200, 200);
-                border: 1px solid rgb(60, 60, 65);
-                border-radius: 4px;
+                background-color: rgba(20, 20, 25, 200);
+                color: #d6d6de;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
                 padding: 6px;
             }
         """)
         dir_layout.addWidget(self.dir_input, 1)
 
         btn_browse = StyledButton(tr("Обзор"))
-        btn_browse.setMaximumWidth(80)
+        # Без жёсткого максимума: при 10pt bold с паддингами 8px 12px текст
+        # «Обзор»/«Очистить» не влезает в 80px — рамка и буквы обрезались.
+        btn_browse.setMinimumWidth(btn_browse.sizeHint().width() + 2)
         btn_browse.clicked.connect(self.browse_directory)
         dir_layout.addWidget(btn_browse)
         self._track_tr(btn_browse, "Обзор")
 
         btn_clear = StyledButton(tr("Очистить"))
-        btn_clear.setMaximumWidth(80)
+        btn_clear.setMinimumWidth(btn_clear.sizeHint().width() + 2)
         btn_clear.clicked.connect(self.clear_directory)
         dir_layout.addWidget(btn_clear)
         self._track_tr(btn_clear, "Очистить")
@@ -14987,7 +15986,9 @@ class ClaudeManager(QMainWindow):
         claude_layout.addLayout(dir_layout)
 
         # Кнопка запуска Claude Code
-        self.btn_claude = GreenButton(tr("Запустить Claude Code"))
+        self.btn_claude = PrimaryActionButton(
+            tr("Запустить Claude Code"), accent=mode_accent(self.settings.get("app_mode", "anthropic"))
+        )
         self.btn_claude.clicked.connect(self.launch_claude)
         self.btn_claude.setEnabled(False)
         claude_layout.addWidget(self.btn_claude)
@@ -15004,9 +16005,9 @@ class ClaudeManager(QMainWindow):
         console_frame.setObjectName("console_frame")
         console_frame.setStyleSheet("""
             QFrame#console_frame {
-                background-color: #1c1c21;
-                border: 2px solid #3c3c41;
-                border-radius: 10px;
+                background-color: rgba(15, 15, 20, 200);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 12px;
             }
         """)
         console_layout = QVBoxLayout(console_frame)
@@ -15018,9 +16019,9 @@ class ClaudeManager(QMainWindow):
         console_bar.setFixedHeight(30)
         console_bar.setStyleSheet("""
             QFrame {
-                background-color: #22222a;
-                border-top-left-radius: 10px;
-                border-top-right-radius: 10px;
+                background-color: #1b1b22;
+                border-top-left-radius: 12px;
+                border-top-right-radius: 12px;
                 border-bottom: 1px solid #3c3c41;
             }
         """)
@@ -15029,7 +16030,7 @@ class ClaudeManager(QMainWindow):
 
         bar_title = QLabel("Console")
         bar_title.setFont(QFont("Cascadia Mono", 10))
-        bar_title.setStyleSheet("color: #6b6e75; background: transparent; border: none;")
+        bar_title.setStyleSheet("color: #8a8d96; background: transparent; border: none;")
         bar_layout.addWidget(bar_title)
         bar_layout.addStretch()
 
@@ -15049,14 +16050,14 @@ class ClaudeManager(QMainWindow):
         self.console.setMinimumHeight(160)
         self.console.setStyleSheet("""
             QTextEdit {
-                background-color: #1a1a20;
-                color: #e8e8ec;
+                background-color: rgba(15, 15, 20, 200);
+                color: #d6d6de;
                 border: none;
                 padding: 10px 14px;
                 selection-background-color: #3c4f6e;
             }
             QScrollBar:vertical {
-                background: #1c1c21;
+                background: rgba(15, 15, 20, 200);
                 width: 6px;
                 margin: 0;
             }
@@ -15084,7 +16085,7 @@ class ClaudeManager(QMainWindow):
         console_bottom.setFixedHeight(22)
         console_bottom.setStyleSheet("""
             QFrame {
-                background-color: #22222a;
+                background-color: #1b1b22;
                 border-bottom-left-radius: 10px;
                 border-bottom-right-radius: 10px;
                 border-top: 1px solid #3c3c41;
@@ -15114,7 +16115,7 @@ class ClaudeManager(QMainWindow):
             f"by {AUTHOR_NAME}   •   Discord: {AUTHOR_DISCORD}   •   "
         )
         footer.setFont(QFont("Segoe UI", 8))
-        footer.setStyleSheet("color: rgb(100, 100, 100);")
+        footer.setStyleSheet("color: #6a6d78;")
         footer.setToolTip(
             f"Автор: {AUTHOR_NAME}\n"
             f"Discord: {AUTHOR_DISCORD}\n"
@@ -15184,7 +16185,10 @@ class ClaudeManager(QMainWindow):
         main_layout.addWidget(footer_row)
 
         # Стиль окна
-        self.setStyleSheet("QMainWindow { background-color: rgb(20, 20, 25); }")
+        # Стиль окна: фон корня совпадает с темой (сайдбар и контент красят себя сами)
+        self.setStyleSheet(
+            "QMainWindow { background-color: %s; }" % theme_value("bg_root")
+        )
 
         # Состояние версии Claude Code (заполняется фоновой проверкой)
         self._claude_local_version = ""
@@ -15255,6 +16259,14 @@ class ClaudeManager(QMainWindow):
         # на скачивание. Через singleShot, чтобы UI успел полностью отрисоваться.
         QTimer.singleShot(400, self._check_nodejs_on_startup)
 
+        # Пересчёт высоты под полностью собранную вкладку: первый вызов
+        # _apply_app_mode() происходит до создания консоли и футера, поэтому
+        # без этого пересчёта окно открывается слишком низким.
+        try:
+            self._apply_app_mode()
+        except Exception:
+            pass
+
     def _check_nodejs_on_startup(self):
         """Однократная проверка npm при старте. Если npm нет — показывает окно
         со ссылкой на nodejs.org. Срабатывает не чаще одного раза за сессию."""
@@ -15304,7 +16316,7 @@ class ClaudeManager(QMainWindow):
         elif level == "warning":
             color = "#ffaa00"
         else:
-            color = "#b4b4b4"
+            color = "#c6c6cf"
 
         try:
             translated = tr(str(message))
@@ -15313,7 +16325,7 @@ class ClaudeManager(QMainWindow):
 
         self._console_msg_count += 1
         formatted = (
-            f'<span style="color:#888888;">{timestamp}</span>'
+            f'<span style="color:#6a6d78;">{timestamp}</span>'
             f'  <span style="color:{color};">●  {translated}</span>'
         )
         self.console.append(formatted)
@@ -15401,6 +16413,30 @@ class ClaudeManager(QMainWindow):
         """Обработчик переключателя режимов в шапке (Anthropic / Claude / OpenAI / Custom URL)"""
         self._apply_app_mode(mode)
 
+    def _update_launch_button_state(self):
+        """Кнопка запуска активна только когда CLI активного режима установлен:
+        Claude Code — вкладки Anthropic/Claude, Codex CLI — OpenAI,
+        opencode — Custom URL. Иначе кнопка заблокирована и затемнена."""
+        if not hasattr(self, "btn_claude"):
+            return
+        try:
+            mode = self.settings.get("app_mode", "anthropic")
+        except Exception:
+            mode = "anthropic"
+        try:
+            if mode == "openai":
+                installed = self._is_codex_installed()
+            elif mode == "customurl":
+                installed = self._is_oc_installed()
+            else:
+                installed = self._is_claude_installed()
+        except Exception:
+            installed = False
+        try:
+            self.btn_claude.setEnabled(bool(installed))
+        except Exception:
+            pass
+
     def _on_language_toggled(self, code):
         """Клик по LanguageToggle — обновляем глобальный LANG."""
         if LANG is not None:
@@ -15413,6 +16449,16 @@ class ClaudeManager(QMainWindow):
         консоль) форсируем через .update()."""
         try:
             self.settings["app_language"] = code
+        except Exception:
+            pass
+        # Новая оболочка: подписи навигации, шапка страницы и строки сайдбара
+        try:
+            if hasattr(self, "sidebar"):
+                self.sidebar.refresh_lang()
+            if hasattr(self, "page_header"):
+                self.page_header.set_mode(self.settings.get("app_mode", "anthropic"))
+            if hasattr(self, "update_label"):
+                self.update_label.setText(ltr("Доступно обновление", "Update available"))
         except Exception:
             pass
         try:
@@ -16369,12 +17415,27 @@ class ClaudeManager(QMainWindow):
         self._opacity_anims.append(anim)
         anim.finished.connect(lambda a=anim: self._opacity_anims.remove(a) if a in self._opacity_anims else None)
 
+    def resizeEvent(self, event):
+        """Окно теперь растягивается по ширине: держим пилюлю языка в правом
+        верхнем углу, как в прежней версии с фиксированной шириной."""
+        super().resizeEvent(event)
+        try:
+            if hasattr(self, "language_toggle"):
+                self.language_toggle.move(self.width() - 78 - 8, 12)
+        except Exception:
+            pass
+
     def _animate_window_height(self, target_height):
-        """Плавно изменяет высоту окна через resize()"""
+        """Плавно изменяет высоту окна.
+
+        Каждый кадр пинит явный min=max=высота кадра: доказано тестом, что
+        явные границы бьют минимум раскладки (300 против 518 — слушается
+        окно). Поэтому ни устаревший минимум (замирание + прыжок в конце),
+        ни его скачок вверх посреди глайда (телепорт) движению не мешают:
+        окно идёт строго по кривой. В конце границы снимаются (как раньше).
+        """
         if hasattr(self, "_resize_anim") and self._resize_anim is not None:
             self._resize_anim.stop()
-        self.setMinimumHeight(0)
-        self.setMaximumHeight(16777215)
 
         from PySide6.QtCore import QVariantAnimation
         anim = QVariantAnimation(self)
@@ -16382,7 +17443,25 @@ class ClaudeManager(QMainWindow):
         anim.setStartValue(self.height())
         anim.setEndValue(target_height)
         anim.setEasingCurve(QEasingCurve.InOutCubic)
-        anim.valueChanged.connect(lambda v: self.resize(self.width(), int(v)))
+
+        def _anim_frame(v, a=anim):
+            h = int(v)
+            self.setMinimumHeight(h)
+            self.setMaximumHeight(h)
+
+        def _anim_done(a=anim):
+            # Снимаем пин только если это всё ещё актуальная анимация
+            # (при быстрых переключениях старую останавливают — за снятие
+            # отвечает уже новая).
+            if getattr(self, "_resize_anim", None) is a:
+                self.setMinimumHeight(0)
+                self.setMaximumHeight(16777215)
+
+        anim.valueChanged.connect(_anim_frame)
+        try:
+            anim.finished.connect(_anim_done)
+        except Exception:
+            pass
         anim.start()
         self._resize_anim = anim
 
@@ -16404,13 +17483,25 @@ class ClaudeManager(QMainWindow):
         self.settings["use_custom_token"] = True
         save_settings(self.settings)
 
-        # Синхронизируем переключатель
+        # Синхронизируем навигацию в сайдбаре
         if hasattr(self, "mode_toggle"):
             self.mode_toggle.setMode(mode)
 
-        # Залочим текущую высоту, чтобы Qt не растянул окно при показе скрытых виджетов
-        _was_initialized = getattr(self, "_height_initialized", False) and self.isVisible()
-        if _was_initialized:
+        # Шапка страницы: название и подпись активного режима
+        if hasattr(self, "page_header"):
+            self.page_header.set_mode(mode)
+
+        # Главная кнопка действия — в акценте текущего режима
+        if hasattr(self, "btn_claude") and hasattr(self.btn_claude, "set_accent"):
+            self.btn_claude.set_accent(mode_accent(mode))
+
+        # Лочим высоту на время переключения секций: показ высоких секций
+        # мгновенно поднимает минимум раскладки, и окно БЕЗ лока тут же
+        # дотягивается до него само (доказано: 200→518 без единого resize) —
+        # вместо анимации получается телепорт. Лок держит окно на месте,
+        # пока контент меняется; дальше высота едет анимацией.
+        _swap_locked = getattr(self, "_height_initialized", False) and self.isVisible()
+        if _swap_locked:
             _cur_h = self.height()
             self.setMinimumHeight(_cur_h)
             self.setMaximumHeight(_cur_h)
@@ -16474,21 +17565,57 @@ class ClaudeManager(QMainWindow):
                 "customurl": tr("Запустить opencode"),
             }.get(mode, tr("Запустить Claude Code"))
             self.btn_claude.setText(label)
-            # Кнопка запуска всегда кликабельна во всех режимах. Если ключа
-            # нет — сам запуск просто не удастся (эндпоинт откажет), но кнопка
-            # не блокируется.
-            self.btn_claude.setEnabled(True)
+            # Кнопка запуска активна только когда CLI этого режима установлен,
+            # иначе — заблокирована и затемнена.
+            self._update_launch_button_state()
+
+        # Прокачиваем накопившиеся LayoutRequest синхронно — до стабилизации
+        # минимума: прячущимся виджетам одного прохода мало (замер: 709→613
+        # за первый, 613→575 за второй). Несвежий минимум = кадры resize()
+        # клампятся (окно замирает и прыгает) или цель считается по нему
+        # неверно. Цикл почти всегда выходит на второй итерации.
+        try:
+            from PySide6.QtCore import QCoreApplication, QEvent
+            _central = self.centralWidget()
+            _last_min = -1
+            for _ in range(5):
+                QCoreApplication.sendPostedEvents(None, int(QEvent.LayoutRequest))
+                if _central is None:
+                    break
+                try:
+                    _m = int(_central.minimumSizeHint().height())
+                except Exception:
+                    break
+                if _m == _last_min:
+                    break
+                _last_min = _m
+        except Exception:
+            pass
 
         # Подгоняем высоту окна (official ниже — без рядов Base URL и ключа;
-        # customurl — с рядами Base URL / ключа, ВЕЗ модели).
-        # Для customurl зафиксирована текущая комфортная высота окна (783):
-        # вся секция видна без скролла.
-        if is_official:
-            target_h = 650
-        elif is_customurl:
-            target_h = 783
+        # customurl — выше остальных). Константы замерены под раскладку при
+        # ширине 1014. Но контент может быть выше в отдельных ситуациях
+        # (шрифты, бейджи, длинные строки) — тогда жёсткая константа режет
+        # кнопки и душит анимацию клампом. Поэтому цель = max(константа,
+        # свежий минимум + 8): в норме едем ровно на константу (воздуха нет),
+        # а при дрейфе контента окно само берёт ровно столько, сколько нужно
+        # — не больше и не меньше.
+        if mode == "official":
+            target_h = 587
+        elif mode == "customurl":
+            target_h = 721
+        elif mode == "openai":
+            target_h = 673
         else:
-            target_h = 750
+            target_h = 675
+        try:
+            _central = self.centralWidget()
+            if _central is not None:
+                _floor = int(_central.minimumSizeHint().height()) + 8
+                if _floor > target_h:
+                    target_h = _floor
+        except Exception:
+            pass
         if hasattr(self, "_height_initialized") and self._height_initialized and self.isVisible():
             self._animate_window_height(target_h)
         else:
@@ -17082,6 +18209,12 @@ class ClaudeManager(QMainWindow):
                 f"color: {color}; background: transparent; border: none;"
             )
 
+        # Состояние установки могло смениться — пересчитать кнопку запуска.
+        try:
+            self._update_launch_button_state()
+        except Exception:
+            pass
+
     def _install_codex_cli(self):
         """Ставит/обновляет Codex CLI (последняя версия) через npm в PowerShell."""
         installed = self._is_codex_installed()
@@ -17477,6 +18610,12 @@ class ClaudeManager(QMainWindow):
             self.oc_install_status_label.setStyleSheet(
                 f"color: {color}; background: transparent; border: none;"
             )
+
+        # Состояние установки могло смениться — пересчитать кнопку запуска.
+        try:
+            self._update_launch_button_state()
+        except Exception:
+            pass
 
     def _install_oc_cli(self):
         """Ставит/обновляет opencode CLI (последняя версия) через npm i -g opencode-ai."""
@@ -19487,6 +20626,11 @@ class ClaudeManager(QMainWindow):
                 self.claude_install_status_label.setStyleSheet(
                     f"color: {color}; background: transparent; border: none;"
                 )
+            # Состояние установки могло смениться — пересчитать кнопку запуска.
+            try:
+                self._update_launch_button_state()
+            except Exception:
+                pass
             return
 
         # ── Safe mode: пин на REQUIRED_CLAUDE_VERSION ──
@@ -19566,6 +20710,12 @@ class ClaudeManager(QMainWindow):
                 self.claude_install_status_label.setStyleSheet(
                     "color: rgb(245, 180, 60); background: transparent; border: none;"
                 )
+
+        # Состояние установки могло смениться — пересчитать кнопку запуска.
+        try:
+            self._update_launch_button_state()
+        except Exception:
+            pass
 
     def _format_date(self, iso_date):
         """Преобразует ISO-дату из npm в DD.MM.YYYY"""
@@ -19943,10 +21093,8 @@ class ClaudeManager(QMainWindow):
     def _show_update_notification(self, update_info):
         """Авто-запуск скачивания обновления без подтверждения от пользователя."""
         try:
-            # Показываем индикатор в углу
-            self.update_indicator.setVisible(True)
-            self.update_indicator.show()
-            self.update_indicator.raise_()
+            # Показываем строку обновления в сайдбаре
+            self.update_row.setVisible(True)
 
             # Сразу стартуем скачивание — без UpdateAppDialog и без кнопки «Обновить»
             from PySide6.QtCore import QTimer
@@ -19974,7 +21122,7 @@ class ClaudeManager(QMainWindow):
 
         # Если скачивание успешно, скрываем индикатор
         if download_dialog.download_success:
-            self.update_indicator.setVisible(False)
+            self.update_row.setVisible(False)
         else:
             # Скачивание не прошло — разрешим повторную попытку при следующем чек-цикле
             self._update_download_started = False
@@ -19985,6 +21133,12 @@ class ClaudeManager(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    # Глобальная таблица стилей из дизайн-системы: закрывает «щели» между
+    # локальными QSS (тултипы, скроллбары, меню, диалоги, чекбоксы).
+    try:
+        app.setStyleSheet(build_app_qss())
+    except Exception:
+        pass
     # Глобальный менеджер языка — создаём ПОСЛЕ QApplication, но ДО окон,
     # чтобы виджеты при инициализации уже могли читать LANG.lang.
     global LANG
