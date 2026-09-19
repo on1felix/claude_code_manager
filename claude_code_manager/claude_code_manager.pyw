@@ -14652,7 +14652,7 @@ NAV_SUBTITLES = {
     "anthropic": ("Claude Code - Base URL, API ключи", "Claude Code - Base URL, API keys"),
     "official":  ("Официальный вход", "Official account"),
     "openai":    ("Codex через Base URL и API ключи", "Codex via Base URL and API keys"),
-    "customurl": ("Любая модель по Base URL и API ключам", "Any model via Base URL and API keys"),
+    "customurl": ("Любая модель по Base URL и API", "Any model via Base URL and API keys"),
 }
 
 PAGE_SUBTITLES = {
@@ -14662,7 +14662,7 @@ PAGE_SUBTITLES = {
                   "Official Claude Code launch through your Anthropic account"),
     "openai":    ("Запуск Codex через Base URL и API ключи",
                   "Run Codex via Base URL and API keys"),
-    "customurl": ("Запуск любой модели по Base URL и API",
+    "customurl": ("Запуск любой модели по Base URL и API ключам",
                   "Run any model via Base URL and API keys"),
 }
 
