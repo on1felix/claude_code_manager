@@ -1,0 +1,279 @@
+{
+  "comment": "История обновлений Claude Code Manager. Показывается в окне «Обновления» (кнопка-«!» у названия программы). Новую запись добавлять СВЕРХУ (самая свежая — первая): поля id (уникальный, латиница), version (версия приложения с этим обновлением), dateISO (UTC-момент выхода, суффикс Z), icon (имя иконки), ru/en (title, features[{icon,text}], fixes[text], note{title,points} — необязательные блоки можно опускать). Иконки: Sparkles, Cpu, KeyRound, Columns2, Palette, Maximize2, Terminal, RefreshCw, Languages, Check, Network, Bot, Download, PlugZap, Wallet, SlidersHorizontal, Globe.",
+  "updates": [
+    {
+      "id": "sonnet-55",
+      "version": "5.9.6",
+      "dateISO": "2026-09-30T05:34:09Z",
+      "icon": "Sparkles",
+      "ru": {
+        "title": "Новая модель — Sonnet 5.5",
+        "features": [
+          { "icon": "Cpu", "text": "Sonnet 5.5 во вкладках Claude и Anthropic — сразу после Sonnet 5, чуть краснее в шкале: 1M-контекст и все уровни effort, включая ultracode" },
+          { "icon": "PlugZap", "text": "На 30% быстрее Sonnet 5 и до 30% дешевле за задачу при той же цене токенов" }
+        ]
+      },
+      "en": {
+        "title": "New model — Sonnet 5.5",
+        "features": [
+          { "icon": "Cpu", "text": "Sonnet 5.5 in the Claude and Anthropic tabs — right after Sonnet 5, a touch redder on the scale: 1M context and every effort level, ultracode included" },
+          { "icon": "PlugZap", "text": "30% faster than Sonnet 5 and up to 30% cheaper per task at the same token price" }
+        ]
+      }
+    },
+    {
+      "id": "opus-55-no-login",
+      "version": "5.9.5",
+      "dateISO": "2026-09-23T09:00:00Z",
+      "icon": "Sparkles",
+      "ru": {
+        "title": "Новая модель — Opus 5.5",
+        "features": [
+          { "icon": "Cpu", "text": "Opus 5.5 во вкладках Claude и Anthropic — сразу после Opus 5, самый красный в шкале: 1M-контекст и все уровни effort, включая ultracode" },
+          { "icon": "KeyRound", "text": "Вход по коду с почты полностью удалён — FreeModel его больше не поддерживает: остаются только ручные API-ключи с лимитами" }
+        ]
+      },
+      "en": {
+        "title": "New model — Opus 5.5",
+        "features": [
+          { "icon": "Cpu", "text": "Opus 5.5 in the Claude and Anthropic tabs — right after Opus 5, the reddest on the scale: 1M context and every effort level, ultracode included" },
+          { "icon": "KeyRound", "text": "Email-code sign-in removed completely — FreeModel no longer supports it: only manual API keys with limits remain" }
+        ]
+      }
+    },
+    {
+      "id": "modern-redesign",
+      "version": "5.9.4",
+      "dateISO": "2026-09-19T18:15:00Z",
+      "icon": "Palette",
+      "ru": {
+        "title": "Обновлённый дизайн программы",
+        "features": [
+          { "icon": "Columns2", "text": "Боковая панель вместо верхнего переключателя: бренд и 4 режима запуска" },
+          { "icon": "Palette", "text": "Единый точечный фон на всё окно, полупрозрачные блоки, кнопки и консоль" },
+          { "icon": "Maximize2", "text": "Окно плавно подстраивается под каждую вкладку, спокойный текст и яркие цвета консоли" }
+        ],
+        "fixes": [
+          "Счётчик бесплатных моделей считает только реально бесплатные",
+          "Кнопка запуска больше не гаснет при нажатии"
+        ]
+      },
+      "en": {
+        "title": "Refreshed app design",
+        "features": [
+          { "icon": "Columns2", "text": "Sidebar instead of the top switch: brand and 4 launch modes" },
+          { "icon": "Palette", "text": "One dotted background across the window, translucent blocks, buttons and console" },
+          { "icon": "Maximize2", "text": "The window smoothly fits every tab, calmer text and vivid console colors" }
+        ],
+        "fixes": [
+          "The free-models counter now counts only truly free models",
+          "The launch button no longer blanks on press"
+        ]
+      }
+    },
+    {
+      "id": "terminal-path-modes",
+      "version": "5.9.3",
+      "dateISO": "2026-09-13T12:00:00Z",
+      "icon": "Terminal",
+      "ru": {
+        "title": "Терминал, PATH и режимы",
+        "features": [
+          { "icon": "Terminal", "text": "Проверка Windows Terminal перед любым запуском — установка официальной последней версии с прогресс-баром, как у обновления приложения" },
+          { "icon": "RefreshCw", "text": "Авто-PATH при установке opencode и кнопка «Добавить npm в PATH» — команда видна новым терминалам сразу" },
+          { "icon": "Columns2", "text": "Отдельная рабочая директория для каждого режима — выбор в opencode больше не трогает остальные" },
+          { "icon": "SlidersHorizontal", "text": "Кнопки управления opencode (эндпоинт, ключи, Base URL, провайдеры) блокируются и затемняются на время загрузки моделей" },
+          { "icon": "Languages", "text": "Полный английский перевод консоли — все сообщения лога переведены" },
+          { "icon": "Check", "text": "Табличка с перезапуском после установки opencode" }
+        ],
+        "fixes": [
+          "Безопасный режим: откат на старую версию теперь реально переустанавливает пакет и чистит битые временные шимы npm",
+          "Удаление провайдеров opencode: провайдер удаляется полностью — и креда, и определение из конфига",
+          "Текст завершения установки opencode больше не упоминает Codex и стал короче"
+        ]
+      },
+      "en": {
+        "title": "Terminal, PATH and modes",
+        "features": [
+          { "icon": "Terminal", "text": "Windows Terminal check before any launch — installs the official latest version with a progress bar, like app updates" },
+          { "icon": "RefreshCw", "text": "Auto-PATH on opencode install plus an “Add npm to PATH” button — the command is visible to new terminals right away" },
+          { "icon": "Columns2", "text": "Separate working directory per mode — picking one in opencode no longer touches the others" },
+          { "icon": "SlidersHorizontal", "text": "opencode management buttons (endpoint, keys, Base URL, providers) lock and dim while models are loading" },
+          { "icon": "Languages", "text": "Full English translation of the console — every log message is translated" },
+          { "icon": "Check", "text": "Restart notice after opencode installation" }
+        ],
+        "fixes": [
+          "Safe mode: rolling back to the old version now actually reinstalls the package and cleans broken npm shim leftovers",
+          "opencode provider removal: the provider is now removed completely — both the credential and the config entry",
+          "The opencode install completion text no longer mentions Codex and is shorter"
+        ]
+      }
+    },
+    {
+      "id": "fable-51-astra",
+      "version": "5.9.2",
+      "dateISO": "2026-09-08T04:30:00Z",
+      "icon": "Sparkles",
+      "ru": {
+        "title": "Новые модели и улучшения",
+        "features": [
+          { "icon": "Cpu", "text": "Новая модель Fable 5.1 во вкладке Anthropic — самая мощная модель Anthropic, с поддержкой 1M контекста" },
+          { "icon": "Bot", "text": "Новая модель GPT 6 Astra во вкладке OpenAI — самая мощная модель OpenAI" },
+          { "icon": "Palette", "text": "Имя провайдера в окне моделей подсвечено своим цветом — у каждого провайдера он свой и постоянный, а после удаления и повторного подключения станет другим" },
+          { "icon": "Network", "text": "Модели в окне opencode подсвечены цветами компаний — у всех моделей одной компании одинаковый цвет" },
+          { "icon": "SlidersHorizontal", "text": "Названия моделей GPT теперь подписаны понятнее: GPT 5.2, GPT 5.6 Sol, GPT 6 Astra" }
+        ],
+        "fixes": [
+          "Исправлен запуск через терминал: у некоторых пользователей открывался PowerShell старой версии — теперь всё работает как надо",
+          "Убрано лишнее предупреждение при выборе модели Fable 5",
+          "Заголовки и имя провайдера в окне моделей получили рамки, как в окне провайдеров",
+          "Цвета провайдеров стали светлее и приятнее читаются на тёмном фоне"
+        ]
+      },
+      "en": {
+        "title": "New models and improvements",
+        "features": [
+          { "icon": "Cpu", "text": "New Fable 5.1 model in the Anthropic tab — the most powerful Anthropic model, with 1M context support" },
+          { "icon": "Bot", "text": "New GPT 6 Astra model in the OpenAI tab — the most powerful OpenAI model" },
+          { "icon": "Palette", "text": "The provider name in the models window is now highlighted with its own color — each provider keeps its color, and it changes if you remove and re-add the provider" },
+          { "icon": "Network", "text": "Models in the opencode window are colored by company — all models from one company share the same color" },
+          { "icon": "SlidersHorizontal", "text": "GPT model names are easier to read now: GPT 5.2, GPT 5.6 Sol, GPT 6 Astra" }
+        ],
+        "fixes": [
+          "Fixed terminal launching: some users got an old PowerShell version — everything works as expected now",
+          "Removed the unnecessary warning when picking the Fable 5 model",
+          "Section headers and the provider name in the models window now have frames, like in the providers window",
+          "Provider colors are now lighter and easier to read on the dark background"
+        ]
+      }
+    },
+    {
+      "id": "opencode-tab",
+      "version": "5.9.0",
+      "dateISO": "2026-08-29T05:30:00Z",
+      "icon": "Network",
+      "ru": {
+        "title": "Вкладка Custom URL (opencode)",
+        "features": [
+          { "icon": "Network", "text": "Вместо Omniroute — вкладка Custom URL: подключайте любые совместимые сервисы через свой Base URL и API-ключ" },
+          { "icon": "KeyRound", "text": "Окно «Управление провайдерами» — все провайдеры из конфига и auth.json в одном списке: удаление убирает и креду, и определение" },
+          { "icon": "PlugZap", "text": "Кнопки «Установить» / «Удалить» — opencode CLI ставится и сносится одной кнопкой, как Claude Code и Codex" },
+          { "icon": "Sparkles", "text": "Запуск через opencode CLI — модели Claude и Codex в любом терминале" }
+        ],
+        "note": {
+          "title": "Почему Omniroute заменён на opencode",
+          "points": [
+            "Omniroute уже работает нестабильно, а те же функции opencode выполняет проще и надёжнее",
+            "В opencode без каких-либо ограничений доступны модели уровня Claude Sonnet 4.6 и выше — полностью без лимитов и ограничений"
+          ]
+        }
+      },
+      "en": {
+        "title": "Custom URL (opencode) tab",
+        "features": [
+          { "icon": "Network", "text": "Omniroute is gone — meet the Custom URL tab: connect any compatible service through your own Base URL and API key" },
+          { "icon": "KeyRound", "text": "“Manage providers” window — every provider from the config and auth.json in one list: deleting removes both the credential and the definition" },
+          { "icon": "PlugZap", "text": "“Install” / “Uninstall” buttons — the opencode CLI goes up and comes down with a single button, just like Claude Code and Codex" },
+          { "icon": "Sparkles", "text": "Launch through the opencode CLI — Claude and Codex models in any terminal" }
+        ],
+        "note": {
+          "title": "Why Omniroute was replaced with opencode",
+          "points": [
+            "Omniroute is no longer stable, and opencode handles the same job more simply and reliably",
+            "In opencode, models at the level of Claude Sonnet 4.6 and above are available with no restrictions whatsoever — completely without limits"
+          ]
+        }
+      }
+    },
+    {
+      "id": "keys-refresh",
+      "version": "5.8.5",
+      "dateISO": "2026-07-29T17:04:00Z",
+      "icon": "RefreshCw",
+      "ru": {
+        "title": "Обновление",
+        "features": [
+          { "icon": "RefreshCw", "text": "Кнопка «Обновить все ключи» в окне ключей — данные всех ключей обновляются по одному клику, постепенно" },
+          { "icon": "RefreshCw", "text": "Умное автообновление: при открытии окна ключей активный ключ обновляется всегда, остальные — только если их данные старше 5 часов. Меньше лишних запросов" }
+        ]
+      },
+      "en": {
+        "title": "Update",
+        "features": [
+          { "icon": "RefreshCw", "text": "“Refresh all keys” button in the keys window — refreshes every key with one click, gradually" },
+          { "icon": "RefreshCw", "text": "Smart auto-refresh: opening the keys window always refreshes the active key, others only if their data is older than 5 hours. Fewer requests" }
+        ]
+      }
+    },
+    {
+      "id": "dual-claude-balance",
+      "version": "5.8.4",
+      "dateISO": "2026-07-27T22:52:00Z",
+      "icon": "Sparkles",
+      "ru": {
+        "title": "Обновление",
+        "features": [
+          { "icon": "Columns2", "text": "Двойная вкладка Anthropic | Claude — официальный запуск Claude Code через ваш аккаунт Anthropic, без ключей" },
+          { "icon": "Wallet", "text": "Полоса «Баланс» в статистике ключей — кредит аккаунта FreeModel, как на дашборде" },
+          { "icon": "Columns2", "text": "Предупреждение при переключении на вкладку Claude — объясняет, что режим только для подписчиков Anthropic, и как использовать вкладку Anthropic для сторонних ключей" }
+        ],
+        "fixes": [
+          "Шрифт двойной вкладки выровнен с остальными",
+          "Подписи «метрики» переименованы в «данные»"
+        ]
+      },
+      "en": {
+        "title": "Update",
+        "features": [
+          { "icon": "Columns2", "text": "Dual Anthropic | Claude tab — official Claude Code launch via your Anthropic account, no keys" },
+          { "icon": "Wallet", "text": "“Balance” bar in key stats — your FreeModel account credit, same as the dashboard" },
+          { "icon": "Columns2", "text": "Warning dialog when switching to the Claude tab — explains the mode is for Anthropic subscribers only and how to use the Anthropic tab for third-party keys" }
+        ],
+        "fixes": [
+          "Dual tab font now matches the other tabs",
+          "“Metrics” labels renamed to “data”"
+        ]
+      }
+    },
+    {
+      "id": "opus-5",
+      "version": "5.8.3",
+      "dateISO": "2026-07-25T22:34:00Z",
+      "icon": "Sparkles",
+      "ru": {
+        "title": "Новая модель — Opus 5",
+        "features": [
+          { "icon": "Cpu", "text": "Opus 5 — новый флагман Anthropic: 1M-контекст и все уровни effort, включая ultracode" },
+          { "icon": "SlidersHorizontal", "text": "Ползунок моделей стал двухстрочным — Fable 5 на отдельной строке" }
+        ]
+      },
+      "en": {
+        "title": "New model — Opus 5",
+        "features": [
+          { "icon": "Cpu", "text": "Opus 5 — the new Anthropic flagship: 1M context and every effort level, ultracode included" },
+          { "icon": "SlidersHorizontal", "text": "The model slider is now two rows — Fable 5 sits on its own row" }
+        ]
+      }
+    },
+    {
+      "id": "openai-tab",
+      "version": "5.8.0",
+      "dateISO": "2026-07-21T20:03:00Z",
+      "icon": "Sparkles",
+      "ru": {
+        "title": "Крупное обновление Claude Code Manager",
+        "features": [
+          { "icon": "Bot", "text": "Вкладка OpenAI — Codex CLI с GPT-5.2, 5.5 и 5.6 (Luna, Terra, Sol)" },
+          { "icon": "Download", "text": "Codex CLI и Node.js ставятся одной кнопкой" }
+        ]
+      },
+      "en": {
+        "title": "Major Claude Code Manager update",
+        "features": [
+          { "icon": "Bot", "text": "OpenAI tab — Codex CLI with GPT-5.2, 5.5 and 5.6 (Luna, Terra, Sol)" },
+          { "icon": "Download", "text": "Codex CLI and Node.js install with a single button" }
+        ]
+      }
+    }
+  ]
+}
