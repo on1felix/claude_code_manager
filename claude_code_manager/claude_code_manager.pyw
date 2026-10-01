@@ -28,7 +28,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.9.6"  # Для обновлений
+APP_VERSION = "5.9.7"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -1076,7 +1076,7 @@ TRANSLATIONS = {
     "Что нового в приложении.": "What's new in the app.",
     "Новое": "New",
     "Новые добавления": "New additions",
-    "Прочие улучшения": "Other improvements",
+    "Прочие исправления": "Other fixes",
     "Сегодня": "Today",
     "Вчера": "Yesterday",
     "Пока нет записей об обновлениях": "No update notes yet",
@@ -1095,6 +1095,9 @@ TRANSLATIONS = {
     "максимум мощности + многоагентная оркестрация": "maximum power + multi-agent orchestration",
     "Reasoning effort изменён на": "Reasoning effort changed to",
     "Модель изменена на": "Model changed to",
+    # ── Фоновый запуск (тяжёлое в рабочих потоках)
+    "Проверяю версию Claude Code...": "Checking Claude Code version...",
+    "Готовлю запуск opencode...": "Preparing opencode launch...",
     # ── диалог выбора типа лимита при выключении ключа
     "Выберите тип лимита": "Choose limit type",
     "На какой срок отключить ключ?": "For how long to disable the key?",
@@ -2169,9 +2172,233 @@ class UpdateIndicator(QWidget):
 # КНОПКА С ЭФФЕКТОМ НАВЕДЕНИЯ
 # ============================================================
 
+# ============================================================
+# ПИКСЕЛЬНАЯ ВОЛНА НАЖАТИЯ — вместо вспышки фона у всех кнопок
+# ============================================================
+
+class _PixelRippleOverlay(QWidget):
+    """Пиксельная волна от точки нажатия: по кнопке лежит невидимая сетка
+    крошечных пикселей — волна 360° расходится от точки нажатия, пиксели
+    зажигаются фронтом и затухают. Сами пиксели не двигаются. Волна
+    подрезается по внутренней рамке кнопки (inset): обводку не задевает
+    и за видимую форму не вылезает. Цвет — акцент кнопки."""
+
+    _PX = 1.5  # размер пикселя
+    _STEP = 4.0  # шаг сетки (кучность)
+
+    def __init__(self, button, pos, rgb, inset=(3, 3, 3, 3), radius=8, step=0.035):
+        super().__init__(button)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        try:
+            self._rgb = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+        except Exception:
+            self._rgb = (52, 211, 153)
+        try:
+            self._cx = float(pos.x())
+        except Exception:
+            self._cx = 0.0
+        try:
+            self._cy = float(pos.y())
+        except Exception:
+            self._cy = 0.0
+        try:
+            li, ti, ri, bi = (float(v) for v in inset)
+        except Exception:
+            li, ti, ri, bi = (3.0, 3.0, 3.0, 3.0)
+        self._inset = (li, ti, ri, bi)
+        try:
+            self._radius = float(radius)
+        except Exception:
+            self._radius = 8.0
+        try:
+            self._step_dt = float(step)
+        except Exception:
+            self._step_dt = 0.035
+        w = max(1, button.width())
+        h = max(1, button.height())
+        self.setGeometry(0, 0, w, h)
+        try:
+            self._max_r = max(
+                math.hypot(self._cx, self._cy),
+                math.hypot(w - self._cx, self._cy),
+                math.hypot(self._cx, h - self._cy),
+                math.hypot(w - self._cx, h - self._cy),
+            ) + 8.0
+        except Exception:
+            self._max_r = float(max(w, h))
+        # Сетка пикселей с дистанцией до точки нажатия. Сразу сортируем
+        # по дистанции — кадр берёт только полосу фронта (bisect).
+        self._pixels = []
+        self._ds = []
+        try:
+            gx = 0.0
+            while gx < w:
+                gy = 0.0
+                while gy < h:
+                    self._pixels.append(
+                        (gx, gy, math.hypot(gx - self._cx, gy - self._cy)))
+                    gy += self._STEP
+                gx += self._STEP
+            self._pixels.sort(key=lambda q: q[2])
+            self._ds = [q[2] for q in self._pixels]
+        except Exception:
+            self._pixels = []
+            self._ds = []
+        self._prev_rect = None
+        self._t = 0.0
+        # Держим ссылку на родителе: иначе циклический GC может убить
+        # обёртку посреди полёта — C++-объект зависнет последним кадром
+        # навсегда (таймер дёргает мёртвый слот, cleanup не выполняется).
+        try:
+            lst = getattr(button, "_pixel_ripples", None)
+            if lst is None:
+                lst = []
+                button._pixel_ripples = lst
+            lst.append(self)
+        except Exception:
+            pass
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+        self._timer.start(16)
+        self.show()
+        self.raise_()
+
+    def _forget_self(self):
+        try:
+            p = self.parent()
+        except RuntimeError:
+            return
+        try:
+            if p is not None:
+                p.update()
+                lst = getattr(p, "_pixel_ripples", None)
+                if lst is not None and self in lst:
+                    lst.remove(self)
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
+    def _step(self):
+        try:
+            self._t += self._step_dt
+        except RuntimeError:
+            return
+        if self._t >= 1.0:
+            try:
+                self._timer.stop()
+            except Exception:
+                pass
+            self._forget_self()
+            try:
+                self.deleteLater()
+            except Exception:
+                pass
+            return
+        # Перерисовываем объединение прошлой и новой полосы фронта:
+        # старая полоса стирается (шлейфов нет), остальное не трогаем.
+        try:
+            front = self._t * self._max_r
+            band = max(14.0, self._max_r * 0.10)
+            ext = front + band * 3.0 + 4.0
+            cur = (int(self._cx - ext), int(self._cy - ext),
+                   int(ext * 2), int(ext * 2))
+            prev = self._prev_rect
+            self._prev_rect = cur
+            if prev is not None:
+                x0 = min(prev[0], cur[0])
+                y0 = min(prev[1], cur[1])
+                x1 = max(prev[0] + prev[2], cur[0] + cur[2])
+                y1 = max(prev[1] + prev[3], cur[1] + cur[3])
+                self.update(x0, y0, x1 - x0, y1 - y0)
+            else:
+                self.update(*cur)
+        except Exception:
+            self.update()
+
+    def paintEvent(self, event):
+        try:
+            import bisect as _bi
+            exp = math.exp
+            p = QPainter(self)
+            r, g, b = self._rgb
+            # Клип по внутренней рамке кнопки: обводку не задеваем,
+            # за видимую форму не вылезаем.
+            li, ti, ri, bi = self._inset
+            clip = QPainterPath()
+            clip.addRoundedRect(
+                QRectF(li, ti, max(1.0, self.width() - li - ri),
+                       max(1.0, self.height() - ti - bi)),
+                self._radius, self._radius)
+            p.setClipPath(clip)
+            front = self._t * self._max_r
+            fade = 1.0 - self._t * 0.5
+            # Таяние в конце: последние 15% волна растворяется — даже если
+            # финальный репейнт потеряется, обрубка пикселей не будет.
+            try:
+                end_fade = min(1.0, max(0.0, (1.0 - self._t) / 0.15))
+            except Exception:
+                end_fade = 1.0
+            band = max(14.0, self._max_r * 0.10)
+            fill = p.fillRect
+            px = self._PX
+            ds = self._ds
+            lo = _bi.bisect_left(ds, front - band * 3.0)
+            hi = _bi.bisect_right(ds, front + band * 2.0, lo)
+            for (x, y, d) in self._pixels[lo:hi]:
+                gg = (d - front) / band
+                if gg < -3.0 or gg > 2.0:
+                    continue
+                a = int(235 * exp(-gg * gg) * fade * end_fade)
+                if a <= 5:
+                    continue
+                fill(QRectF(x, y, px, px), QColor(r, g, b, a))
+            p.end()
+        except Exception:
+            pass
+
+
+class _RippleFilter(QObject):
+    """Ловит нажатие кнопки и запускает пиксельную волну её цветом."""
+
+    def __init__(self, color, inset=(3, 3, 3, 3), radius=8):
+        super().__init__()
+        self._color = color  # RGB-кортеж или callable(button) -> rgb
+        self._inset = inset
+        self._radius = radius
+
+    def eventFilter(self, obj, event):
+        try:
+            if (event.type() == QEvent.MouseButtonPress
+                    and event.button() == Qt.LeftButton):
+                try:
+                    if not obj.isEnabled():
+                        return False
+                except Exception:
+                    pass
+                col = (self._color(obj) if callable(self._color)
+                       else self._color)
+                _PixelRippleOverlay(obj, event.pos(), col,
+                                    self._inset, self._radius)
+        except Exception:
+            pass
+        return False
+
+
+def enable_pixel_ripple(button, color, inset=(3, 3, 3, 3), radius=8):
+    """Пиксельная волна вместо вспышки фона при нажатии."""
+    try:
+        f = _RippleFilter(color, inset, radius)
+        f.setParent(button)
+        button.installEventFilter(f)
+    except Exception:
+        pass
+
+
 class StyledButton(QPushButton):
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
+        enable_pixel_ripple(self, lambda b: tuple(b._hover_color))
         self.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.setMinimumHeight(40)
         self.setCursor(Qt.PointingHandCursor)
@@ -2221,9 +2448,6 @@ class StyledButton(QPushButton):
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 8px;
                 padding: 8px 12px;
-            }}
-            QPushButton:pressed {{
-                background-color: rgba(30, 30, 35, 200);
             }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
@@ -2312,6 +2536,7 @@ class OcModelInfoButton(StyledButton):
 class GreenButton(QPushButton):
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
+        enable_pixel_ripple(self, (52, 211, 153))
         self.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.setMinimumHeight(40)
         self.setCursor(Qt.PointingHandCursor)
@@ -2358,9 +2583,6 @@ class GreenButton(QPushButton):
                 border-radius: 8px;
                 padding: 8px 12px;
             }}
-            QPushButton:pressed {{
-                background-color: rgba(30, 30, 35, 200);
-            }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
                 color: #6a6d78;
@@ -2382,6 +2604,7 @@ class PrimaryActionButton(QPushButton):
 
     def __init__(self, text, accent=None, parent=None):
         super().__init__(text, parent)
+        enable_pixel_ripple(self, lambda b: tuple(b._accent))
         self.setFont(QFont(theme_value("font_ui"), 10, QFont.Bold))
         self.setMinimumHeight(42)
         self.setCursor(Qt.PointingHandCursor)
@@ -2452,10 +2675,6 @@ class PrimaryActionButton(QPushButton):
                 border-radius: 8px;
                 padding: 9px 16px;
             }}
-            QPushButton:pressed {{
-                background-color: rgba({int(fill[0] * 0.88)}, {int(fill[1] * 0.88)}, {int(fill[2] * 0.88)}, 200);
-                border: 2px solid rgba({border[0]}, {border[1]}, {border[2]}, {border_alpha});
-            }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
                 color: #6a6d78;
@@ -2472,6 +2691,7 @@ class PrimaryActionButton(QPushButton):
 class BlueButton(QPushButton):
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
+        enable_pixel_ripple(self, (100, 180, 255))
         self.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.setMinimumHeight(40)
         self.setCursor(Qt.PointingHandCursor)
@@ -2518,9 +2738,6 @@ class BlueButton(QPushButton):
                 border-radius: 8px;
                 padding: 8px 12px;
             }}
-            QPushButton:pressed {{
-                background-color: rgba(30, 30, 35, 200);
-            }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
                 color: #6a6d78;
@@ -2535,6 +2752,7 @@ class BlueButton(QPushButton):
 class RedButton(QPushButton):
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
+        enable_pixel_ripple(self, (200, 60, 60))
         self.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.setMinimumHeight(40)
         self.setCursor(Qt.PointingHandCursor)
@@ -2581,9 +2799,6 @@ class RedButton(QPushButton):
                 border-radius: 8px;
                 padding: 8px 12px;
             }}
-            QPushButton:pressed {{
-                background-color: rgba(30, 30, 35, 200);
-            }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
                 color: #6a6d78;
@@ -2595,6 +2810,7 @@ class YellowButton(QPushButton):
     """Как RedButton, но с жёлтым hover — для кнопок «Обновить»."""
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
+        enable_pixel_ripple(self, (245, 180, 60))
         self.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.setMinimumHeight(40)
         self.setCursor(Qt.PointingHandCursor)
@@ -2641,9 +2857,6 @@ class YellowButton(QPushButton):
                 border-radius: 8px;
                 padding: 8px 12px;
             }}
-            QPushButton:pressed {{
-                background-color: rgba(30, 30, 35, 200);
-            }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
                 color: #6a6d78;
@@ -2655,6 +2868,7 @@ class OrangeButton(QPushButton):
     """Как RedButton, но с оранжевым hover — для кнопок «Откатить»."""
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
+        enable_pixel_ripple(self, (235, 150, 90))
         self.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.setMinimumHeight(40)
         self.setCursor(Qt.PointingHandCursor)
@@ -2701,9 +2915,6 @@ class OrangeButton(QPushButton):
                 border-radius: 8px;
                 padding: 8px 12px;
             }}
-            QPushButton:pressed {{
-                background-color: rgba(30, 30, 35, 200);
-            }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
                 color: #6a6d78;
@@ -2739,6 +2950,7 @@ class EyeToggleButton(QPushButton):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
+        enable_pixel_ripple(self, (100, 180, 255), radius=6)
         self.setCursor(Qt.PointingHandCursor)
         self.setText("")
         self.setFixedSize(40, 36)
@@ -2921,9 +3133,10 @@ class StyledComboBox(QComboBox):
             """)
             return
         if self._accent_color is not None:
-            # Рамка всегда в цвете акцента (тусклая), при наведении — ярче
+            # Рамка всегда в цвете акцента (тусклая), при наведении — ярче.
+            # _accent_full (пиксели ultra) — всегда полная яркость акцента.
             ar, ag, ab = self._accent_color
-            dim = 0.45
+            dim = 1.0 if getattr(self, "_accent_full", False) else 0.45
             base_r, base_g, base_b = int(ar * dim), int(ag * dim), int(ab * dim)
             hover_r, hover_g, hover_b = ar, ag, ab
         else:
@@ -2982,6 +3195,7 @@ class PickerCard(QPushButton):
     def __init__(self, text, color=None, tooltip=None, is_current=False,
                  is_disabled=False, clickable=True, parent=None):
         super().__init__(text, parent)
+        enable_pixel_ripple(self, lambda b: tuple(b._hover_rgb))
         # clickable=False — информационная карточка (окно моделей opencode):
         # тот же вид, но курсор обычный и клик не подразумевается.
         if clickable:
@@ -3065,9 +3279,6 @@ class PickerCard(QPushButton):
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 8px;
                 padding: 7px 10px;
-            }}
-            QPushButton:pressed {{
-                background-color: {self._bg_str};
             }}
         """)
 
@@ -3344,6 +3555,12 @@ class EffortPickerComboBox(PickerComboBox):
         # Явно храним QColor текста — чтобы не парсить его   аждый paintEvent.
         # Обновляется через setTextColor().
         self._text_qcolor = QColor(200, 200, 200)
+        # Живые пиксели фона на ultra/ultracode — как в слайдерах.
+        self._ultra_cells = {}
+        self._accent_full = False
+        self._px_timer = QTimer(self)
+        self._px_timer.timeout.connect(self._tick_px)
+        self._px_timer.start(40)
         # Комбо на главной странице — display-only. Effort меняется теперь
         # внутри ModelDialog через встроенный EffortSlider, поэтому клик по
         # самому комбо ничего не открывает: убираем указатель, отключаем
@@ -3379,6 +3596,32 @@ class EffortPickerComboBox(PickerComboBox):
         opt.currentIcon = QIcon()
         painter.drawComplexControl(QStyle.CC_ComboBox, opt)
 
+        # ultra/ultracode: живые пиксели поверх тёмного фона, под текстом.
+        # Без заливки — текст остаётся акцентно-фиолетовым и читается.
+        if self._is_ultra():
+            try:
+                ac = self._accent_color
+                if isinstance(ac, QColor):
+                    base = (ac.red(), ac.green(), ac.blue())
+                elif isinstance(ac, (tuple, list)) and len(ac) >= 3:
+                    base = (int(ac[0]), int(ac[1]), int(ac[2]))
+                else:
+                    base = (170, 110, 255)
+                inner = QRectF(self.rect().adjusted(3, 3, -3, -3))
+                painter.save()
+                pp = QPainterPath()
+                pp.addRoundedRect(inner, 6, 6)
+                painter.setClipPath(pp)
+                # На большом блоке анимация быстрее и гуще, чем в пилюле.
+                _paint_ultra_pixels(painter, inner, base, self._ultra_cells,
+                                    dark=False, ignite_p=0.35)
+                painter.restore()
+            except Exception:
+                try:
+                    painter.restore()
+                except Exception:
+                    pass
+
         # Наш текст: жирный, UPPERCASE, по центру
         text = (self.currentText() or "").upper()
         if not text:
@@ -3397,6 +3640,26 @@ class EffortPickerComboBox(PickerComboBox):
         # внутри ModelDialog. Оставляем метод как no-op, чтобы стандартный
         # QComboBox-механизм не пытался открыть системный список.
         return
+
+    def _is_ultra(self):
+        """True если текущий effort — ultra/ultracode (нужны пиксели фона)."""
+        try:
+            return (self.currentText() or "").strip().lower() in ("ultracode", "ultra")
+        except Exception:
+            return False
+
+    def _tick_px(self):
+        """Кадр пикселей фона на ultra — дёргаем перерисовку. Заодно держим
+        рамку в полной яркости акцента (в цвет пилюли)."""
+        try:
+            ultra = self._is_ultra()
+            if getattr(self, "_accent_full", False) != ultra:
+                self._accent_full = ultra
+                self._update_style()
+            if ultra and self.isVisible():
+                self.update()
+        except Exception:
+            pass
 
     def mousePressEvent(self, event):
         # Клик по комбо ничего не делает — комбо теперь display-only.
@@ -5706,6 +5969,58 @@ EFFORT_LABELS = {
 }
 
 
+def _tick_ultra_cells(cells, cols, rows, ignite_p=0.20):
+    """Случайные вспышки: плавное разгорание к цели + медленное затухание.
+    Никаких циклов — чистый рандом, никаких рывков."""
+    for k in list(cells.keys()):
+        b, t = cells[k]
+        b += (t - b) * 0.35
+        t *= 0.965
+        if t < 0.03 and b < 0.05:
+            del cells[k]
+        else:
+            cells[k] = [b, t]
+    if cols > 0 and rows > 0 and random.random() < ignite_p:
+        k = (random.randrange(cols), random.randrange(rows))
+        b, t = cells.get(k, (0.0, 0.0))
+        cells[k] = [b, max(t, 0.75 + 0.25 * random.random())]
+
+
+def _paint_ultra_pixels(p, rect, base_color, cells, cell=5.0, dark=True,
+                        ignite_p=0.20):
+    """Живой пиксельный фон: весь фон в мелких квадратиках, отдельные
+    случайно вспыхивают и плавно гаснут. dark=True — вспышки тёмные
+    (для залитой пилюли), dark=False — светлые (для тёмного фона комбо)."""
+    r, g, b = base_color
+    # Сетка ровно по размеру блока (дробный шаг — без непокрытых полос
+    # по краям): цель ~5px, как в пилюле слайдера.
+    cols = max(1, int(round(rect.width() / cell)))
+    rows = max(1, int(round(rect.height() / cell)))
+    cw = rect.width() / cols
+    ch = rect.height() / rows
+    _tick_ultra_cells(cells, cols, rows, ignite_p)
+    p.setPen(Qt.NoPen)
+    for iy in range(rows):
+        for ix in range(cols):
+            bright = cells.get((ix, iy), (0.0, 0.0))[0]
+            # Фоновой сетки нет — рисуем только вспыхнувшие квадратики,
+            # которые потом плавно потухают.
+            if bright < 0.05:
+                continue
+            if dark:
+                a = int(200 * bright)
+                dk = int(110 * bright)
+                p.setBrush(QColor(max(0, r - dk), max(0, g - dk),
+                                  max(0, b - dk), a))
+            else:
+                a = int(200 * bright)
+                boost = int(50 * bright)
+                p.setBrush(QColor(min(255, r + boost), min(255, g + int(35 * bright)),
+                                  min(255, b + boost), a))
+            p.drawRect(QRectF(rect.x() + ix * cw, rect.y() + iy * ch,
+                              cw - 0.6, ch - 0.6))
+
+
 class EffortSlider(QWidget):
     """Широкий 5-позиционный ползунок выбора reasoning-effort.
     Пилюля плавно скользит между позициями, цвет плавно интерполируется
@@ -5733,6 +6048,8 @@ class EffortSlider(QWidget):
         self._disabled = set(disabled_levels or ())
         # пульс фиолетового свечения для ultracode
         self._pulse = 0.0
+        # живые пиксели ultracode: (яркость, цель) по клеткам
+        self._ultra_cells = {}
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
@@ -5840,6 +6157,17 @@ class EffortSlider(QWidget):
             self._level = new_level
             self._target = float(idx)
             self.changed.emit(new_level)
+            # Клик по ultracode: одноразовая пиксельная волна по всему окну
+            # выбора (как у кнопок) — проигрывается до конца и гаснет.
+            if new_level == "ultracode":
+                try:
+                    win = self.window()
+                    pos = self.mapTo(win, event.pos()) if win is not None else event.pos()
+                    _PixelRippleOverlay(win if win is not None else self, pos,
+                                        EFFORT_COLORS["ultracode"],
+                                        (14, 14, 14, 14), 16, step=0.022)
+                except Exception:
+                    pass
             self.update()
 
     def mouseMoveEvent(self, event):
@@ -5887,25 +6215,28 @@ class EffortSlider(QWidget):
         pill_x = self._progress * cw + (cw - pill_w) / 2.0
 
         # Мягкое свечение по периметру пилюли (внутри клипа трека).
-        # Для ultracode свечение усилено пульсом.
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
-        p.save()
-        p.setClipPath(clip)
+        # У ultracode колец нет — там живые пиксели внутри пилюли, иначе
+        # мелькание сверху/снизу спорит с ними.
         is_ultra = self._level == "ultracode" or (self._progress > n - 1.5)
-        pulse_amp = (0.5 + 0.5 * math.sin(self._pulse)) if is_ultra else 0.0
-        glow_boost = 1.0 + 0.8 * pulse_amp
-        for i in range(1, 4):
-            base_alpha = 48 * (1 - (i - 1) / 3.2) * glow_boost
-            alpha = int(max(0, min(200, base_alpha)))
-            p.setPen(QPen(QColor(r, g, b, alpha), 1))
-            p.setBrush(Qt.NoBrush)
-            ex = i * 1.4
-            p.drawRoundedRect(
-                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
-                pill_r + ex, pill_r + ex
-            )
-        p.restore()
+        if is_ultra:
+            # Сама пилюля чуть темнее — светлые пиксели читаются лучше.
+            r, g, b = int(r * 0.78), int(g * 0.78), int(b * 0.78)
+        if not is_ultra:
+            clip = QPainterPath()
+            clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
+            p.save()
+            p.setClipPath(clip)
+            for i in range(1, 4):
+                base_alpha = 48 * (1 - (i - 1) / 3.2)
+                alpha = int(max(0, min(200, base_alpha)))
+                p.setPen(QPen(QColor(r, g, b, alpha), 1))
+                p.setBrush(Qt.NoBrush)
+                ex = i * 1.4
+                p.drawRoundedRect(
+                    QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
+                    pill_r + ex, pill_r + ex
+                )
+            p.restore()
 
         # Сама пилюля — вертикальный градиент
         grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
@@ -5913,7 +6244,19 @@ class EffortSlider(QWidget):
         grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
         p.setBrush(QBrush(grad))
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
+        pill_rect = QRectF(pill_x, pad, pill_w, h - pad * 2)
+        p.drawRoundedRect(pill_rect, pill_r, pill_r)
+
+        # ultracode: живой пиксельный фон поверх градиента — квадратики
+        # случайно вспыхивают ярче фиолетового и плавно гаснут.
+        if is_ultra:
+            p.save()
+            pp = QPainterPath()
+            pp.addRoundedRect(pill_rect, pill_r, pill_r)
+            p.setClipPath(pp)
+            _paint_ultra_pixels(p, pill_rect, (r, g, b), self._ultra_cells,
+                                dark=False)
+            p.restore()
 
         # Тексты уровней
         p.setFont(QFont("Segoe UI", 8, QFont.Bold))
@@ -6704,7 +7047,7 @@ class ModelDialog(QDialog):
 # OPENAI (CODEX CLI) — модели, эфорты, слайдеры, диалог выбора
 # ============================================================
 
-OPENAI_MODEL_ORDER = ["gpt-5.2", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
+OPENAI_MODEL_ORDER = ["gpt-5.2", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"]
 
 OPENAI_MODEL_COLORS = {
     "gpt-5.2":       (130, 220, 130),
@@ -6713,6 +7056,8 @@ OPENAI_MODEL_COLORS = {
     "gpt-5.6-terra": (235, 180, 110),
     "gpt-5.6-sol":   (235, 140, 120),
     "gpt-6-astra":   (228, 78, 92),
+    "gpt-6-luna":    (238, 125, 130),
+    "gpt-6.1-sol":   (231, 85, 95),
 }
 
 OPENAI_MODEL_LABELS = {
@@ -6722,6 +7067,8 @@ OPENAI_MODEL_LABELS = {
     "gpt-5.6-terra": "GPT 5.6 Terra",
     "gpt-5.6-sol":   "GPT 5.6 Sol",
     "gpt-6-astra":   "GPT 6 Astra",
+    "gpt-6-luna":    "GPT 6 Luna",
+    "gpt-6.1-sol":   "GPT 6.1 Sol",
 }
 
 OPENAI_MODEL_DESCRIPTIONS = {
@@ -6731,6 +7078,8 @@ OPENAI_MODEL_DESCRIPTIONS = {
     "gpt-5.6-terra": "сбалансированная agentic-модель на каждый день",
     "gpt-5.6-sol":   "новейшая флагманская agentic-модель для кода",
     "gpt-6-astra":   "самая мощная модель — для самой сложной end-to-end работы",
+    "gpt-6-luna":    "самая быстрая и доступная — для массовых повседневных задач",
+    "gpt-6.1-sol":   "почти уровень Astra для кода и агентов — в разы дешевле Astra",
 }
 OPENAI_MODEL_DESCRIPTIONS_EN = {
     "gpt-5.2":       "optimized for professional work and long-running agents",
@@ -6739,6 +7088,8 @@ OPENAI_MODEL_DESCRIPTIONS_EN = {
     "gpt-5.6-terra": "balanced agentic coding model for everyday work",
     "gpt-5.6-sol":   "latest frontier agentic coding model",
     "gpt-6-astra":   "our most capable model, built for the hardest end-to-end work",
+    "gpt-6-luna":    "fastest and most affordable for high-volume everyday work",
+    "gpt-6.1-sol":   "near-Astra intelligence for coding and agents at a fraction of the price",
 }
 
 OPENAI_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"]
@@ -6809,17 +7160,24 @@ OPENAI_EFFORT_DESCRIPTIONS_EN = {
 class OptionSlider(QWidget):
     """Обобщённый N-позиционный ползунок (копия EffortSlider, но с
     параметризуемыми levels/colors/labels). Последняя позиция пульсирует
-    свечением, как ultracode/Fable 5 в родных слайдерах."""
+    свечением, как ultracode/Fable 5 в родных слайдерах. Если уровней
+    больше row1_count — остаток уезжает во вторую строку ступенькой,
+    как в ModelSlider (первые row1_count вверху, хвост прижат влево)."""
 
     changed = Signal(str)
 
-    def __init__(self, levels, colors, labels, value=None, parent=None, pulse_last=True):
+    ROW_H = 34
+
+    def __init__(self, levels, colors, labels, value=None, parent=None, pulse_last=True, row1_count=None, ultra_pixels=False):
         super().__init__(parent)
         self._levels = list(levels)
         self._colors = dict(colors)
         self._labels = dict(labels)
         self._pulse_last = pulse_last
-        self.setFixedSize(468, 34)
+        self._ultra_pixels = bool(ultra_pixels)
+        self._row1 = row1_count if (row1_count and len(self._levels) > row1_count) else len(self._levels)
+        rows = 1 + (1 if len(self._levels) > self._row1 else 0)
+        self.setFixedSize(468, self.ROW_H * rows)
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
         if value not in self._levels:
@@ -6827,13 +7185,16 @@ class OptionSlider(QWidget):
         self._level = value
         self._target = float(self._levels.index(value))
         self._progress = self._target
+        self._py, self._px = [float(v) for v in self._grid_pos(self._levels.index(value))]
         self._hover_idx = -1
         self._hover_alpha = {i: 0.0 for i in range(len(self._levels))}
         self._hover_target = {i: 0.0 for i in range(len(self._levels))}
         # Заблокированные уровни: клик по ним игнорируется, текст рисуется
-        # приглушённ  м и не подсвечивается hover'ом.
+        # приглушённым и не подсвечивается hover'ом.
         self._disabled = set()
         self._pulse = 0.0
+        # живые пиксели ultra: (яркость, цель) по клеткам
+        self._ultra_cells = {}
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
@@ -6875,13 +7236,62 @@ class OptionSlider(QWidget):
         self._target = float(self._levels.index(value))
         if not animate:
             self._progress = self._target
+            self._py, self._px = [float(v) for v in self._grid_pos(self._levels.index(value))]
         self.update()
 
     def value(self):
         return self._level
 
+    # ── сетка (как в ModelSlider) ────────────────────────────────
+    def _grid_pos(self, i):
+        """Индекс уровня → (строка, колонка)."""
+        if i < self._row1:
+            return 0, i
+        return 1, i - self._row1
+
+    def _row_count(self, row):
+        """Сколько ячеек в строке."""
+        if row == 0:
+            return min(self._row1, len(self._levels))
+        return max(0, len(self._levels) - self._row1)
+
+    def _nrows(self):
+        return 1 + (1 if len(self._levels) > self._row1 else 0)
+
+    def _row_top(self, row):
+        return row * self.ROW_H
+
+    def _shape(self, inset, radius):
+        """Контур-«ступенька»: широкая верхняя строка + короткая нижняя,
+        слитые в одну фигуру (как в ModelSlider)."""
+        cw = self._cell_width()
+        rh = self.ROW_H
+        top = QRectF(inset, inset, self.width() - inset * 2, rh - inset)
+        path = QPainterPath()
+        path.addRoundedRect(top, radius, radius)
+        if self._nrows() > 1:
+            w2 = self._row_count(1) * cw
+            bottom = QRectF(inset, rh, w2 - inset * 2, rh - inset)
+            sub = QPainterPath()
+            sub.addRoundedRect(bottom, radius, radius)
+            path = path.united(sub)
+            bridge = QPainterPath()
+            bridge.addRect(QRectF(inset, rh - radius, w2 - inset * 2, radius * 2))
+            path = path.united(bridge)
+        return path
+
     def _cell_width(self):
-        return self.width() / len(self._levels)
+        return self.width() / self._row1
+
+    def _idx_from_pos(self, pos):
+        """Индекс ячейки под курсором или -1, если курсор мимо ячеек."""
+        cw = self._cell_width()
+        row = 1 if (self._nrows() > 1 and pos.y() > self.ROW_H) else 0
+        ncols = self._row_count(row)
+        col = int(pos.x() // cw)
+        if col < 0 or col >= ncols:
+            return -1
+        return col if row == 0 else self._row1 + col
 
     def _idx_from_x(self, x):
         cw = self._cell_width()
@@ -6912,6 +7322,16 @@ class OptionSlider(QWidget):
         elif self._progress != self._target:
             self._progress = self._target
             changed = True
+        trow, tcol = self._grid_pos(int(round(self._target)))
+        for attr, tgt in (("_px", float(tcol)), ("_py", float(trow))):
+            cur = getattr(self, attr)
+            d = tgt - cur
+            if abs(d) > 0.004:
+                setattr(self, attr, cur + d * 0.18)
+                changed = True
+            elif cur != tgt:
+                setattr(self, attr, tgt)
+                changed = True
         for i in range(len(self._levels)):
             cur = self._hover_alpha[i]
             tgt = self._hover_target[i]
@@ -6924,13 +7344,15 @@ class OptionSlider(QWidget):
                 changed = True
         self._pulse = (self._pulse + 0.045) % (math.pi * 2)
         if self._pulse_last and (self._level == self._levels[-1]
-                                 or abs(self._progress - (len(self._levels) - 1)) < 0.5):
+                                  or abs(self._progress - (len(self._levels) - 1)) < 0.5):
             changed = True
         if changed:
             self.update()
 
     def mousePressEvent(self, event):
-        idx = self._idx_from_x(event.pos().x())
+        idx = self._idx_from_pos(event.pos())
+        if idx < 0:
+            return
         new_level = self._levels[idx]
         if new_level in self._disabled:
             return
@@ -6938,10 +7360,21 @@ class OptionSlider(QWidget):
             self._level = new_level
             self._target = float(idx)
             self.changed.emit(new_level)
+            # Клик по ultra (только effort-слайдер): одноразовая пиксельная
+            # волна по всему окну выбора — проигрывается до конца и гаснет.
+            if self._ultra_pixels and new_level == self._levels[-1]:
+                try:
+                    win = self.window()
+                    pos = self.mapTo(win, event.pos()) if win is not None else event.pos()
+                    _PixelRippleOverlay(win if win is not None else self, pos,
+                                        self._colors.get(new_level, (170, 110, 255)),
+                                        (14, 14, 14, 14), 16, step=0.022)
+                except Exception:
+                    pass
             self.update()
 
     def mouseMoveEvent(self, event):
-        idx = self._idx_from_x(event.pos().x())
+        idx = self._idx_from_pos(event.pos())
         cur_idx = self._levels.index(self._level)
         for i in range(len(self._levels)):
             allowed = (self._levels[i] not in self._disabled)
@@ -6960,57 +7393,86 @@ class OptionSlider(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         n = len(self._levels)
-        cw = w / n
+        rh = self.ROW_H
+        cw = self._cell_width()
+        nrows = self._nrows()
 
         track_r = 8.0
         pill_r = 6.5
 
+        # ── дорожка: одна цельная фигура-«ступенька» с общей рамкой
         p.setBrush(QColor(28, 28, 33))
         p.setPen(QPen(QColor(60, 60, 65), 1.4))
-        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
+        p.drawPath(self._shape(0.7, track_r))
 
+        # ── разделители ячеек + горизонталь между строками
         p.setPen(QPen(QColor(52, 52, 58), 1.0))
-        for i in range(1, n):
-            x = i * cw
-            p.drawLine(QPointF(x, 4), QPointF(x, h - 4))
+        for row in range(nrows):
+            ncols = self._row_count(row)
+            top = self._row_top(row)
+            for i in range(1, ncols):
+                x = i * cw
+                p.drawLine(QPointF(x, top + 4), QPointF(x, top + rh - 4))
+        if nrows > 1:
+            w2 = self._row_count(1) * cw
+            p.drawLine(QPointF(4, rh), QPointF(w2 - 4, rh))
 
         r, g, b = self._lerp_color(self._progress)
         pad = 3.0
         pill_w = cw - pad * 1.4
-        pill_x = self._progress * cw + (cw - pill_w) / 2.0
+        pill_h = rh - pad * 2
+        pill_x = self._px * cw + (cw - pill_w) / 2.0
+        pill_y = self._py * rh + pad
 
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
-        p.save()
-        p.setClipPath(clip)
+        # Кольца свечения вокруг пилюли. У ultra с пикселями колец нет —
+        # иначе мелькание сверху/снизу спорит с пикселями внутри.
         is_last = self._pulse_last and (self._level == self._levels[-1]
-                                        or self._progress > n - 1.5)
-        pulse_amp = (0.5 + 0.5 * math.sin(self._pulse)) if is_last else 0.0
-        glow_boost = 1.0 + 0.8 * pulse_amp
-        for i in range(1, 4):
-            base_alpha = 48 * (1 - (i - 1) / 3.2) * glow_boost
-            alpha = int(max(0, min(200, base_alpha)))
-            p.setPen(QPen(QColor(r, g, b, alpha), 1))
-            p.setBrush(Qt.NoBrush)
-            ex = i * 1.4
-            p.drawRoundedRect(
-                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
-                pill_r + ex, pill_r + ex
-            )
-        p.restore()
+                                         or self._progress > n - 1.5)
+        ultra_fx = is_last and self._ultra_pixels
+        if ultra_fx:
+            # Сама пилюля чуть темнее — светлые пиксели читаются лучше.
+            r, g, b = int(r * 0.78), int(g * 0.78), int(b * 0.78)
+        if not ultra_fx:
+            p.save()
+            p.setClipPath(self._shape(1.4, track_r - 1))
+            pulse_amp = (0.5 + 0.5 * math.sin(self._pulse)) if is_last else 0.0
+            glow_boost = 1.0 + 0.8 * pulse_amp
+            for i in range(1, 4):
+                base_alpha = 48 * (1 - (i - 1) / 3.2) * glow_boost
+                alpha = int(max(0, min(200, base_alpha)))
+                p.setPen(QPen(QColor(r, g, b, alpha), 1))
+                p.setBrush(Qt.NoBrush)
+                ex = i * 1.4
+                p.drawRoundedRect(
+                    QRectF(pill_x - ex, pill_y - ex, pill_w + ex * 2, pill_h + ex * 2),
+                    pill_r + ex, pill_r + ex
+                )
+            p.restore()
 
-        grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
+        grad = QLinearGradient(QPointF(0, pill_y), QPointF(0, pill_y + pill_h))
         grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
         grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
         p.setBrush(QBrush(grad))
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
+        pill_rect = QRectF(pill_x, pill_y, pill_w, pill_h)
+        p.drawRoundedRect(pill_rect, pill_r, pill_r)
+
+        # ultra (только effort-слайдер): живой пиксельный фон поверх
+        # градиента — как у ultracode в EffortSlider.
+        if ultra_fx:
+            p.save()
+            pp = QPainterPath()
+            pp.addRoundedRect(pill_rect, pill_r, pill_r)
+            p.setClipPath(pp)
+            _paint_ultra_pixels(p, pill_rect, (r, g, b), self._ultra_cells,
+                                dark=False)
+            p.restore()
 
         p.setFont(QFont("Segoe UI", 8, QFont.Bold))
         for i, lvl in enumerate(self._levels):
-            cx = i * cw
-            rect = QRectF(cx, 0, cw, h)
-            dist = abs(self._progress - i)
+            row, col = self._grid_pos(i)
+            rect = QRectF(col * cw, self._row_top(row), cw, rh)
+            dist = math.hypot(self._px - col, self._py - row)
             if lvl in self._disabled:
                 # заблокированный уровень — приглушённый серый, без hover
                 pen = QColor(70, 70, 78)
@@ -7493,7 +7955,7 @@ class OpenAIModelDialog(QDialog):
         row.addStretch()
         self.slider = OptionSlider(
             OPENAI_MODEL_ORDER, OPENAI_MODEL_COLORS, OPENAI_MODEL_LABELS,
-            value=current_model,
+            value=current_model, row1_count=5,
         )
         self.slider.changed.connect(self._on_slider_changed)
         row.addWidget(self.slider)
@@ -7517,7 +7979,7 @@ class OpenAIModelDialog(QDialog):
         eff_row.addStretch()
         self.effort_slider = OptionSlider(
             OPENAI_EFFORT_LEVELS, OPENAI_EFFORT_COLORS, OPENAI_EFFORT_LABELS,
-            value=current_effort,
+            value=current_effort, ultra_pixels=True,
         )
         self.effort_slider.set_disabled_levels(_openai_disabled_efforts(current_model))
         self.effort_slider.changed.connect(self._on_effort_slider_changed)
@@ -8370,6 +8832,7 @@ class _LimitTypeCard(QPushButton):
     плавное свечение по наведению."""
     def __init__(self, title, subtitle, color_rgb, parent=None):
         super().__init__(parent)
+        enable_pixel_ripple(self, lambda b: tuple(b._col))
         self._title = title
         self._subtitle = subtitle
         self._col = color_rgb
@@ -8629,6 +9092,7 @@ class _NumberSpinner(QWidget):
         self.btn_dec.setFont(QFont("Segoe UI", 14, QFont.Bold))
         self.btn_dec.setStyleSheet(self._btn_css())
         self.btn_dec.clicked.connect(lambda: self.set_value(self._value - 1))
+        enable_pixel_ripple(self.btn_dec, (130, 130, 140))
         lay.addWidget(self.btn_dec)
 
         self.num_lbl = QLabel(str(self._value))
@@ -8646,6 +9110,7 @@ class _NumberSpinner(QWidget):
         self.btn_inc.setFont(QFont("Segoe UI", 14, QFont.Bold))
         self.btn_inc.setStyleSheet(self._btn_css())
         self.btn_inc.clicked.connect(lambda: self.set_value(self._value + 1))
+        enable_pixel_ripple(self.btn_inc, (130, 130, 140))
         lay.addWidget(self.btn_inc)
 
     @staticmethod
@@ -8654,7 +9119,6 @@ class _NumberSpinner(QWidget):
             "QPushButton{color: rgb(210,210,215); background: rgb(30,30,35);"
             "border: 1.5px solid rgb(70,70,80); border-radius: 8px;}"
             "QPushButton:hover{background: rgb(46,46,55); border-color: rgb(120,120,130);}"
-            "QPushButton:pressed{background: rgb(22,22,26);}"
         )
 
     def value(self):
@@ -9055,10 +9519,11 @@ class MonthPillSelector(QWidget):
         # Пилюля — вертикальный градиент
         grad = QLinearGradient(QPointF(0, pill_y), QPointF(0, pill_y + pill_h))
         grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
-        grad.setColorAt(1.0, QColor(max(0, r - 12), max(0, g - 12), max(0, b - 12), 240))
+        grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
         p.setBrush(QBrush(grad))
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(QRectF(pill_x, pill_y, pill_w, pill_h), pill_r, pill_r)
+        pill_rect = QRectF(pill_x, pill_y, pill_w, pill_h)
+        p.drawRoundedRect(pill_rect, pill_r, pill_r)
 
         # Названия месяцев
         p.setFont(QFont("Segoe UI", 8, QFont.Bold))
@@ -10113,6 +10578,8 @@ class _CloseButton(QPushButton):
         self.setStyleSheet("QPushButton { background: transparent; border: none; }")
         self._progress = 0.0
         self._is_hovered = False
+        self._pressed = False
+        self._press_t = 0.0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(20)
@@ -10131,6 +10598,27 @@ class _CloseButton(QPushButton):
             self._progress += 0.1 if target > self._progress else -0.1
             self._progress = max(0.0, min(1.0, self._progress))
             self.update()
+        # Плавное затемнение при нажатии (вместо пиксельной волны).
+        pt = 1.0 if self._pressed else 0.0
+        if abs(self._press_t - pt) > 0.01:
+            step = 0.18 if pt > self._press_t else -0.18
+            self._press_t = max(0.0, min(1.0, self._press_t + step))
+            self.update()
+
+    def mousePressEvent(self, event):
+        try:
+            if event.button() == Qt.LeftButton:
+                self._pressed = True
+        except Exception:
+            pass
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        try:
+            self._pressed = False
+        except Exception:
+            pass
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event):
         p = self._progress
@@ -10148,6 +10636,10 @@ class _CloseButton(QPushButton):
         painter.setPen(QColor(txt_alpha, txt_alpha, txt_alpha))
         painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
         painter.drawText(rect, Qt.AlignCenter, "✕")
+        if self._press_t > 0.01:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, int(110 * self._press_t)))
+            painter.drawRoundedRect(rect, 6, 6)
 
 
 class BaseUrlManagerDialog(QDialog):
@@ -11691,6 +12183,7 @@ class GlowDialogButton(QPushButton):
     """
     def __init__(self, text, base_rgb, hover_rgb, parent=None):
         super().__init__(text, parent)
+        enable_pixel_ripple(self, lambda b: tuple(b._hover))
         self._base = base_rgb
         self._hover = hover_rgb
         self._progress = 0.0
@@ -11740,8 +12233,6 @@ class GlowDialogButton(QPushButton):
         b = int(bb + (hb - bb) * p)
         bg_alpha = int(0.15 * 255 + (0.32 - 0.15) * 255 * p)
         border_alpha = int(0.50 * 255 + (0.85 - 0.50) * 255 * p)
-        if self.isDown():
-            bg_alpha = 35
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -13350,29 +13841,43 @@ PAGE_SUBTITLES = {
 
 
 class _AccentDot(QWidget):
-    """Маленький акцентный кружок в шапке страницы (цвет режима)."""
+    """Маленький акцентный кружок в шапке страницы (цвет режима).
+    Тихо дышит: свечение и ядро плавно пульсируют по синусу."""
 
-    def __init__(self, color=(100, 150, 255), size=10, parent=None):
+    def __init__(self, color=(100, 150, 255), size=10, parent=None, period=4.0):
         super().__init__(parent)
         self._color = color
+        self._period = max(0.5, float(period))
+        self._phase = 0.0
         self.setFixedSize(size, size)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(30)
 
     def set_color(self, color):
         self._color = color
         self.update()
 
+    def _tick(self):
+        self._phase = (self._phase + 2.0 * math.pi * 0.03 / self._period) % (2.0 * math.pi)
+        if self.isVisible():
+            self.update()
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r, g, b = self._color
+        breathe = 0.5 + 0.5 * math.sin(self._phase)
         dial = min(self.width(), self.height()) / 2.0
         # Мягкое свечение вокруг ядра
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(r, g, b, 55))
+        p.setBrush(QColor(r, g, b, int(35 + 45 * breathe)))
         p.drawEllipse(QRectF(0, 0, self.width(), self.height()))
+        core = dial * (0.85 + 0.15 * breathe)
+        c = (min(self.width(), self.height()) - core) / 2.0
         p.setBrush(QColor(r, g, b))
-        p.drawEllipse(QRectF(dial / 2.0, dial / 2.0, dial, dial))
+        p.drawEllipse(QRectF(c, c, core, core))
         p.end()
 class _NavItem(QPushButton):
     """Строка навигации в сайдбаре.
@@ -13384,6 +13889,9 @@ class _NavItem(QPushButton):
 
     def __init__(self, mode, title, subtitle, accent, parent=None):
         super().__init__(parent)
+        # Волна строго внутри видимой формы пункта (8, 4, w-14, h-8).
+        enable_pixel_ripple(self, lambda b: tuple(b._accent),
+                            inset=(8, 4, 6, 4), radius=9)
         self.mode_id = mode
         self._title = title
         self._subtitle = subtitle
@@ -14095,20 +14603,27 @@ class _UpdateCard(QFrame):
     def paintEvent(self, event):
         t = self._t
         if self._fresh:
-            idle = (217, 119, 87, 130)
+            idle = (217, 119, 87, 140)
             hot = (238, 142, 102, 210)
-            fill = (32, 25, 22, 190)
+            top = (36, 28, 24, 210)
+            bottom = (26, 22, 20, 210)
         else:
-            idle = (52, 52, 64, 255)
+            # Обычные карточки — тоже терракота, как рамка самого окна,
+            # только спокойнее; ховер разжигает до яркой.
+            idle = (217, 119, 87, 89)
             hot = (200, 110, 70, 235)
-            fill = (24, 24, 30, 175)
+            top = (30, 30, 36, 205)
+            bottom = (22, 22, 28, 205)
         r = int(idle[0] + (hot[0] - idle[0]) * t)
         g = int(idle[1] + (hot[1] - idle[1]) * t)
         b = int(idle[2] + (hot[2] - idle[2]) * t)
         a = int(idle[3] + (hot[3] - idle[3]) * t)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(QColor(*fill))
+        grad = QLinearGradient(0, 0, self.width(), self.height())
+        grad.setColorAt(0.0, QColor(*top))
+        grad.setColorAt(1.0, QColor(*bottom))
+        p.setBrush(grad)
         pen = QPen(QColor(r, g, b, a))
         pen.setWidth(2)
         p.setPen(pen)
@@ -14141,20 +14656,14 @@ class UpdatesDialog(QDialog):
             QFrame#updatesDialogContainer {
                 background-color: qradialgradient(cx:0.5, cy:0, radius:1.3,
                     fx:0.5, fy:0,
-                    stop:0 rgba(119, 63, 39, 70),
-                    stop:0.45 rgba(26, 20, 19, 248),
-                    stop:1 rgba(13, 13, 16, 248));
-                border: 2px solid rgb(186, 98, 60);
+                    stop:0 rgba(95, 50, 31, 70),
+                    stop:0.45 rgba(21, 16, 15, 252),
+                    stop:1 rgba(10, 10, 13, 252));
+                border: 2px solid rgba(217, 119, 87, 0.55);
                 border-radius: 18px;
             }
         """)
         outer.addWidget(container)
-
-        shadow = QGraphicsDropShadowEffect(container)
-        shadow.setColor(QColor(0, 0, 0, 130))
-        shadow.setBlurRadius(36)
-        shadow.setOffset(0, 6)
-        container.setGraphicsEffect(shadow)
 
         inner = QVBoxLayout(container)
         inner.setContentsMargins(20, 8, 20, 16)
@@ -14210,10 +14719,11 @@ class UpdatesDialog(QDialog):
             # высота встанет ровно по контенту.
             scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # Специальная рамка вокруг блоков — как в «Управлении провайдерами»:
-        # рамка у самого скролла, тёмная терракота 2px. В мини-окне её нет.
+        # рамка у самого скролла, терракота 2px по технологии предупреждения.
+        # В мини-окне её нет.
         scroll_frame_css = (
             "border: none;"
-            if single else "border: 2px solid rgb(130, 69, 42);")
+            if single else "border: 2px solid rgba(217, 119, 87, 0.55);")
         scroll.setStyleSheet("""
             QScrollArea#updScroll {
                 background: transparent;
@@ -14223,13 +14733,15 @@ class UpdatesDialog(QDialog):
             QScrollArea#updScroll > QWidget > QWidget { background: transparent; }
             QScrollBar:vertical {
                 background: transparent;
-                width: 4px;
-                margin: 0px;
+                width: 8px;
+                margin: 0px 3px 0px 2px;
             }
             QScrollBar::handle:vertical {
                 background: rgb(170, 90, 55);
-                border-radius: 2px;
+                border: none;
+                border-radius: 3px;
                 min-height: 28px;
+                margin: 10px 0px;
             }
             QScrollBar::handle:vertical:hover {
                 background: rgb(210, 110, 70);
@@ -14409,16 +14921,43 @@ class UpdatesDialog(QDialog):
         lbl = QLabel(text)
         lbl.setObjectName("updPill")
         lbl.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        lbl.setFixedHeight(20)
+        lbl.setAlignment(Qt.AlignCenter)
         lbl.setStyleSheet("""
             QLabel#updPill {
                 color: rgb(255, 214, 195);
                 background-color: rgba(217, 119, 87, 38);
-                border: 1px solid rgba(217, 119, 87, 90);
+                border: 2px solid rgba(217, 119, 87, 90);
                 border-radius: 9px;
                 padding: 2px 8px;
             }
         """)
         return lbl
+
+    def _new_pill(self):
+        """Бейдж «Новое» с пульс-точкой внутри. Живёт 7 дней вместе
+        с бейджем — точка гаснет одновременно с ним."""
+        box = QFrame()
+        box.setObjectName("updPill")
+        box.setAttribute(Qt.WA_StyledBackground, True)
+        box.setFixedHeight(22)
+        box.setStyleSheet("""
+            QFrame#updPill {
+                background-color: rgba(217, 119, 87, 38);
+                border: 2px solid rgba(217, 119, 87, 90);
+                border-radius: 10px;
+            }
+        """)
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(8, 1, 6, 1)
+        lay.setSpacing(5)
+        t = QLabel(tr("Новое").upper())
+        t.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        t.setStyleSheet(
+            "color: rgb(255, 214, 195); background: transparent; border: none;")
+        lay.addWidget(t)
+        lay.addWidget(_AccentDot((217, 119, 87), 9, period=1.6), 0, Qt.AlignVCenter)
+        return box
 
     def _group_title(self, text, green=False):
         lbl = QLabel(text.upper())
@@ -14444,12 +14983,12 @@ class UpdatesDialog(QDialog):
         box.setStyleSheet("""
             QLabel#updFeatIcon {
                 background-color: rgba(217, 119, 87, 30);
-                border: 1px solid rgba(217, 119, 87, 66);
+                border: 2px solid rgba(217, 119, 87, 66);
                 border-radius: 8px;
             }
             QLabel#updFixIcon {
                 background-color: rgba(126, 192, 140, 30);
-                border: 1px solid rgba(126, 192, 140, 76);
+                border: 2px solid rgba(126, 192, 140, 76);
                 border-radius: 8px;
             }
         """)
@@ -14461,11 +15000,13 @@ class UpdatesDialog(QDialog):
             age = _update_age_days(entry.get("dateISO"))
         except Exception:
             age = None
-        # Как на сайте: «новым» считается только самое свежее (первое).
-        fresh7 = (idx == 0 and age is not None and age < 7)
-        fresh24 = (idx == 0 and age is not None and age < 1)
+        # «Новым» считается только самое свежее (первое).
+        # Бейдж «Новое» живёт 72 часа от публикации.
+        # Подсветка карточки по времени не гаснет вообще — она уходит
+        # только когда сверху появляется запись о более новом обновлении.
+        fresh_new = (idx == 0 and age is not None and age < 3)
 
-        card = _UpdateCard(fresh7)
+        card = _UpdateCard(idx == 0)
         lay = QVBoxLayout(card)
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(6)
@@ -14488,7 +15029,7 @@ class UpdatesDialog(QDialog):
         eicon.setStyleSheet("""
             QLabel#updHeadIcon {
                 background-color: rgba(217, 119, 87, 40);
-                border: 1px solid rgba(217, 119, 87, 110);
+                border: 2px solid rgba(217, 119, 87, 110);
                 border-radius: 9px;
             }
         """)
@@ -14504,28 +15045,38 @@ class UpdatesDialog(QDialog):
         h.setStyleSheet(
             "color: rgb(236, 236, 241); background: transparent; border: none;")
         h.setWordWrap(True)
-        trow.addWidget(h)
+        trow.addWidget(h, 1)
+        # Пилюли — компактно в правом верхнем углу карточки.
+        # Размер от заголовка не зависит.
+        pills = QHBoxLayout()
+        pills.setContentsMargins(0, 0, 0, 0)
+        pills.setSpacing(6)
         if entry.get("version"):
-            trow.addWidget(self._pill("v" + str(entry.get("version"))))
-        if fresh7:
-            trow.addWidget(self._pill(tr("Новое").upper()))
-        trow.addStretch(1)
+            pills.addWidget(self._pill("v" + str(entry.get("version"))))
+        trow.addLayout(pills)
+        trow.setAlignment(pills, Qt.AlignTop)
         tcol.addLayout(trow)
-        # Дата: пульс-точка у записей моложе суток + локальное время
+        # Дата: бейдж даты, затем «Новое» с точкой внутри (7 дней).
+        # Справа — пустота.
         drow = QHBoxLayout()
         drow.setContentsMargins(0, 0, 0, 0)
         drow.setSpacing(6)
-        if fresh24:
-            dot = QLabel("\u25cf")
-            dot.setFont(QFont("Segoe UI", 8))
-            dot.setStyleSheet(
-                "color: rgb(217, 119, 87); background: transparent; border: none;")
-            drow.addWidget(dot)
         d = QLabel(update_display_time(entry.get("dateISO")))
-        d.setFont(QFont("Segoe UI", 8))
-        d.setStyleSheet(
-            "color: rgb(106, 109, 120); background: transparent; border: none;")
+        d.setObjectName("updDate")
+        d.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        d.setAlignment(Qt.AlignCenter)
+        d.setStyleSheet("""
+            QLabel#updDate {
+                color: rgb(255, 214, 195);
+                background-color: rgba(217, 119, 87, 38);
+                border: 2px solid rgba(217, 119, 87, 90);
+                border-radius: 9px;
+                padding: 2px 8px;
+            }
+        """)
         drow.addWidget(d)
+        if fresh_new:
+            drow.addWidget(self._new_pill())
         drow.addStretch(1)
         tcol.addLayout(drow)
         hrow.addLayout(tcol, 1)
@@ -14542,7 +15093,7 @@ class UpdatesDialog(QDialog):
                 row.setSpacing(10)
                 row.addWidget(self._icon_box(f.get("icon")))
                 t = QLabel(str(f.get("text") or ""))
-                t.setFont(QFont("Segoe UI", 9))
+                t.setFont(QFont("Segoe UI", 10))
                 t.setStyleSheet(
                     "color: rgb(198, 198, 207); background: transparent; border: none;")
                 t.setWordWrap(True)
@@ -14551,14 +15102,14 @@ class UpdatesDialog(QDialog):
 
         fixes = loc.get("fixes") or []
         if fixes:
-            lay.addWidget(self._group_title(tr("Прочие улучшения"), green=True))
+            lay.addWidget(self._group_title(tr("Прочие исправления"), green=True))
             for text in fixes:
                 row = QHBoxLayout()
                 row.setContentsMargins(0, 0, 0, 0)
                 row.setSpacing(10)
                 row.addWidget(self._icon_box("Check", green=True))
                 t = QLabel(str(text))
-                t.setFont(QFont("Segoe UI", 9))
+                t.setFont(QFont("Segoe UI", 10))
                 t.setStyleSheet(
                     "color: rgb(198, 198, 207); background: transparent; border: none;")
                 t.setWordWrap(True)
@@ -14574,9 +15125,11 @@ class UpdatesDialog(QDialog):
             box.setAttribute(Qt.WA_StyledBackground, True)
             box.setStyleSheet("""
                 QFrame#updNote {
-                    background-color: rgba(110, 180, 135, 20);
-                    border: 1px dashed rgba(110, 180, 135, 89);
-                    border-radius: 8px;
+                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 rgba(52, 110, 80, 40),
+                        stop:1 rgba(40, 90, 66, 40));
+                    border: 2px solid rgba(110, 180, 135, 0.4);
+                    border-radius: 12px;
                 }
             """)
             nlay = QVBoxLayout(box)
@@ -14789,7 +15342,7 @@ class PageHeader(QFrame):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(9)
 
-        self.dot = _AccentDot(mode_accent(mode), 10, self)
+        self.dot = _AccentDot(mode_accent(mode), 8, self)
         row.addWidget(self.dot, 0, Qt.AlignVCenter)
 
         self.title_label = QLabel()
@@ -14829,6 +15382,8 @@ class ClaudeManager(QMainWindow):
     codex_install_finished = Signal(object)  # context dict (install/update/uninstall)
     oc_version_checked = Signal(str, str)  # local_version, latest_version (opencode)
     oc_install_finished = Signal(object)  # context dict (install/update/uninstall opencode)
+    claude_ver_ready = Signal(str)  # версия claude из фонового потока для запуска
+    oc_models_ready = Signal(dict)  # модели opencode из фонового потока для запуска
 
     def __init__(self):
         super().__init__()
@@ -14867,6 +15422,9 @@ class ClaudeManager(QMainWindow):
 
         # Подключаем сигналы к слотам
         self.update_available.connect(self._show_update_notification)
+        self.claude_ver_ready.connect(self._on_claude_ver_ready)
+        self.oc_models_ready.connect(self._on_oc_models_ready)
+        self._launch_busy = False
 
         # ══ Оболочка: сайдбар + контентная колонка ═══
         # Фон-узоры — ОДИН на всё окно (как в оригинале): их рисует сам root
@@ -17517,17 +18075,83 @@ class ClaudeManager(QMainWindow):
             return
         # Жёсткая проверка: установленная версия не должна быть выше REQUIRED_CLAUDE_VERSION.
         # Пропускаем её, если включены официальные обновления — там версия выше пина ожидаема.
+        # Без блокирующего subprocess: сначала кэш фонового опроса, тяжёлый
+        # вызов — только в рабочем потоке, продолжение — по сигналу.
         if not self.settings.get("auto_update_enabled", False):
-            local = self._get_installed_claude_version() or getattr(self, "_claude_local_version", "")
+            local = getattr(self, "_claude_local_version", "") or ""
+            if local:
+                if self._claude_version_blocked(local):
+                    return
+                self._launch_claude_after_version()
+                return
+            # Кэш пуст (холодный старт) — версию добудем в фоне.
+            # Кнопку лочим от даблклика, GUI не виснет.
+            if getattr(self, "_launch_busy", False):
+                return
+            self._launch_busy = True
+            try:
+                self.btn_claude.setEnabled(False)
+            except Exception:
+                pass
+            self.log(tr("Проверяю версию Claude Code..."), "info")
+            threading.Thread(target=self._fetch_claude_version_bg,
+                             daemon=True).start()
+            return
+
+        self._launch_claude_after_version()
+        return
+
+    def _claude_version_blocked(self, local):
+        """True — версия выше пина: показан диалог-блокировка (GUI-поток)."""
+        try:
+            cmp = compare_versions(local, REQUIRED_CLAUDE_VERSION)
+        except Exception:
+            cmp = 0
+        if cmp > 0:
+            try:
+                self._show_version_block_dialog(local)
+            except Exception:
+                pass
+            return True
+        return False
+
+    def _fetch_claude_version_bg(self):
+        """Тяжёлый `claude --version` в рабочем потоке (до 5с)."""
+        try:
+            ver = self._get_installed_claude_version() or ""
+        except Exception:
+            ver = ""
+        try:
+            self.claude_ver_ready.emit(ver)
+        except Exception:
+            pass
+
+    def _on_claude_ver_ready(self, ver):
+        """Продолжение запуска после фоновой проверки версии (GUI-поток)."""
+        try:
+            self._launch_busy = False
+            try:
+                self.btn_claude.setEnabled(True)
+            except Exception:
+                pass
+            local = ver or getattr(self, "_claude_local_version", "") or ""
             if local:
                 try:
-                    cmp = compare_versions(local, REQUIRED_CLAUDE_VERSION)
+                    self._claude_local_version = local
                 except Exception:
-                    cmp = 0
-                if cmp > 0:
-                    self._show_version_block_dialog(local)
+                    pass
+                if self._claude_version_blocked(local):
                     return
+            self._launch_claude_after_version()
+        except Exception as e:
+            try:
+                self.log(tr("Ошибка запуска: {}").format(e), "error")
+            except Exception:
+                pass
 
+    def _launch_claude_after_version(self):
+        """Продолжение запуска после проверки версии (GUI-поток, быстро:
+        настройки, env, спавн — без subprocess и сети)."""
         model = self.settings.get("custom_model", "")
 
         # Рабочая директория
@@ -18689,6 +19313,77 @@ class ClaudeManager(QMainWindow):
         except Exception:
             return None
 
+    def _fetch_oc_models_bg(self, base_url, api_key, working_dir, env):
+        """Сетевой /v1/models в рабочем потоке (до 2×10с). Запись конфига
+        и спавн — в GUI по сигналу (там логи и QMessageBox-безопасность)."""
+        try:
+            model_ids = self._oc_fetch_models(base_url, api_key)
+        except Exception:
+            model_ids = []
+        try:
+            self.oc_models_ready.emit({
+                "working_dir": working_dir,
+                "env": env if isinstance(env, dict) else {},
+                "model_ids": model_ids or [],
+                "base_url": base_url,
+            })
+        except Exception:
+            pass
+
+    def _on_oc_models_ready(self, payload):
+        """Продолжение запуска opencode (GUI-поток): конфиг, env, спавн."""
+        try:
+            self._launch_busy = False
+            try:
+                self.btn_claude.setEnabled(True)
+            except Exception:
+                pass
+            if not isinstance(payload, dict):
+                return
+            working_dir = payload.get("working_dir") or ""
+            env = payload.get("env") or os.environ.copy()
+            base_url = payload.get("base_url") or ""
+            try:
+                api_key = self.settings.get("oc_api_key", "")
+            except Exception:
+                api_key = ""
+            model_ids = payload.get("model_ids") or []
+            try:
+                cfg_path = self._write_oc_provider_config(
+                    base_url, api_key, model_ids)
+            except Exception:
+                cfg_path = ""
+            if cfg_path:
+                env["OPENCODE_CONFIG"] = cfg_path
+                env.pop("OPENAI_BASE_URL", None)
+                env.pop("OPENAI_API_KEY", None)
+                if model_ids:
+                    self.log(tr("Обнаружено моделей на {}: {}").format(
+                        base_url, len(model_ids)), "info")
+                else:
+                    self.log("Не удалось получить /models — модели будут пустые",
+                             "warning")
+            else:
+                self.log("Не удалось записать конфиг провайдера", "warning")
+            if not working_dir:
+                return
+            self._spawn_opencode_session(working_dir, env)
+        except Exception as e:
+            try:
+                self.log(tr("Ошибка запуска: {}").format(e), "error")
+            except Exception:
+                pass
+
+    def _spawn_opencode_session(self, working_dir, env):
+        """Спавн opencode (GUI-поток, быстро: только Popen)."""
+        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+        launch_cmd = "opencode"
+        try:
+            spawn_powershell_session(working_dir, f"{ps_prefix}{launch_cmd}", env=env)
+            self.log(tr("opencode запущен"), "success")
+        except Exception as e:
+            self.log(tr("Ошибка запуска: {}").format(e), "error")
+
     def launch_opencode(self):
         """Запускает opencode CLI (вкладка Custom URL).
 
@@ -18736,30 +19431,27 @@ class ClaudeManager(QMainWindow):
             if api_key:
                 env["ANTHROPIC_API_KEY"] = api_key
         elif base_url:
-            model_ids = self._oc_fetch_models(base_url, api_key)
-            cfg_path = self._write_oc_provider_config(base_url, api_key, model_ids)
-            if cfg_path:
-                env["OPENCODE_CONFIG"] = cfg_path
-                env.pop("OPENAI_BASE_URL", None)
-                env.pop("OPENAI_API_KEY", None)
-                if model_ids:
-                    self.log(tr("Обнаружено моделей на {}: {}").format(base_url, len(model_ids)), "info")
-                else:
-                    self.log("Не удалось получить /models — модели будут пустые", "warning")
-            else:
-                self.log("Не удалось записать конфиг провайдера", "warning")
+            # Сетевой фетч моделей (до 2×10с) — только в рабочем потоке.
+            # Кнопку лочим от даблклика, GUI не виснет.
+            if getattr(self, "_launch_busy", False):
+                return
+            self._launch_busy = True
+            try:
+                self.btn_claude.setEnabled(False)
+            except Exception:
+                pass
+            self.log(tr("Готовлю запуск opencode..."), "info")
+            threading.Thread(
+                target=self._fetch_oc_models_bg,
+                args=(base_url, api_key, working_dir, dict(env)),
+                daemon=True).start()
+            return
         elif api_key:
             env["ANTHROPIC_API_KEY"] = api_key
 
-        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
-        launch_cmd = "opencode"
         # Модель НЕ форсируем: открывается модель, которую пользователь выбрал
         # внутри opencode в прошлой сессии. Приложение не перезаписывает её.
-        try:
-            spawn_powershell_session(working_dir, f"{ps_prefix}{launch_cmd}", env=env)
-            self.log(tr("opencode запущен"), "success")
-        except Exception as e:
-            self.log(tr("Ошибка запуска: {}").format(e), "error")
+        self._spawn_opencode_session(working_dir, env)
 
     def _statusline_bash_command(self):
         """Возвращает строку для поля statusLine.command в settings.json.
@@ -19701,8 +20393,11 @@ class ClaudeManager(QMainWindow):
         installed = self._is_claude_installed()
         local = getattr(self, "_claude_local_version", "")
 
-        # Получаем последнюю доступную версию из npm registry
-        latest_available = check_claude_code_latest_version() or tr("последняя")
+        # Версия — из кэша фонового опроса (как у Codex): синхронный запрос
+        # в npm registry вешал GUI на секунды прямо в анимацию нажатия.
+        # Фон и так освежает _claude_latest_version, при пустом кэше —
+        # «последняя», как и было задумано фолбэком ниже.
+        latest_available = getattr(self, "_claude_latest_version", "") or tr("последняя")
 
         message = tr(
             "Скачает и поставит последнюю версию Claude Code через npm "

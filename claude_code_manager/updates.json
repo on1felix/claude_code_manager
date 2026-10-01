@@ -2,6 +2,38 @@
   "comment": "История обновлений Claude Code Manager. Показывается в окне «Обновления» (кнопка-«!» у названия программы). Новую запись добавлять СВЕРХУ (самая свежая — первая): поля id (уникальный, латиница), version (версия приложения с этим обновлением), dateISO (UTC-момент выхода, суффикс Z), icon (имя иконки), ru/en (title, features[{icon,text}], fixes[text], note{title,points} — необязательные блоки можно опускать). Иконки: Sparkles, Cpu, KeyRound, Columns2, Palette, Maximize2, Terminal, RefreshCw, Languages, Check, Network, Bot, Download, PlugZap, Wallet, SlidersHorizontal, Globe.",
   "updates": [
     {
+      "id": "gpt6-luna-61sol",
+      "version": "5.9.7",
+      "dateISO": "2026-10-01T18:12:51Z",
+      "icon": "Sparkles",
+      "ru": {
+        "title": "Новые модели — GPT-6 Luna и GPT-6.1 Sol",
+        "features": [
+          { "icon": "Cpu", "text": "GPT-6 Luna во вкладке OpenAI — самая быстрая и доступная модель: контекст 1.05M, цены $0.10/$0.50 за млн токенов" },
+          { "icon": "Cpu", "text": "GPT-6.1 Sol во вкладке OpenAI — почти уровень Astra для кода и агентов: $2/$10 за млн токенов, в разы дешевле Astra" },
+          { "icon": "Sparkles", "text": "Новый эффект кнопок — пиксельная волна цветом рамки расходится от курсора при нажатии" },
+          { "icon": "Sparkles", "text": "Живые пиксели на ultra и ultracode — квадратики случайно вспыхивают в пилюле effort и в блоке вкладки, затем плавно гаснут, а при переключении на ultra/ultracode по всему окну проходит пиксельная волна" }
+        ],
+        "fixes": [
+          "Окно больше не зависает при запуске Claude и opencode — версии и модели подгружаются в фоне",
+          "Кнопка обновления Claude Code теперь сначала проверяет последнюю версию — установка стартует мгновенно"
+        ]
+      },
+      "en": {
+        "title": "New models — GPT-6 Luna and GPT-6.1 Sol",
+        "features": [
+          { "icon": "Cpu", "text": "GPT-6 Luna in the OpenAI tab — the fastest and most affordable model: 1.05M context, $0.10/$0.50 per million tokens" },
+          { "icon": "Cpu", "text": "GPT-6.1 Sol in the OpenAI tab — near-Astra intelligence for coding and agents: $2/$10 per million tokens, far cheaper than Astra" },
+          { "icon": "Sparkles", "text": "New button effect — a pixel ripple in the border color spreads from your cursor on press" },
+          { "icon": "Sparkles", "text": "Living pixels on ultra and ultracode — squares randomly light up inside the effort pill and the tab block, then gently fade, and switching to ultra/ultracode sends a pixel wave across the whole window" }
+        ],
+        "fixes": [
+          "The window no longer freezes when launching Claude or opencode — versions and models load in the background",
+          "The Claude Code update button now checks the latest version first — installation starts instantly"
+        ]
+      }
+    },
+    {
       "id": "sonnet-55",
       "version": "5.9.6",
       "dateISO": "2026-09-30T05:34:09Z",
@@ -9,15 +41,13 @@
       "ru": {
         "title": "Новая модель — Sonnet 5.5",
         "features": [
-          { "icon": "Cpu", "text": "Sonnet 5.5 во вкладках Claude и Anthropic — сразу после Sonnet 5, чуть краснее в шкале: 1M-контекст и все уровни effort, включая ultracode" },
-          { "icon": "PlugZap", "text": "На 30% быстрее Sonnet 5 и до 30% дешевле за задачу при той же цене токенов" }
+          { "icon": "Cpu", "text": "Sonnet 5.5 во вкладках Claude и Anthropic — сразу после Sonnet 5, чуть краснее в шкале: 1M-контекст, все уровни effort включая ultracode, на 30% быстрее и до 30% дешевле за задачу" }
         ]
       },
       "en": {
         "title": "New model — Sonnet 5.5",
         "features": [
-          { "icon": "Cpu", "text": "Sonnet 5.5 in the Claude and Anthropic tabs — right after Sonnet 5, a touch redder on the scale: 1M context and every effort level, ultracode included" },
-          { "icon": "PlugZap", "text": "30% faster than Sonnet 5 and up to 30% cheaper per task at the same token price" }
+          { "icon": "Cpu", "text": "Sonnet 5.5 in the Claude and Anthropic tabs — right after Sonnet 5, a touch redder on the scale: 1M context, every effort level including ultracode, 30% faster and up to 30% cheaper per task" }
         ]
       }
     },
