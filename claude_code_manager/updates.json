@@ -2,6 +2,32 @@
   "comment": "История обновлений Claude Code Manager. Показывается в окне «Обновления» (кнопка-«!» у названия программы). Новую запись добавлять СВЕРХУ (самая свежая — первая): поля id (уникальный, латиница), version (версия приложения с этим обновлением), dateISO (UTC-момент выхода, суффикс Z), icon (имя иконки), ru/en (title, features[{icon,text}], fixes[text], note{title,points} — необязательные блоки можно опускать). Иконки: Sparkles, Cpu, KeyRound, Columns2, Palette, Maximize2, Terminal, RefreshCw, Languages, Check, Network, Bot, Download, PlugZap, Wallet, SlidersHorizontal, Globe.",
   "updates": [
     {
+      "id": "baseurl-cards-fable-ultra",
+      "version": "5.9.8",
+      "dateISO": "2026-10-03T05:57:09Z",
+      "icon": "Network",
+      "ru": {
+        "title": "Обновлённый дизайн окна Base URL",
+        "features": [
+          { "icon": "Network", "text": "Переделан дизайн Base URL — теперь стало ещё легче и понятнее: эндпоинты карточками в два ряда, выбор — кликом" },
+          { "icon": "Check", "text": "Добавление и удаление эндпоинтов — там же, в одном окне, а изменения сохраняются при любом закрытии" }
+        ],
+        "fixes": [
+          "Окно Base URL могло закрыться и не сохранить изменения — теперь выбор применяется всегда"
+        ]
+      },
+      "en": {
+        "title": "Redesigned Base URL window",
+        "features": [
+          { "icon": "Network", "text": "Base URL design reworked — simpler and clearer now: endpoints as two-row cards, click to pick" },
+          { "icon": "Check", "text": "Add and remove endpoints in the same window, changes apply on any close" }
+        ],
+        "fixes": [
+          "The Base URL window could close without saving — the choice now always applies"
+        ]
+      }
+    },
+    {
       "id": "gpt6-luna-61sol",
       "version": "5.9.7",
       "dateISO": "2026-10-01T18:12:51Z",

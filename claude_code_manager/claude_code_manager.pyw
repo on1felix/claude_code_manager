@@ -21,14 +21,14 @@ from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                               QHBoxLayout, QLabel, QPushButton, QFrame,
+                               QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
                                QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize, QEvent
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics, QIntValidator, QCursor
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics, QIntValidator, QCursor, QGuiApplication, QHelpEvent
 from PySide6.QtCore import QPointF, QRectF, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.9.7"  # Для обновлений
+APP_VERSION = "5.9.8"  # Для обновлений
 REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -971,7 +971,7 @@ TRANSLATIONS = {
     "Модели провайдера": "Provider Models",
     "Модели не найдены": "No models found",
     "Как изменить модель": "How to change the model",
-    "В терминале opencode введите /model и выберите нужную вам модель из списка.\n\nСписок ниже обновляется автоматически при каждом открытии этого окна — если моделей добавили или убрали, здесь это отразится само.": "In the opencode terminal type /model and pick the model you need from the list.\n\nThe list below refreshes automatically every time you open this window — if models were added or removed, it will be reflected here on its own.",
+    "В терминале opencode введите /model и выберите нужную вам модель из списка.\n\nСписок обновляется автоматически при каждом открытии этого окна — если моделей добавили или убрали, здесь это отразится само.": "In the opencode terminal type /model and pick the model you need from the list.\n\nThe list refreshes automatically every time you open this window — if models were added or removed, it will be reflected here on its own.",
     "Какие модели доступны": "What models are available",
     "Модели:": "Models:",
     "моделей": "models",
@@ -1039,6 +1039,11 @@ TRANSLATIONS = {
     "Управление Base URL": "Manage Base URL",
     "Добавьте или удалите URL из списка": "Add or remove URL from the list",
     "Добавить новый URL:": "Add new URL:",
+    "Клик — выбрать URL.": "Click — pick a URL.",
+    "URL пока нет — добавьте первый ниже": "No URLs yet — add the first one below",
+    "Не задан — откройте «Управление»": "Not set — open “Manage”",
+    "Активен": "Active",
+    "Базовый": "Default",
     "Управление API ключами": "Manage API keys",
     "Зелёный — активен. Жёлтый — 5-часовой лимит. Красный — 7-дневный лимит.": "Green — active. Yellow — 5-hour limit. Red — 7-day limit.",
     "Клик — выбрать ключ. Зажать и тянуть — поменять порядок.": "Click — pick a key. Hold and drag — reorder.",
@@ -3560,7 +3565,8 @@ class EffortPickerComboBox(PickerComboBox):
         self._accent_full = False
         self._px_timer = QTimer(self)
         self._px_timer.timeout.connect(self._tick_px)
-        self._px_timer.start(40)
+        # Тот же темп, что у пилюли слайдера (16мс), — частота вспышек как в пилюле.
+        self._px_timer.start(16)
         # Комбо на главной странице — display-only. Effort меняется теперь
         # внутри ModelDialog через встроенный EffortSlider, поэтому клик по
         # самому комбо ничего не открывает: убираем указатель, отключаем
@@ -3606,15 +3612,15 @@ class EffortPickerComboBox(PickerComboBox):
                 elif isinstance(ac, (tuple, list)) and len(ac) >= 3:
                     base = (int(ac[0]), int(ac[1]), int(ac[2]))
                 else:
-                    base = (170, 110, 255)
+                    base = (167, 139, 252)
                 inner = QRectF(self.rect().adjusted(3, 3, -3, -3))
                 painter.save()
                 pp = QPainterPath()
                 pp.addRoundedRect(inner, 6, 6)
                 painter.setClipPath(pp)
-                # На большом блоке анимация быстрее и гуще, чем в пилюле.
+                # Как в пилюле: те же частота зажигания и динамика.
                 _paint_ultra_pixels(painter, inner, base, self._ultra_cells,
-                                    dark=False, ignite_p=0.35)
+                                    dark=False)
                 painter.restore()
             except Exception:
                 try:
@@ -5085,7 +5091,7 @@ class AnimatedProgressBar(QWidget):
                 shimmer_width = progress_width * 0.3
 
                 gradient = QLinearGradient(shimmer_pos - shimmer_width/2, 0,
-                                          shimmer_pos + shimmer_width/2, 0)
+                                           shimmer_pos + shimmer_width/2, 0)
 
                 # Прозрачный -> белый -> прозрачный
                 gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
@@ -5956,7 +5962,7 @@ EFFORT_COLORS = {
     "high":      (235, 180, 110),  # оранжевый
     "xhigh":     (235, 120, 100),  # красновато-оранжевый
     "max":       (220, 70, 85),    # насыщенно-красный — потолок «чистого» reasoning
-    "ultracode": (170, 110, 255),  # фиолетовый — max + оркестрация
+    "ultracode": (167, 139, 252),  # фиолетовый — max + оркестрация
 }
 
 EFFORT_LABELS = {
@@ -5987,7 +5993,7 @@ def _tick_ultra_cells(cells, cols, rows, ignite_p=0.20):
 
 
 def _paint_ultra_pixels(p, rect, base_color, cells, cell=5.0, dark=True,
-                        ignite_p=0.20):
+                        ignite_p=0.32):
     """Живой пиксельный фон: весь фон в мелких квадратиках, отдельные
     случайно вспыхивают и плавно гаснут. dark=True — вспышки тёмные
     (для залитой пилюли), dark=False — светлые (для тёмного фона комбо)."""
@@ -6013,9 +6019,9 @@ def _paint_ultra_pixels(p, rect, base_color, cells, cell=5.0, dark=True,
                 p.setBrush(QColor(max(0, r - dk), max(0, g - dk),
                                   max(0, b - dk), a))
             else:
-                a = int(200 * bright)
-                boost = int(50 * bright)
-                p.setBrush(QColor(min(255, r + boost), min(255, g + int(35 * bright)),
+                a = int(255 * bright)
+                boost = int(90 * bright)
+                p.setBrush(QColor(min(255, r + boost), min(255, g + int(60 * bright)),
                                   min(255, b + boost), a))
             p.drawRect(QRectF(rect.x() + ix * cw, rect.y() + iy * ch,
                               cw - 0.6, ch - 0.6))
@@ -6218,9 +6224,6 @@ class EffortSlider(QWidget):
         # У ultracode колец нет — там живые пиксели внутри пилюли, иначе
         # мелькание сверху/снизу спорит с ними.
         is_ultra = self._level == "ultracode" or (self._progress > n - 1.5)
-        if is_ultra:
-            # Сама пилюля чуть темнее — светлые пиксели читаются лучше.
-            r, g, b = int(r * 0.78), int(g * 0.78), int(b * 0.78)
         if not is_ultra:
             clip = QPainterPath()
             clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
@@ -7127,7 +7130,7 @@ OPENAI_EFFORT_COLORS = {
     "high":   (235, 180, 110),
     "xhigh":  (235, 120, 100),
     "max":    (220, 70, 85),
-    "ultra":  (170, 110, 255),
+    "ultra":  (167, 139, 252),
 }
 
 OPENAI_EFFORT_LABELS = {
@@ -7367,7 +7370,7 @@ class OptionSlider(QWidget):
                     win = self.window()
                     pos = self.mapTo(win, event.pos()) if win is not None else event.pos()
                     _PixelRippleOverlay(win if win is not None else self, pos,
-                                        self._colors.get(new_level, (170, 110, 255)),
+                                        self._colors.get(new_level, (167, 139, 252)),
                                         (14, 14, 14, 14), 16, step=0.022)
                 except Exception:
                     pass
@@ -7429,9 +7432,6 @@ class OptionSlider(QWidget):
         is_last = self._pulse_last and (self._level == self._levels[-1]
                                          or self._progress > n - 1.5)
         ultra_fx = is_last and self._ultra_pixels
-        if ultra_fx:
-            # Сама пилюля чуть темнее — светлые пиксели читаются лучше.
-            r, g, b = int(r * 0.78), int(g * 0.78), int(b * 0.78)
         if not ultra_fx:
             p.save()
             p.setClipPath(self._shape(1.4, track_r - 1))
@@ -7826,7 +7826,7 @@ class OcModelDialog(QDialog):
         text = QLabel(
             tr("В терминале opencode введите /model и выберите нужную вам модель "
                "из списка.\n\n"
-               "Список ниже обновляется автоматически при каждом открытии этого "
+               "Список обновляется автоматически при каждом открытии этого "
                "окна — если моделей добавили или убрали, здесь это отразится "
                "само.")
         )
@@ -10642,15 +10642,138 @@ class _CloseButton(QPushButton):
             painter.drawRoundedRect(rect, 6, 6)
 
 
+class _UrlCard(QFrame):
+    """Карточка Base URL в менеджере (стиль менеджера ключей): клик —
+    выбрать URL, крестик — удалить. Выбранная плавно «загорается» зелёным
+    (флэш + интерполяция, как у KeyCard), у базовых (DEFAULT_URLS) крестика
+    нет — только пометка «Базовый»."""
+
+    clicked = Signal()
+
+    def __init__(self, url, selected=False, is_default=False,
+                 on_delete=None, parent=None):
+        super().__init__(parent)
+        self._url = url
+        self._is_default = bool(is_default)
+        self._on_delete = on_delete
+        self.setObjectName("urlCard")
+        self.setCursor(Qt.PointingHandCursor)
+        # Рамку и свечение рисуем сами в paintEvent (как KeyCard) —
+        # stylesheet только гасит дефолтный фон.
+        self.setStyleSheet(
+            "QFrame#urlCard { background: transparent; border: none; }")
+        self._sel = 1.0 if selected else 0.0
+        self._sel_target = 1.0 if selected else 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(22, 6, 8, 6)
+        row.setSpacing(8)
+        self.url_lbl = _ElidingLabel(url, Qt.ElideMiddle)
+        self.url_lbl.setFont(QFont("Consolas", 9))
+        self.url_lbl.setStyleSheet(
+            "color: #ececf1; background: transparent; border: none;")
+        # Как имя в KeyCard: естественная ширина не влияет на раскладку.
+        self.url_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.url_lbl.setToolTip(url)  # полный адрес по наведению
+        row.addWidget(self.url_lbl, 1)
+        self.badge = QLabel()
+        self.badge.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        if self._is_default:
+            self.badge.setText(tr("Базовый"))
+            self.badge.setStyleSheet(
+                "color: rgb(150,150,158); background: rgba(120,120,130,0.10); "
+                "border: 1px solid rgba(120,120,130,0.35); border-radius: 6px; "
+                "padding: 2px 8px;")
+        else:
+            self.badge.hide()
+        row.addWidget(self.badge)
+        self.del_btn = None
+        if not self._is_default:
+            # Крестик — тот же _CloseButton, что на карточках ключей.
+            self.del_btn = _CloseButton()
+            self.del_btn.clicked.connect(self._ask_delete)
+            row.addWidget(self.del_btn, 0, Qt.AlignVCenter)
+
+    def _ask_delete(self):
+        if callable(self._on_delete):
+            self._on_delete(self._url)
+
+    def set_selected(self, selected):
+        # Как у KeyCard: только целевое состояние, сама анимация — в _tick.
+        # Без флэша glow (он у ключей только на смене цветового состояния,
+        # а не на выборе) — иначе карточка «тускнеет» после открытия.
+        self._sel_target = 1.0 if bool(selected) else 0.0
+
+    def _tick(self):
+        d = self._sel_target - self._sel
+        if abs(d) > 0.004:
+            self._sel += d * 0.15
+            self.update()
+        elif self._sel != self._sel_target:
+            self._sel = self._sel_target
+            self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        sel = self._sel
+        rect = QRectF(1.5, 1.5, w - 3, h - 3)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(24, 24, 31))
+        p.drawRoundedRect(rect, 10, 10)
+        # Зелёная подложка — только с выбором (в покое чистый серый).
+        tint_a = int(26 * sel)
+        p.setBrush(QColor(52, 211, 153, min(255, tint_a)))
+        p.drawRoundedRect(rect, 10, 10)
+        # Рамка: серая в покое, зелёная и толще при выборе
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(
+            QColor(int(60 + (52 - 60) * sel), int(60 + (211 - 60) * sel),
+                   int(65 + (153 - 65) * sel)),
+            2.0 + 1.2 * sel
+        ))
+        p.drawRoundedRect(rect, 10, 10)
+        # Индикатор выбора — точка слева вверху, как у ключей
+        if sel > 0.02:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(52, 211, 153, int(255 * min(1.0, sel))))
+            p.drawEllipse(QPointF(11.5, 9.5), 3.2, 3.2)
+        p.end()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
 class BaseUrlManagerDialog(QDialog):
+    """Окно управления Base URL в стиле менеджера ключей: компактное (700),
+    карточки в 2 колонки (клик — выбрать), добавление нового адреса.
+    Изменения применяются при закрытии окна — как бы оно ни закрылось
+    (ОК, крестик, Escape): вызывающий код читает get_result() после exec()."""
+
     DEFAULT_URLS = ("https://cc.freemodel.dev",)
+
+    CARD_H = 46
+    CARD_W = 307
+    GAP = 8
+    COL_GAP = 14
+    COLS = 2
+    VISIBLE_ROWS = 4
+    WIDTH = 700
 
     def __init__(self, urls, current, parent=None, default_urls=None):
         super().__init__(parent)
         if default_urls is not None:
             self.DEFAULT_URLS = tuple(default_urls)
         self.urls = list(urls)
-        self.current = current
+        # Выбор живёт в диалоге (как у ключей): клик по карточке. Если
+        # переданного current нет в списке — стартуем с первого URL.
+        self._selected = (current if current in self.urls
+                          else (self.urls[0] if self.urls else ""))
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
@@ -10660,6 +10783,7 @@ class BaseUrlManagerDialog(QDialog):
 
         container = DottedFrame()
         container.setObjectName("baseUrlManagerContainer")
+        self._container = container
         container.setStyleSheet("""
             QFrame#baseUrlManagerContainer {
                 background-color: rgb(20, 20, 25);
@@ -10693,27 +10817,55 @@ class BaseUrlManagerDialog(QDialog):
         title_row.addWidget(self.btn_close)
         layout.addLayout(title_row)
 
-        info = QLabel(tr("Добавьте или удалите URL из списка"))
-        info.setFont(QFont("Segoe UI", 9))
-        info.setAlignment(Qt.AlignCenter)
-        info.setStyleSheet("color: #6a6d78; background: transparent; border: none;")
-        layout.addWidget(info)
+        hint = QLabel(tr("Клик — выбрать URL."))
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color: rgb(160, 160, 168); background: transparent; border: none;")
+        layout.addWidget(hint)
 
-        # Combo со списком URL — с плавной анимацией рамки
-        self.url_combo = AnimatedComboBox()
-        self.url_combo.setCursor(Qt.PointingHandCursor)
-        self.url_combo.setFont(QFont("Segoe UI", 9))
-        self.url_combo.setMaxVisibleItems(3)
-        self.url_combo.addItems(self.urls)
-        if self.current in self.urls:
-            self.url_combo.setCurrentText(self.current)
-        layout.addWidget(self.url_combo)
+        # Скролл-область с карточками в 2 колонки (как у ключей: WIDTH тоже
+        # 860 — окно той же ширины)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("""
+            QScrollArea { border: none; background: transparent; }
+            QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+            QScrollBar::handle:vertical { background: rgb(70,70,78); border-radius: 8px; min-height: 30px; }
+            QScrollBar::handle:vertical:hover { background: rgb(95,95,105); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+        self.cards_host = QWidget()
+        self.cards_host.setStyleSheet("background: transparent;")
+        # Внутренний холст фикс-ширины (ровно контент: 2 карточки + зазор
+        # = 307*2 + 14 = 628 — как host при видимом скроллбаре). Центрируем:
+        # без скроллбара остаток 12px делится поровну (по 6 с каждой стороны),
+        # со скроллбаром — впритык. Колонки на мёртвых offsets 0 и 321.
+        host_lay = QVBoxLayout(self.cards_host)
+        host_lay.setContentsMargins(0, 0, 0, 0)
+        host_lay.setSpacing(0)
+        self.cards_grid_w = QWidget()
+        self.cards_grid_w.setStyleSheet("background: transparent;")
+        self.cards_grid_w.setFixedWidth(self.CARD_W * self.COLS + self.COL_GAP)
+        host_lay.addWidget(self.cards_grid_w, 0, Qt.AlignHCenter | Qt.AlignTop)
+        self.cards_layout = QGridLayout(self.cards_grid_w)
+        self.cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.cards_layout.setSpacing(self.GAP)
+        self.cards_layout.setHorizontalSpacing(self.COL_GAP)
+        # Стретчей НЕТ специально: колонки жмутся влево на фиксированных
+        # offsets (0 и CARD_W + COL_GAP) и не двигаются ни при add/remove,
+        # ни при появлении/исчезновении скроллбара.
+        self.scroll.setWidget(self.cards_host)
+        layout.addWidget(self.scroll)
+        self._cards = []
 
-        # Кнопка удалить выбранный URL
-        self.btn_remove_url = RedButton(tr("Удалить выбранный URL"))
-        self.btn_remove_url.setMinimumHeight(32)
-        self.btn_remove_url.clicked.connect(self.remove_url)
-        layout.addWidget(self.btn_remove_url)
+        # Пустой плейсхолдер
+        self.empty_lbl = QLabel(tr("URL пока нет — добавьте первый ниже"))
+        self.empty_lbl.setFont(QFont("Segoe UI", 9))
+        self.empty_lbl.setAlignment(Qt.AlignCenter)
+        self.empty_lbl.setStyleSheet("color: rgb(110,110,116); background: transparent; border: none;")
+        layout.addWidget(self.empty_lbl)
 
         # Разделитель — добавление нового
         add_label = QLabel(tr("Добавить новый URL:"))
@@ -10746,10 +10898,9 @@ class BaseUrlManagerDialog(QDialog):
 
         main_layout.addWidget(container)
         self.setLayout(main_layout)
-        self.setFixedWidth(440)
+        self.setFixedWidth(self.WIDTH)
 
-        self._update_remove_button()
-        self.url_combo.currentTextChanged.connect(lambda _: self._update_remove_button())
+        self._rebuild_cards()
 
         # Плавное появление
         self._opacity_effect = QGraphicsOpacityEffect(self)
@@ -10776,24 +10927,115 @@ class BaseUrlManagerDialog(QDialog):
         self._fade_out = fade
 
     def reject(self):
-        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
-        fade.setDuration(220)
-        fade.setStartValue(self._opacity_effect.opacity())
-        fade.setEndValue(0.0)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(lambda: super(BaseUrlManagerDialog, self).reject())
-        fade.start()
-        self._fade_out = fade
+        # Как у ключей: изменения уже сохранены через changed, поэтому
+        # Escape/крестик ведут себя как accept (ничего не теряется).
+        self.accept()
 
-    def _update_remove_button(self):
-        """Запрещает удалять дефолтные URL"""
-        sel = self.url_combo.currentText()
-        is_default = sel in self.DEFAULT_URLS
-        self.btn_remove_url.setEnabled(not is_default)
-        if is_default:
-            self.btn_remove_url.setText(tr("Базовый URL нельзя удалить"))
-        else:
-            self.btn_remove_url.setText(tr("Удалить выбранный URL"))
+    # ── Перетаскивание самого окна (frameless — как у ключей) ──
+    def mousePressEvent(self, event):
+        # Сюда событие доходит только если его не «съел» дочерний виджет
+        # (карточки/кнопки/скролл жуют свои клики сами) — значит нажали по
+        # шапке/фону/полям диалога. Это и есть зона захвата для переноса окна.
+        if event.button() == Qt.LeftButton:
+            self._win_drag_offset = (event.globalPosition().toPoint()
+                                     - self.frameGeometry().topLeft())
+            self._win_dragging = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, "_win_dragging", False) and (event.buttons() & Qt.LeftButton):
+            self.move(event.globalPosition().toPoint() - self._win_drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if getattr(self, "_win_dragging", False):
+            self._win_dragging = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _refit(self):
+        """Высота скролла под число карточек (до VISIBLE_ROWS рядов, дальше скролл)."""
+        n = len(self.urls)
+        rows = (n + self.COLS - 1) // self.COLS
+        vis = min(max(rows, 1), self.VISIBLE_ROWS)
+        h = vis * self.CARD_H + max(vis - 1, 0) * self.GAP + 4
+        self.scroll.setFixedHeight(h)
+
+    def _rebuild_cards(self):
+        """Перестраивает карточки из self.urls, подсвечивает выбранный."""
+        while self.cards_layout.count():
+            item = self.cards_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._cards = []
+        for i, url in enumerate(self.urls):
+            card = _UrlCard(url, selected=(url == self._selected),
+                            is_default=(url in self.DEFAULT_URLS),
+                            on_delete=self._remove_url,
+                            parent=self.cards_host)
+            # Фикс-ширина, как у ключей (там сетка вообще ручная): колонки
+            # не перераспределяют лишний пиксель, первая карточка не дёргается
+            # при add/remove и появлении скроллбара.
+            card.setFixedSize(self.CARD_W, self.CARD_H)
+            card.clicked.connect(lambda u=url: self._select(u))
+            self.cards_layout.addWidget(card, i // self.COLS, i % self.COLS,
+                                        Qt.AlignLeft | Qt.AlignVCenter)
+            self._cards.append(card)
+        self.empty_lbl.setVisible(not self.urls)
+        self.scroll.setVisible(bool(self.urls))
+        self._refit()
+        # Окно должно и расти, и уменьшаться (как у ключей): сбрасываем
+        # запомненные ограничения и переподгоняем размер асинхронно.
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        QTimer.singleShot(0, self._refit_window)
+
+    def _refit_window(self):
+        # Пересчёт высоты под текущий контент (как у ключей). Позицию держим
+        # по левому верхнему углу — иначе Qt при уменьшении «подтягивает»
+        # окно вверх, и оно скачет при каждом удалении.
+        if not self.isVisible():
+            return
+        top_left = self.pos()
+        try:
+            self.layout().activate()
+        except Exception:
+            pass
+        self.adjustSize()
+        try:
+            target_h = max(self.sizeHint().height(),
+                           self.minimumSizeHint().height())
+        except Exception:
+            target_h = self.height()
+        self.resize(self.WIDTH, target_h)
+        self.setFixedWidth(self.WIDTH)
+        if getattr(self, "_positioned", False):
+            self.move(top_left)
+        # Принудительная перерисовка (frameless + translucent): иначе после
+        # add/delete остаются «призраки» удалённых виджетов.
+        try:
+            self._container.update()
+            self.scroll.viewport().update()
+        except Exception:
+            pass
+        self.update()
+        self.repaint()
+
+    def _select(self, url):
+        """Клик по карточке — выбрать URL (как клик по карточке ключа)."""
+        if url not in self.urls:
+            return
+        if url == self._selected:
+            return
+        self._selected = url
+        for card in self._cards:
+            card.set_selected(card._url == url)
 
     def add_url(self):
         url = self.url_input.text().strip()
@@ -10804,33 +11046,34 @@ class BaseUrlManagerDialog(QDialog):
             return
         if url in self.urls:
             QMessageBox.information(self, "Информация", "Такой URL уже есть в списке")
-            self.url_combo.setCurrentText(url)
+            self._select(url)
             return
         self.urls.append(url)
-        self.url_combo.addItem(url)
-        self.url_combo.setCurrentText(url)
         self.url_input.clear()
+        self._rebuild_cards()
+        # Добавленный URL НЕ выбираем автоматически — выбор только кликом
+        # по карточке.
 
-    def remove_url(self):
-        sel = self.url_combo.currentText()
-        if sel in self.DEFAULT_URLS:
+    def _remove_url(self, url):
+        """Крестик на карточке: подтверждение, удаление, фолбэк выбора."""
+        if url in self.DEFAULT_URLS:
             return
-        if sel not in self.urls:
+        if url not in self.urls:
             return
         # Подтверждение удаления
-        confirm = ConfirmDeleteDialog(sel, self, question_text="Вы уверены, что хотите удалить Base URL?")
+        confirm = ConfirmDeleteDialog(url, self, question_text="Вы уверены, что хотите удалить Base URL?")
         if confirm.exec() != QDialog.Accepted:
             return
-        self.urls.remove(sel)
-        idx = self.url_combo.currentIndex()
-        self.url_combo.removeItem(idx)
+        self.urls.remove(url)
+        if self._selected == url:
+            self._selected = self.urls[0] if self.urls else ""
+        self._rebuild_cards()
 
     def get_result(self):
-        # Переключение селектора в диалоге игнорируется — возвращаем исходный
-        # выбранный URL. Но если он был удалён, фолбэк на первый из списка,
-        # чтобы Claude не запускался с уже несуществующим URL.
-        if self.current in self.urls:
-            return list(self.urls), self.current
+        # Возвращаем выбранный в диалоге URL. Если он был удалён, фолбэк
+        # на первый из списка, чтобы не запускаться с несуществующим URL.
+        if self._selected in self.urls:
+            return list(self.urls), self._selected
         return list(self.urls), (self.urls[0] if self.urls else "")
 
 # ============================================================
@@ -13342,6 +13585,9 @@ class DownloadUpdateDialog(QDialog):
         self._fade_out = fade
 
     def reject(self):
+        # Закрытие окна = отмена скачивания: рабочий поток увидит флаг,
+        # сотрёт недокачанный файл и тихо выйдет (без рестарта).
+        self._cancelled = True
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
         fade.setDuration(220)
         fade.setStartValue(self.opacity_effect.opacity())
@@ -15325,8 +15571,37 @@ class SidebarNav(QFrame):
             self.updates_btn.refresh_tip()
         except Exception:
             pass
+class _HeaderStrip(QWidget):
+    """Короткая толстая полоска после заголовка шапки: слева яркая,
+    вправо гаснет в прозрачность. Цвет — акцент текущей вкладки."""
+
+    def __init__(self, accent=(100, 150, 255), parent=None):
+        super().__init__(parent)
+        self._accent = tuple(accent)
+        self.setFixedSize(44, 6)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def set_color(self, accent):
+        self._accent = tuple(accent)
+        self.update()
+
+    def paintEvent(self, event):
+        r, g, b = self._accent
+        grad = QLinearGradient(0, 0, self.width(), 0)
+        grad.setColorAt(0.0, QColor(r, g, b, 255))
+        grad.setColorAt(0.55, QColor(r, g, b, 115))
+        grad.setColorAt(1.0, QColor(r, g, b, 0))
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(grad))
+        p.drawRoundedRect(self.rect(), 3.0, 3.0)
+        p.end()
+
+
 class PageHeader(QFrame):
-    """Шапка контентной области: акцентная точка, название режима, подпись."""
+    """Шапка контентной области: название режима, градиентная полоска, подпись."""
 
     def __init__(self, mode="anthropic", parent=None):
         super().__init__(parent)
@@ -15342,15 +15617,15 @@ class PageHeader(QFrame):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(9)
 
-        self.dot = _AccentDot(mode_accent(mode), 8, self)
-        row.addWidget(self.dot, 0, Qt.AlignVCenter)
-
         self.title_label = QLabel()
         self.title_label.setFont(QFont(theme_value("font_ui"), 16, QFont.Bold))
         self.title_label.setStyleSheet(
             "color: %s; background: transparent; border: none;" % theme_value("text_primary")
         )
         row.addWidget(self.title_label)
+
+        self.strip = _HeaderStrip(mode_accent(mode), self)
+        row.addWidget(self.strip, 0, Qt.AlignVCenter)
         row.addStretch(1)
         layout.addLayout(row)
 
@@ -15367,7 +15642,7 @@ class PageHeader(QFrame):
         """Переключает заголовок и подпись под выбранный режим."""
         if mode not in MODE_ACCENTS:
             mode = "anthropic"
-        self.dot.set_color(mode_accent(mode))
+        self.strip.set_color(mode_accent(mode))
         self.title_label.setText(MODE_TITLES.get(mode, "Anthropic"))
         ru, en = PAGE_SUBTITLES.get(mode, ("", ""))
         self.subtitle_label.setText(ltr(ru, en))
@@ -15774,18 +16049,24 @@ class ClaudeManager(QMainWindow):
         oc_url_lbl.setFixedWidth(90)
         oc_url_row.addWidget(oc_url_lbl)
 
-        self.oc_url_combo = PickerComboBox()
-        self.oc_url_combo.setFont(QFont("Segoe UI", 9))
-        self.oc_url_combo.setMaxVisibleItems(4)
-        oc_urls = [u for u in (self.settings.get("oc_base_urls", []) or []) if u]
-        self.oc_url_combo.addItems(oc_urls)
-        if self.settings.get("oc_base_url") and self.settings["oc_base_url"] in oc_urls:
-            self.oc_url_combo.setCurrentText(self.settings["oc_base_url"])
-        if self.oc_url_combo.count() == 0:
-            self.oc_url_combo.addItem(tr("Не задан"))
-        self.oc_url_combo.set_picker(title=tr("Выбор Base URL"))
-        self.oc_url_combo.currentTextChanged.connect(self._oc_url_changed)
-        oc_url_row.addWidget(self.oc_url_combo, 1)
+        # Активный Base URL — read-only поле (как у ключей): показывает
+        # выбранный адрес, а выбор/создание живут в окне «Управление».
+        self.oc_url_input = QLineEdit()
+        self.oc_url_input.setPlaceholderText(tr("Не задан — откройте «Управление»"))
+        self.oc_url_input.setText(self.settings.get("oc_base_url", ""))
+        self.oc_url_input.setEchoMode(QLineEdit.Normal)
+        self.oc_url_input.setFont(QFont("Segoe UI", 9))
+        self.oc_url_input.setReadOnly(True)
+        self.oc_url_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: #d6d6de;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        oc_url_row.addWidget(self.oc_url_input, 1)
 
         self.oc_btn_manage_urls = StyledButton(tr("Управление"))
         self.oc_btn_manage_urls.setMinimumHeight(0)
@@ -16787,8 +17068,8 @@ class ClaudeManager(QMainWindow):
                 self.oc_key_input.setPlaceholderText(tr("Необязательно — откройте «Управление»"))
             if hasattr(self, "btn_oc_manage_providers"):
                 self.btn_oc_manage_providers.setText(tr("Управление провайдерами"))
-            if hasattr(self, "oc_url_combo"):
-                self.oc_url_combo._pick_title = tr("Выбор Base URL")
+            if hasattr(self, "oc_url_input"):
+                self.oc_url_input.setPlaceholderText(tr("Не задан — откройте «Управление»"))
             if hasattr(self, "fm_btn_manage"):
                 self.fm_btn_manage.setText(tr("Управление"))
             if hasattr(self, "fm_btn_save_key"):
@@ -17222,25 +17503,37 @@ class ClaudeManager(QMainWindow):
             self.oc_btn_toggle_key.setRevealed(False)
 
     def _fm_manage_urls(self):
-        """Открывает окно управления Base URL"""
+        """Открывает окно управления Base URL. Изменения применяются сразу
+        (сигнал changed — как у ключей), Escape их не теряет."""
         urls = self.settings.get("custom_base_urls", [])
         current = self.fm_url_combo.currentText()
         dialog = BaseUrlManagerDialog(urls, current, self)
-        if dialog.exec() == QDialog.Accepted:
-            new_urls, new_current = dialog.get_result()
+        dialog.exec()
+        # Применяем при закрытии — как бы окно ни закрылось.
+        self._persist_fm_url_state(dialog)
+
+    def _persist_fm_url_state(self, dlg):
+        """Применяет результат окна Base URL после закрытия: пишет
+        custom_base_urls/custom_base_url в settings.json, обновляет комбо
+        и бейдж freemodel.dev."""
+        try:
+            new_urls, new_current = dlg.get_result()
             self.settings["custom_base_urls"] = list(new_urls)
             self.settings["custom_base_url"] = new_current
             save_settings(self.settings)
-            self.fm_url_combo.blockSignals(True)
-            self.fm_url_combo.clear()
-            self.fm_url_combo.addItems(new_urls)
-            if new_current in new_urls:
-                self.fm_url_combo.setCurrentText(new_current)
-            self.fm_url_combo.blockSignals(False)
+            if hasattr(self, "fm_url_combo"):
+                self.fm_url_combo.blockSignals(True)
+                self.fm_url_combo.clear()
+                self.fm_url_combo.addItems(new_urls)
+                if new_current in new_urls:
+                    self.fm_url_combo.setCurrentText(new_current)
+                self.fm_url_combo.blockSignals(False)
             # Сигналы комбо были заблокированы, поэтому _fm_url_changed не вызвался —
             # вручную обновляем видимость бейджа freemodel.dev (если удалили текущий
             # URL и фолбэкнулись на freemodel, бейдж должен вернуться).
             self._refresh_freemodel_brand_visibility()
+        except Exception as e:
+            print(f"[_persist_fm_url_state] Не удалось сохранить: {e}")
 
     # ── Обработчики вкладки OpenAI ──────────────────────────────
 
@@ -17255,23 +17548,34 @@ class ClaudeManager(QMainWindow):
             self._refresh_freemodel_brand_visibility()
 
     def _oa_manage_urls(self):
-        """Окно управления Base URL для вкладки OpenAI (отдельный список)."""
+        """Окно управления Base URL для вкладки OpenAI (отдельный список).
+        Изменения применяются сразу (сигнал changed — как у ключей)."""
         urls = self.settings.get("openai_base_urls", [])
         current = self.oa_url_combo.currentText()
         dialog = BaseUrlManagerDialog(urls, current, self,
                                       default_urls=("https://api.freemodel.dev",))
-        if dialog.exec() == QDialog.Accepted:
-            new_urls, new_current = dialog.get_result()
+        dialog.exec()
+        self._persist_oa_url_state(dialog)
+
+    def _persist_oa_url_state(self, dlg):
+        """Применяет результат окна Base URL после закрытия: пишет
+        openai_base_urls/openai_base_url в settings.json, обновляет комбо
+        и бейдж freemodel.dev."""
+        try:
+            new_urls, new_current = dlg.get_result()
             self.settings["openai_base_urls"] = list(new_urls)
             self.settings["openai_base_url"] = new_current
             save_settings(self.settings)
-            self.oa_url_combo.blockSignals(True)
-            self.oa_url_combo.clear()
-            self.oa_url_combo.addItems(new_urls)
-            if new_current in new_urls:
-                self.oa_url_combo.setCurrentText(new_current)
-            self.oa_url_combo.blockSignals(False)
+            if hasattr(self, "oa_url_combo"):
+                self.oa_url_combo.blockSignals(True)
+                self.oa_url_combo.clear()
+                self.oa_url_combo.addItems(new_urls)
+                if new_current in new_urls:
+                    self.oa_url_combo.setCurrentText(new_current)
+                self.oa_url_combo.blockSignals(False)
             self._refresh_freemodel_brand_visibility()
+        except Exception as e:
+            print(f"[_persist_oa_url_state] Не удалось сохранить: {e}")
 
     def _oa_toggle_key(self):
         """Показать/скрыть API ключ на вкладке OpenAI"""
@@ -17284,45 +17588,39 @@ class ClaudeManager(QMainWindow):
 
     # ── Обработчики вкладки Custom URL ─────────────────────────────
 
-    def _oc_url_changed(self, new_url):
-        """Сохраняет выбранный Base URL вкладки Custom URL."""
-        if new_url and new_url != tr("Не задан"):
-            prev = self.settings.get("oc_base_url", "")
-            self.settings["oc_base_url"] = new_url
-            save_settings(self.settings)
-            if prev != new_url:
-                self.log(tr("Base URL {} сохранён").format(new_url), "success")
-            # Сменился эндпоинт — перезагружаем список моделей и capabilities.
-            self._oc_refresh_models()
-
     def _oc_manage_urls(self):
         """Окно управления Base URL для вкладки Custom URL (отдельный список).
         Здесь НЕТ «зарезервированных» дефолтов (в отличие от вкладки Claude
-        Code): любой введённый адрес, включая cc.freemodel.dev, можно удалить."""
+        Code): любой введённый адрес, включая cc.freemodel.dev, можно удалить.
+        Выбор тоже живёт в окне (карточки, как у ключей) — на вкладке только
+        read-only поле активного адреса. Изменения применяются сразу
+        (сигнал changed), Escape их не теряет."""
         urls = self.settings.get("oc_base_urls", [])
-        current = self.oc_url_combo.currentText()
-        if current == tr("Не задан"):
-            current = ""
+        current = (self.settings.get("oc_base_url", "") or "").strip()
         dialog = BaseUrlManagerDialog(urls, current, self, default_urls=())
-        if dialog.exec() == QDialog.Accepted:
-            new_urls, new_current = dialog.get_result()
-            changed = new_current != current
+        dialog.exec()
+        self._persist_oc_url_state(dialog)
+
+    def _persist_oc_url_state(self, dlg):
+        """Применяет результат окна Base URL после закрытия: пишет
+        oc_base_urls/oc_base_url в settings.json, обновляет поле вкладки.
+        Сменился эндпоинт — перезагружаем список моделей и capabilities,
+        как раньше делал _oc_url_changed для комбо."""
+        try:
+            new_urls, new_current = dlg.get_result()
+            prev = self.settings.get("oc_base_url", "")
             self.settings["oc_base_urls"] = list(new_urls)
             self.settings["oc_base_url"] = new_current
             save_settings(self.settings)
-            self.oc_url_combo.blockSignals(True)
-            self.oc_url_combo.clear()
-            if new_urls:
-                self.oc_url_combo.addItems(new_urls)
-            else:
-                self.oc_url_combo.addItem(tr("Не задан"))
-            if new_current in new_urls:
-                self.oc_url_combo.setCurrentText(new_current)
-            self.oc_url_combo.blockSignals(False)
-            # Сигнал currentTextChanged тут заблокирован, поэтому обновляем
-            # список моделей вручную, если эндпоинт реально сменился.
-            if changed:
+            if hasattr(self, "oc_url_input"):
+                if self.oc_url_input.text() != new_current:
+                    self.oc_url_input.setText(new_current)
+            if new_current != prev:
+                if new_current:
+                    self.log(tr("Base URL {} сохранён").format(new_current), "success")
                 self._oc_refresh_models()
+        except Exception as e:
+            print(f"[_persist_oc_url_state] Не удалось сохранить: {e}")
 
     def _oc_manage_providers(self):
         """Окно управления провайдерами opencode: определения из конфига +
@@ -17349,6 +17647,7 @@ class ClaudeManager(QMainWindow):
             self._oc_reasoning = {}
             self._oc_info_dlg = None
             self._oc_provider_name = ""
+            self._oc_provider_display = ""
         if getattr(self, "_oc_models_loader", None) is not None:
             try:
                 if self._oc_models_loader.isRunning():
@@ -17358,6 +17657,11 @@ class ClaudeManager(QMainWindow):
         base_url = (self.settings.get("oc_base_url", "") or "").strip()
         host = re.sub(r"[^A-Za-z0-9]", "", (re.sub(r"^https?://", "", base_url).split("/")[0] or "")) or "custom"
         self._oc_provider_name = host
+        # Отображаемое имя — хост как написан (с точками, без слешей):
+        # для окна моделей и кнопки. Слаг выше остаётся для конфига/CLI.
+        self._oc_provider_display = (
+            re.sub(r"^https?://", "", base_url).split("/")[0].strip() or "custom"
+        )
         api_key = self.settings.get("oc_api_key", "")
         self._oc_loader_url = base_url
         # Запоминаем ключ, с которым пошла загрузка: _refresh_active_key_display
@@ -17392,7 +17696,7 @@ class ClaudeManager(QMainWindow):
         провайдеры): кликабельны и яркие, либо заблокированы и затемнены
         (:disabled-стиль). Пока модели грузятся — всё заблокировано.
         Только для вкладки Custom URL."""
-        for attr in ("oc_url_combo", "oc_btn_manage_urls", "oc_btn_manage_keys",
+        for attr in ("oc_url_input", "oc_btn_manage_urls", "oc_btn_manage_keys",
                      "btn_oc_manage_providers"):
             try:
                 w = getattr(self, attr, None)
@@ -17435,32 +17739,50 @@ class ClaudeManager(QMainWindow):
         try:
             dlg.update_models(list(self._oc_model_ids or []),
                               list(self._oc_free_ids or []),
-                              getattr(self, "_oc_provider_name", "") or "")
+                              getattr(self, "_oc_provider_display", "") or "")
         except Exception:
             pass
 
     def _oc_refresh_info_button_text(self):
-        """Пересчитывает текст кнопки «Какие модели доступны» по текущему языку:
-        «N models · M free» / «N моделей · M бесплатных». Прямое ветвление по
-        LANG.lang — перевод не зависит от словаря TRANSLATIONS."""
+        """Текст кнопки «Какие модели доступны» по текущему языку:
+        - эндпоинт молчит/не задан — только бесплатные: «10 бесплатных»;
+        - эндпоинт отдал модели — «12 моделей · api-ru.dacall.ai · 10 бесплатных».
+        Прямое ветвление по LANG.lang — перевод не зависит от словаря."""
         btn = getattr(self, "oc_info_btn", None)
-        if btn is None or not getattr(self, "_oc_model_ids", None) and \
-                not getattr(self, "_oc_free_ids", None):
-            if btn is not None:
-                btn.setText(tr("Какие модели доступны"))
+        if btn is None:
             return
-        total = len(self._oc_model_ids) + len(self._oc_free_ids)
+        model_ids = list(getattr(self, "_oc_model_ids", []) or [])
+        free_ids = list(getattr(self, "_oc_free_ids", []) or [])
+        if not model_ids and not free_ids:
+            btn.setText(tr("Какие модели доступны"))
+            return
         lang_en = LANG is not None and LANG.lang == "en"
-        if self._oc_free_ids:
-            if lang_en:
-                btn.setText(f"{total} models · {len(self._oc_free_ids)} free")
-            else:
-                btn.setText(f"{total} моделей · {len(self._oc_free_ids)} бесплатных")
+        if not model_ids:
+            # Эндпоинта нет или он ничего не отдал — только бесплатные, как раньше.
+            btn.setText(f"{len(free_ids)} free models" if lang_en
+                        else f"{len(free_ids)} бесплатных моделей")
+            return
+        # Живой эндпоинт: сначала провайдер, потом число его моделей,
+        # затем бесплатные: «api-ru.dacall.ai - 12 моделей · 10 бесплатных».
+        try:
+            host = re.sub(r"^https?://", "",
+                          (self.settings.get("oc_base_url", "") or "").strip())
+            host = (host.split("/")[0] or "").strip() or None
+        except Exception:
+            host = None
+        if lang_en:
+            txt = f"{len(model_ids)} models"
+            if host:
+                txt = f"{host} - {txt}"
+            if free_ids:
+                txt += f" · {len(free_ids)} free models"
         else:
-            if lang_en:
-                btn.setText(f"{total} models")
-            else:
-                btn.setText(f"{total} моделей")
+            txt = f"{len(model_ids)} моделей"
+            if host:
+                txt = f"{host} - {txt}"
+            if free_ids:
+                txt += f" · {len(free_ids)} бесплатных моделей"
+        btn.setText(txt)
 
     def _oc_show_info(self):
         """Открывает информационное окно доступных моделей (клик по кнопке
@@ -17470,7 +17792,7 @@ class ClaudeManager(QMainWindow):
         endpoint = list(getattr(self, "_oc_model_ids", []) or [])
         free = list(getattr(self, "_oc_free_ids", []) or [])
         reasoning = dict(getattr(self, "_oc_reasoning", {}) or {})
-        provider_name = getattr(self, "_oc_provider_name", "") or ""
+        provider_name = getattr(self, "_oc_provider_display", "") or ""
         dlg = OcModelDialog(endpoint, free, reasoning,
                             provider_name=provider_name, parent=self)
         dlg.destroyed.connect(self._on_oc_info_destroyed)
@@ -19256,7 +19578,7 @@ class ClaudeManager(QMainWindow):
         tries = []
         base = base_url.rstrip("/")
         if base.endswith("/v1"):
-            tries = [base + "/models", base.rstrip("1") + "models"]
+            tries = [base + "/models", base[:-3] + "/models"]
         else:
             tries = [base + "/v1/models", base + "/models"]
         for url in tries:
@@ -21575,6 +21897,218 @@ class ClaudeManager(QMainWindow):
             self._update_download_started = False
 
 # ============================================================
+# КАСТОМНЫЕ ТУЛТИПЫ (вместо системных)
+# ============================================================
+
+class _FadeTooltip(QLabel):
+    """Кастомный тултип всего приложения: тёмная карточка в стиле UI,
+    плавное появление и затухание. Показывается через _GlobalTooltipFilter."""
+
+    def __init__(self):
+        super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        # Как старые системные: в одну длинную строку, без переносов.
+        self.setWordWrap(False)
+        self.setTextFormat(Qt.PlainText)
+        self.setFont(QFont(theme_value("font_ui"), 9))
+        self.setStyleSheet(
+            "QLabel {"
+            "color: #e8e8ef;"
+            "background: transparent;"
+            "border: none;"
+            "padding: 8px 12px;"
+            "}"
+        )
+        self._opacity = QGraphicsOpacityEffect(self)
+        self._opacity.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity)
+        self._anim = None
+        self._hiding = False
+        self._show_pos = None
+
+    def paintEvent(self, event):
+        # Фон рисуем вручную сплошным — гарантированно непрозрачный,
+        # со скруглёнными углами (окно translucent, углы режутся сами).
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(26, 26, 33))
+        p.drawRoundedRect(self.rect(), 3, 3)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(120, 120, 140, 140), 1.5))
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 2, 2)
+        p.end()
+        super().paintEvent(event)
+
+    def _run_fade(self, to_value, duration, then_hide=False):
+        try:
+            if self._anim is not None:
+                self._anim.stop()
+        except Exception:
+            pass
+        anim = QPropertyAnimation(self._opacity, b"opacity", self)
+        anim.setDuration(duration)
+        anim.setStartValue(self._opacity.opacity())
+        anim.setEndValue(float(to_value))
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        if then_hide:
+            anim.finished.connect(self.hide)
+        self._anim = anim
+        anim.start()
+
+    def popup(self, text, global_pos):
+        """Показать с текстом у курсора (с доводкой, чтобы не уехать за экран)."""
+        self._hiding = False
+        self.setText(text)
+        self.adjustSize()
+        try:
+            screen = QGuiApplication.primaryScreen().availableGeometry()
+        except Exception:
+            screen = None
+        x = global_pos.x() + 14
+        y = global_pos.y() + 20
+        if screen is not None:
+            if x + self.width() > screen.right():
+                x = max(screen.left(), global_pos.x() - self.width() - 10)
+            if y + self.height() > screen.bottom():
+                y = max(screen.top(), global_pos.y() - self.height() - 10)
+        self.move(x, y)
+        self._show_pos = QCursor.pos()
+        self.show()
+        self._run_fade(1.0, 160)
+
+    def fade_out(self):
+        if not self.isVisible() or self._hiding:
+            return
+        self._hiding = True
+        self._run_fade(0.0, 200, then_hide=True)
+
+
+class _GlobalTooltipFilter(QObject):
+    """Ловит QEvent.ToolTip всего приложения и показывает _FadeTooltip
+    вместо системного — но только после остановки курсора (~0.45с без
+    движения). Двинул — исчез. Ссылку держать на QApplication (иначе GC)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._tip = _FadeTooltip()
+        self._src = None
+        self._src_rect = None
+        # Отложенный показ: (widget, text, global_pos, monotonic_ts).
+        # Тултип появляется только если курсор замер на ~0.45с.
+        self._pending = None
+        self._poll = QTimer(self)
+        self._poll.timeout.connect(self._check_hover)
+        self._poll.start(120)
+
+    def _source_rect(self, obj):
+        try:
+            top_left = obj.mapToGlobal(obj.rect().topLeft())
+            return (top_left, obj.rect().width(), obj.rect().height())
+        except Exception:
+            return None
+
+    def _cancel_pending(self):
+        self._pending = None
+
+    def _check_hover(self):
+        if self._tip.isVisible() and not self._tip._hiding:
+            # Тултип не ездит за курсором: остановился — появился, двинул —
+            # исчез. Допуск 5px на дрожание руки.
+            try:
+                sp = self._tip._show_pos
+                cp = QCursor.pos()
+                if sp is not None and ((cp - sp).manhattanLength() > 5):
+                    self._tip.fade_out()
+                    return
+            except Exception:
+                pass
+            try:
+                if self._src is None:
+                    self._tip.fade_out()
+                    return
+                alive = self._src.isVisible()
+            except Exception:
+                self._src = None
+                self._tip.fade_out()
+                return
+            if not alive:
+                self._tip.fade_out()
+            return
+        # Видимого тултипа нет — обслуживаем отложенный показ.
+        if self._pending is None:
+            return
+        obj, text, gpos, ts = self._pending
+        try:
+            cur = QCursor.pos()
+            moved = (cur - gpos).manhattanLength() > 6
+        except Exception:
+            moved = True
+        if moved:
+            # Двинул раньше задержки — отмена, ждём новой остановки.
+            self._pending = None
+            return
+        if time.monotonic() - ts < 0.45:
+            return
+        self._pending = None
+        try:
+            ok = bool(text) and obj.isEnabled() and obj.isVisible()
+        except Exception:
+            ok = False
+        if not ok:
+            return
+        self._src = obj
+        self._src_rect = self._source_rect(obj)
+        self._tip.popup(text, gpos)
+        try:
+            pos = QCursor.pos()
+            tl, w, h = self._src_rect
+            m = 6
+            inside = (tl.x() - m <= pos.x() <= tl.x() + w + m
+                      and tl.y() - m <= pos.y() <= tl.y() + h + m)
+        except Exception:
+            inside = False
+        if not inside:
+            self._tip.fade_out()
+
+    def eventFilter(self, obj, event):
+        try:
+            et = event.type()
+        except Exception:
+            return False
+        if et == QEvent.ToolTip:
+            try:
+                text = obj.toolTip() if isinstance(obj, QWidget) else ""
+                ok = bool(text) and obj.isEnabled() and obj.isVisible()
+            except Exception:
+                ok = False
+            if not ok:
+                if self._tip.isVisible():
+                    self._tip.fade_out()
+                else:
+                    self._pending = None
+                return False
+            # Не показываем сразу: запоминаем и ждём остановки курсора
+            # (~0.45с без движения) — обслуживание в _check_hover.
+            if self._tip.isVisible():
+                return True
+            try:
+                gpos = event.globalPos()
+            except Exception:
+                gpos = QCursor.pos()
+            self._pending = (obj, text, gpos, time.monotonic())
+            return True
+        if et in (QEvent.MouseButtonPress, QEvent.KeyPress,
+                  QEvent.ApplicationDeactivate, QEvent.FocusOut):
+            self._pending = None
+            if self._tip.isVisible():
+                self._tip.fade_out()
+        return False
+
+
+# ============================================================
 # ЗАПУСК ПРИЛОЖЕНИЯ
 # ============================================================
 
@@ -21590,8 +22124,33 @@ def main():
     # чтобы виджеты при инициализации уже могли читать LANG.lang.
     global LANG
     LANG = LanguageManager()
+
+    # Проверка обновлений ДО главного окна: если есть новая версия —
+    # сразу окно скачивания, без лишних кнопок (авто-обновление).
+    # Скачалось и применилось — процесс перезапускается сам (batch в
+    # _delete_old_and_open); ошибка — идём дальше в главное окно как обычно.
+    try:
+        _startup_update = check_app_update()
+    except Exception:
+        _startup_update = None
+    try:
+        if (_startup_update and _startup_update.get('update_available')
+                and _startup_update.get('download_url')):
+            _dl_dlg = DownloadUpdateDialog(_startup_update)
+            _dl_dlg.start_download()
+            _dl_dlg.exec()
+    except Exception:
+        pass
+
     window = ClaudeManager()
     window.show()
+
+    # Кастомные тултипы вместо системных: ссылка на app, чтобы фильтр не съел GC.
+    try:
+        app._tooltip_filter = _GlobalTooltipFilter(app)
+        app.installEventFilter(app._tooltip_filter)
+    except Exception:
+        pass
 
     # Если приложение запущено БЕЗ прав администратора — показываем окно-предупреждение
     # один раз при старте. Окно модальное относительно главного, не блокирует процесс
