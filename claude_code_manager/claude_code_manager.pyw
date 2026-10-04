@@ -995,6 +995,7 @@ TRANSLATIONS = {
     "Звук вернётся к стандартному, а свой файл удалится.": "The sound will return to default, and your file will be deleted.",
     "Да, сбросить": "Yes, reset",
     "После изменения перезапустите opencode CLI": "Restart the opencode CLI after making changes",
+    "Поддерживаются только WAV-файлы.": "Only WAV files are supported.",
     "Провайдеры opencode": "opencode providers",
     "Провайдеры из конфига и auth.json. Удаление убирает и креду, и определение.": "Providers from config and auth.json. Deleting removes both the credential and the definition.",
     "Провайдеров не найдено": "No providers found",
@@ -7617,7 +7618,8 @@ class _OcInfoRow(QWidget):
 # УВЕДОМЛЕНИЯ OPENCODE (звуки в tui.json)
 # ============================================================
 
-# Все звуковые слоты из конфига (без default и subagent_done — они не нужны).
+# Звуковые слоты, настраиваемые в диалоге. default/subagent_done в диалог
+# не выносим, но в tui.json пишем (фолбэк opencode) — маппятся на «Готово».
 OC_NOTIFY_KEYS = (
     ("done", "Готово"),
     ("question", "Вопрос от ИИ"),
@@ -17269,9 +17271,14 @@ def _oc_write_notify_tui(sounds):
     for key, _label in OC_NOTIFY_KEYS:
         if sounds.get(key):
             snd[key] = sounds[key]
-    # Лишние слоты (default, subagent_done) — не наши: вычищаем полностью.
-    for stale in ("default", "subagent_done"):
-        snd.pop(stale, None)
+    # default/subagent_done в диалоге не показываем, но в tui.json держим:
+    # opencode использует их как фолбэк (default — для всех событий без
+    # своего звука). Без них терминал играет что-то своё, а не настроенное.
+    # Маппим на звук «Готово» — как было в исходном конфиге пользователя.
+    done_path = sounds.get("done", "") or ""
+    if done_path:
+        snd.setdefault("default", done_path)
+        snd.setdefault("subagent_done", done_path)
     att["sounds"] = snd
     data["attention"] = att
     return _oc_save_tui(data)
@@ -17299,13 +17306,18 @@ def _oc_remove_notify_tui():
         return False
 
 
+_OC_AUDIO_FILTER = "WAV (*.wav);;All files (*.*)"
+_OC_PLAYERS = []
+
+
 def _oc_play_sound(path):
-    """Короткий предпросмотр wav (асинхронно, окно не блокируется)."""
+    """Предпросмотр звука WAV (асинхронно, окно не блокируется)."""
     try:
         if not path or not os.path.exists(path):
             return
         import winsound
-        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC
+                           | winsound.SND_NODEFAULT)
     except Exception:
         pass
 
@@ -17417,24 +17429,107 @@ def _oc_import_sound(key, src_path):
     return dest
 
 
+def _oc_decode_pcm16(src_path, timeout_ms=15000):
+    """Декодирует любой аудиоформат в PCM16 mono через системные кодеки
+    (mp3/m4a/wma/ogg...). Возвращает (rate, [samples]) или None.
+    Формат буферов читаем по факту — бэкенд может отдать свой."""
+    import struct as _st
+    try:
+        from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat
+        from PySide6.QtCore import QUrl, QEventLoop, QTimer
+        fmt = QAudioFormat()
+        fmt.setSampleRate(44100)
+        fmt.setChannelCount(1)
+        fmt.setSampleFormat(QAudioFormat.Int16)
+        dec = QAudioDecoder()
+        dec.setAudioFormat(fmt)
+        dec.setSource(QUrl.fromLocalFile(src_path))
+        raws = []
+        loop = QEventLoop()
+        def _grab():
+            try:
+                buf = dec.read()
+                bf = buf.format()
+                data = bytes(memoryview(buf.constData()))[:buf.byteCount()]
+                raws.append((bf, data))
+            except Exception:
+                pass
+        dec.bufferReady.connect(_grab)
+        dec.finished.connect(loop.quit)
+        dec.errorOccurred.connect(lambda *a: None)
+        QTimer.singleShot(timeout_ms, loop.quit)
+        dec.start()
+        loop.exec()
+        try:
+            dec.stop()
+        except Exception:
+            pass
+        if not raws:
+            return None
+        out = []
+        rate = 44100
+        for bf, data in raws:
+            try:
+                ch = max(1, int(bf.channelCount()))
+                rate = int(bf.sampleRate()) or 44100
+                st = bf.sampleFormat()
+            except Exception:
+                continue
+            try:
+                if st == QAudioFormat.UInt8:
+                    n = len(data)
+                    vals = [(b - 128) * 256 for b in data[:n]]
+                elif st == QAudioFormat.Int32:
+                    n = len(data) // 4
+                    vals = [v >> 16 for v in _st.unpack("<%di" % n, data[:n * 4])]
+                elif st == QAudioFormat.Float:
+                    n = len(data) // 4
+                    vals = [max(-32768, min(32767, int(v * 32767)))
+                            for v in _st.unpack("<%df" % n, data[:n * 4])]
+                else:
+                    n = len(data) // 2
+                    vals = list(_st.unpack("<%dh" % n, data[:n * 2]))
+            except Exception:
+                continue
+            if ch > 1 and vals:
+                vals = [sum(vals[i:i + ch]) // ch for i in range(0, len(vals), ch)]
+            out.extend(vals)
+        if not out:
+            return None
+        return rate, out
+    except Exception:
+        return None
+
+
+def _oc_write_pcm16(dest_path, rate, samples):
+    import wave
+    import struct
+    with wave.open(dest_path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(rate))
+        w.writeframes(struct.pack("<%dh" % len(samples), *[max(-32768, min(32767, int(v))) for v in samples]))
+
+
 def _oc_render_gain(src_path, dest_path, pct):
     """Гейн-копия wav (16-бит PCM): шкала ×2 — 50% это исходная громкость,
-    100% в два раза громче (с клиппингом в int16). Возвращает True, если
-    получилось; иначе False (нестандартный формат — берём как есть)."""
+    100% в два раза громче (с клиппингом в int16). Не-WAV декодируется
+    через системные кодеки, копия всегда WAV. Возвращает True, если
+    получилось; иначе False (берём файл как есть)."""
     import wave
     import struct
     try:
         pct = max(0, min(100, int(pct)))
     except Exception:
         return False
+    k = pct / 50.0
     try:
         with wave.open(src_path, "rb") as w:
             if w.getsampwidth() != 2:
-                return False
+                raise ValueError("not s16")
             params = (w.getnchannels(), w.getsampwidth(), w.getframerate(),
                       w.getnframes(), w.getcomptype(), w.getcompname())
             frames = w.readframes(w.getnframes())
-        k = pct / 50.0
         n = len(frames) // 2
         vals = struct.unpack("<%dh" % n, frames[:n * 2])
         out = struct.pack("<%dh" % n, *[max(-32768, min(32767, int(v * k))) for v in vals])
@@ -17443,6 +17538,16 @@ def _oc_render_gain(src_path, dest_path, pct):
             w.setsampwidth(params[1])
             w.setframerate(params[2])
             w.writeframes(out)
+        return True
+    except Exception:
+        pass
+    try:
+        decoded = _oc_decode_pcm16(src_path)
+        if not decoded:
+            return False
+        rate, vals = decoded
+        out = [max(-32768, min(32767, int(v * k))) for v in vals]
+        _oc_write_pcm16(dest_path, rate, out)
         return True
     except Exception:
         return False
@@ -17593,6 +17698,12 @@ class OcNotifyDialog(QDialog):
         warn.setFont(QFont("Segoe UI", 9, QFont.Bold))
         warn.setStyleSheet("color: rgb(224, 90, 90); background: transparent; border: none;")
         layout.addWidget(warn)
+
+        fmt = QLabel(tr("Поддерживаются только WAV-файлы."))
+        fmt.setAlignment(Qt.AlignCenter)
+        fmt.setFont(QFont("Segoe UI", 9))
+        fmt.setStyleSheet("color: rgb(160, 160, 168); background: transparent; border: none;")
+        layout.addWidget(fmt)
 
         # Тумблер вкл/выкл
         tog_row = QHBoxLayout()
@@ -17857,7 +17968,7 @@ class OcNotifyDialog(QDialog):
         if not start or not os.path.isdir(start):
             start = os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(
-            self, tr("Выбрать звук"), start, "WAV (*.wav);;All files (*.*)")
+            self, tr("Выбрать звук"), start, _OC_AUDIO_FILTER)
         if not path:
             return
         # Копируем в папку приложения: оригинал можно удалять — проблем не будет.
