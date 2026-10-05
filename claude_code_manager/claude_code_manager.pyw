@@ -985,7 +985,7 @@ TRANSLATIONS = {
     "Звуки opencode: когда код готов или когда ИИ нужно твоё действие — вопрос, разрешение или исправление ошибки.": "opencode sounds: when the code is ready or when the AI needs you — a question, a permission request, or an error to fix.",
     "Код готов": "Code ready",
     "Готово": "Done",
-    "Вопрос от ИИ": "AI question",
+    "Вопрос": "Question",
     "Нужно разрешение": "Permission needed",
     "Выбрать": "Browse",
     "Выбрать звук": "Pick a sound",
@@ -7622,7 +7622,7 @@ class _OcInfoRow(QWidget):
 # не выносим, но в tui.json пишем (фолбэк opencode) — маппятся на «Готово».
 OC_NOTIFY_KEYS = (
     ("done", "Готово"),
-    ("question", "Вопрос от ИИ"),
+    ("question", "Вопрос"),
     ("permission", "Нужно разрешение"),
     ("error", "Ошибка"),
 )
