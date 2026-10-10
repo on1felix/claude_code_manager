@@ -29,7 +29,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QRect, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "6.0.0"  # Для обновлений
+APP_VERSION = "6.0.1"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -452,11 +452,107 @@ def release_provider_color(pid):
         _save_provider_colors(colors)
 
 
+def _strip_settings_comments(text):
+    """Выкидывает только полно-строчные // комментарии (такие пишет наш
+    writer ниже). Значений не касается: в нашем формате значение никогда
+    не начинается с // с начала строки (URL всегда после "key": )."""
+    try:
+        return "\n".join(l for l in text.split("\n")
+                         if not l.lstrip().startswith("//"))
+    except Exception:
+        return text
+
+
+def _parse_settings_text(raw):
+    """Парсит текст settings.json: сначала как обычный JSON, затем —
+    как JSONC с нашими комментариями. Кидает исключение, если оба
+    варианта не разобрались."""
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    return json.loads(_strip_settings_comments(raw))
+
+
+# Порядок блоков в settings.json: файл сам раскладывается по полочкам
+# при каждом сохранении (см. _dump_settings_ordered). Неизвестные ключи
+# не теряются — уезжают в хвост ("Other").
+_SETTINGS_BLOCKS = (
+    ("App", (
+        "app_language", "app_mode", "auto_update_enabled",
+        "seen_update_id", "last_run_version", "official_warning_dismissed",
+        "working_directory", "working_directory_anthropic",
+        "working_directory_official", "working_directory_openai",
+        "working_directory_customurl",
+    )),
+    ("Anthropic + Claude Code - shared models, effort and keys", (
+        "use_custom_token", "custom_model", "reasoning_effort",
+        "reasoning_ultracode", "custom_base_url", "custom_base_urls",
+        "api_keys", "selected_key_id", "custom_api_key",
+    )),
+    ("Custom models (Anthropic)", (
+        "custom_models",
+    )),
+    ("OpenAI (Codex)", (
+        "openai_model", "openai_effort", "openai_base_url",
+        "openai_base_urls",
+    )),
+    ("Custom URL (opencode)", (
+        "oc_base_url", "oc_base_urls", "oc_keys", "oc_selected_key_id",
+        "oc_api_key", "oc_notify_enabled",
+    )),
+)
+
+
+def _dump_settings_ordered(data):
+    """Текст settings.json: блоки по _SETTINGS_BLOCKS, между блоками —
+    одна пустая строка, над блоком — английский // комментарий.
+    Кидает исключение при несериализуемых значениях (вызывающий
+    откатывается на обычный json.dump)."""
+    items = dict(data) if isinstance(data, dict) else {}
+    blocks = []
+    seen = set()
+    for comment, keys in _SETTINGS_BLOCKS:
+        present = [k for k in keys if k in items]
+        if present:
+            blocks.append((comment, present))
+            seen.update(present)
+    rest = [k for k in items if k not in seen]
+    if rest:
+        blocks.append(("Other (kept as-is)", rest))
+    rendered = []
+    for comment, keys in blocks:
+        pairs = []
+        for k in keys:
+            val = json.dumps(items[k], ensure_ascii=False, indent=2)
+            vlines = val.split("\n")
+            first = "  " + json.dumps(k, ensure_ascii=False) + ": " + vlines[0]
+            body = ["  " + ln for ln in vlines[1:]]
+            pairs.append([first] + body)
+        rendered.append((comment, pairs))
+    lines = ["{"]
+    total = sum(len(pairs) for _, pairs in rendered)
+    done = 0
+    for bi, (comment, pairs) in enumerate(rendered):
+        if bi > 0:
+            lines.append("")
+        lines.append("  // " + comment)
+        for pair in pairs:
+            done += 1
+            comma = "," if done < total else ""
+            pair[-1] = pair[-1] + comma
+            lines.extend(pair)
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
+                # Файл у нас с // комментариями-блоков: обычный json.load
+                # их не возьмёт, поэтому парсим с фолбэком на JSONC.
+                loaded = _parse_settings_text(f.read())
         except Exception as e:
             # Файл существует, но не распарсился (битый JSON и т.п.).
             # Делаем бэкап, чтобы save_settings НЕ затёр пользовательские данные дефолтами.
@@ -619,8 +715,14 @@ def save_settings(settings):
         pass
     tmp = SETTINGS_FILE + ".tmp"
     try:
+        # Пишем по полочкам: блоки + английские комментарии (см. выше).
+        # Не вышло — обычный дамп, лишь бы не потерять данные.
+        try:
+            text = _dump_settings_ordered(data)
+        except Exception:
+            text = json.dumps(data, ensure_ascii=False, indent=2)
         with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(text)
         os.replace(tmp, SETTINGS_FILE)
     except:
         try:
@@ -1128,7 +1230,7 @@ TRANSLATIONS = {
     "Обновление opencode CLI": "Update opencode CLI",
     "Удалить opencode CLI": "Uninstall opencode CLI",
     "npm установит последнюю версию opencode.": "npm will install the latest opencode version.",
-    "Будет установлен opencode CLI (npm-пакет opencode-ai).\n\nОткроется окно PowerShell, где пойдёт установка.": "opencode CLI (the opencode-ai npm package) will be installed.\n\nA PowerShell window will open where the install will run.",
+    "Будет установлен opencode CLI (npm-пакет @opencode/cli).\n\nОткроется окно PowerShell, где пойдёт установка.": "opencode CLI (the @opencode/cli npm package) will be installed.\n\nA PowerShell window will open where the install will run.",
     "Установка opencode через npm...": "Installing opencode via npm...",
     "Готово. Проверь команду: opencode -v": "Done. Check the command: opencode -v",
     "Будет удалён глобальный npm-пакет opencode": "The global npm package opencode will be removed",
@@ -1337,6 +1439,10 @@ TRANSLATIONS = {
     "Модель уже добавлена": "Model already added",
     "Своя модель — ID передаётся CLI как есть": "Custom model — ID is passed to CLI as-is",
     "Модель удалена": "Model removed",
+    # ── Окно своих моделей (дизайн как у Base URL)
+    "Клик — выбрать модель.": "Click — pick a model.",
+    "Моделей пока нет — добавьте первую ниже": "No custom models yet — add the first one below",
+    "Добавить новую модель:": "Add a new model:",
     "Своя модель недоступна в официальном режиме — переключено на Opus 4.8": "Custom model is unavailable in official mode — switched to Opus 4.8",
     "Удалить свою модель?": "Delete custom model?",
     # ── Фоновый запуск (тяжёлое в рабочих потоках)
@@ -1868,7 +1974,7 @@ def _load_lang_setting():
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                d = json.load(f)
+                d = _parse_settings_text(f.read())
                 lang = d.get("app_language", "en")
                 if lang in ("ru", "en"):
                     return lang
@@ -1921,7 +2027,7 @@ def tr(ru_text):
 def check_oc_latest_version():
     """Возвращает последнюю версию opencode CLI из npm-реестра"""
     try:
-        req = Request("https://registry.npmjs.org/opencode-ai/latest", headers={'User-Agent': 'ClaudeManager-Updater'})
+        req = Request("https://registry.npmjs.org/@opencode/cli/latest", headers={'User-Agent': 'ClaudeManager-Updater'})
         with urlopen(req, timeout=10, context=_ssl_context) as resp:
             data = json.loads(resp.read().decode('utf-8'))
         return data.get('version', '')
@@ -3757,6 +3863,10 @@ class PickerComboBox(StyledComboBox):
             self._pick_disabled = set(disabled)
 
     def showPopup(self):
+        # Отключённое поле (Base URL в Anthropic/OpenAI) — только
+        # отображение: пикеру тут делать нечего, даже программно.
+        if not self.isEnabled():
+            return
         # Если уже открыт — игнорируем повторный вызов
         if self._picker_dlg is not None:
             return
@@ -7066,56 +7176,20 @@ class ModelSlider(QWidget):
         p.end()
 
 
-class CustomModelButton(StyledButton):
-    """Кнопка своей модели с крестиком внутри справа: клик — выбрать,
-    крестик — удалить (подтверждение спрашивает владелец).
-    Крестик — дочерний _CloseButton, позицию держим в resize/show."""
-
-    delete_clicked = Signal()
-
-    X_SIZE = 24
-    X_MARGIN = 6
-
-    def __init__(self, text, parent=None):
-        super().__init__(text, parent, compact=True)
-        self.set_hover_color(145, 145, 150)
-        self.setMinimumHeight(34)
-        self._x = _CloseButton(parent=self)
-        self._x.setFixedSize(self.X_SIZE, self.X_SIZE)
-        self._x.clicked.connect(self._on_x)
-        self._place_x()
-
-    def _on_x(self):
-        try:
-            self.delete_clicked.emit()
-        except Exception:
-            pass
-
-    def _place_x(self):
-        try:
-            self._x.move(max(0, self.width() - self.X_SIZE - self.X_MARGIN),
-                         max(0, (self.height() - self.X_SIZE) // 2))
-            self._x.raise_()
-        except Exception:
-            pass
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._place_x()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._place_x()
-
-
 class CustomModelsWindow(QDialog):
     """Окно своих моделей (только Anthropic): список + добавление.
     Каждая строка — кнопка с ID (серая) и крестик; удаление — с
     подтверждением. Всё плавно, как остальные кнопки приложения."""
 
-    picked = Signal(str)  # клик по модели — выбрать
-    model_added = Signal(str)  # "+" — новый ID
+    picked = Signal(str)  # клик по карточке — выбрать
+    model_added = Signal(str)  # добавление нового ID
     model_deleted = Signal(str)  # крестик + подтверждение
+
+    CARD_H = 46
+    GAP = 8
+    VISIBLE_ROWS = 4
+    WIDTH = 540
+    ACCENT = (145, 145, 150)
 
     def __init__(self, models=None, selected=None, parent=None):
         super().__init__(parent)
@@ -7132,6 +7206,7 @@ class CustomModelsWindow(QDialog):
 
         container = DottedFrame()
         container.setObjectName("customModelsContainer")
+        self._container = container
         container.setStyleSheet("""
             QFrame#customModelsContainer {
                 background-color: rgb(20, 20, 25);
@@ -7141,65 +7216,122 @@ class CustomModelsWindow(QDialog):
         """)
         outer.addWidget(container)
 
-        shadow = QGraphicsDropShadowEffect(container)
-        shadow.setColor(QColor(0, 0, 0, 200))
-        shadow.setBlurRadius(40)
-        shadow.setOffset(0, 6)
-        container.setGraphicsEffect(shadow)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(26, 18, 26, 22)
+        layout.setSpacing(10)
 
-        inner = QVBoxLayout(container)
-        inner.setContentsMargins(18, 12, 18, 16)
-        inner.setSpacing(10)
+        # Заголовок + крестик закрытия
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
 
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        head.addSpacing(24)
-        head.addStretch()
+        # Спейсер слева чтобы заголовок был по центру
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(28, 28)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(left_spacer)
+
         title = QLabel(tr("Свои модели"))
-        title.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        title.setStyleSheet("color: rgb(200, 200, 210); background: transparent; border: none;")
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
-        head.addWidget(title)
-        head.addStretch()
-        close_btn = _CloseButton(parent=container)
-        close_btn.setFixedSize(24, 24)
-        close_btn.clicked.connect(self.accept)
-        head.addWidget(close_btn)
-        inner.addLayout(head)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        title_row.addWidget(title, 1)
 
-        self._list_box = QVBoxLayout()
-        self._list_box.setContentsMargins(0, 0, 0, 0)
-        self._list_box.setSpacing(8)
-        inner.addLayout(self._list_box)
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.accept)
+        title_row.addWidget(self.btn_close)
+        layout.addLayout(title_row)
 
-        add_btn = StyledButton(tr("Добавить"), parent=container,
-                               compact=True)
-        add_btn.set_hover_color(145, 145, 150)
-        add_btn.clicked.connect(self._on_add)
-        inner.addWidget(add_btn)
+        hint = QLabel(tr("Клик — выбрать модель."))
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color: rgb(160, 160, 168); background: transparent; border: none;")
+        layout.addWidget(hint)
 
-        self._rebuild_list()
+        # Скролл-область со списком — как в управлении Base URL.
+        # Высота фиксирована на VISIBLE_ROWS: дальше — скролл.
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: 2px solid rgb(60, 60, 65); border-radius: 8px; }
+            QScrollArea > QWidget > QWidget { background: transparent; }
+            QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+            QScrollBar::handle:vertical { background: rgb(70,70,78); border-radius: 8px; min-height: 30px; }
+            QScrollBar::handle:vertical:hover { background: rgb(95,95,105); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+        self.cards_host = QWidget()
+        self.cards_host.setStyleSheet("background: transparent;")
+        self.cards_layout = QVBoxLayout(self.cards_host)
+        self.cards_layout.setContentsMargins(8, 8, 12, 8)
+        self.cards_layout.setSpacing(self.GAP)
+        self.scroll.setWidget(self.cards_host)
+        layout.addWidget(self.scroll)
+        self._cards = []
 
-        self.setFixedWidth(480)
-        self.adjustSize()
+        # Пустой плейсхолдер
+        self.empty_lbl = QLabel(tr("Моделей пока нет — добавьте первую ниже"))
+        self.empty_lbl.setFont(QFont("Segoe UI", 9))
+        self.empty_lbl.setAlignment(Qt.AlignCenter)
+        self.empty_lbl.setStyleSheet("color: rgb(110,110,116); background: transparent; border: none;")
+        layout.addWidget(self.empty_lbl)
 
-        self.setWindowOpacity(0.0)
-        self._fade_in = QPropertyAnimation(self, b"windowOpacity", self)
-        self._fade_in.setDuration(220)
-        self._fade_in.setStartValue(0.0)
-        self._fade_in.setEndValue(1.0)
-        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        # Разделитель — добавление новой модели
+        add_label = QLabel(tr("Добавить новую модель:"))
+        add_label.setFont(QFont("Segoe UI", 10))
+        add_label.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
+        layout.addWidget(add_label)
+
+        add_row = QHBoxLayout()
+        self.model_input = QLineEdit()
+        self.model_input.setPlaceholderText(tr("Например: claude-haiku-5.5:free"))
+        self.model_input.setFont(QFont("Segoe UI", 9))
+        self.model_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #18181f;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        add_row.addWidget(self.model_input, 1)
+
+        self.btn_add_model = StyledButton(tr("Добавить"), compact=True)
+        self.btn_add_model.set_hover_color(145, 145, 150)
+        self.btn_add_model.setMinimumHeight(0)
+        self.btn_add_model.setFixedHeight(36)
+        self.btn_add_model.setMaximumWidth(110)
+        self.btn_add_model.clicked.connect(self.add_model)
+        add_row.addWidget(self.btn_add_model)
+
+        layout.addLayout(add_row)
+        outer.addWidget(container)
+
+        self._rebuild_cards()
+
+        self.setFixedWidth(self.WIDTH)
+
+        # Плавное появление
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(220)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
         self._closing = False
 
     def showEvent(self, event):
         super().showEvent(event)
         try:
-            self._fade_in.start()
+            self._fade_anim.start()
         except Exception:
             pass
 
     def accept(self):
-        """Плавное закрытие (выбор/крестик/Esc) — как у остальных окон."""
         try:
             if getattr(self, "_closing", False):
                 return
@@ -7207,12 +7339,12 @@ class CustomModelsWindow(QDialog):
             pass
         self._closing = True
         try:
-            fade = QPropertyAnimation(self, b"windowOpacity", self)
-            fade.setDuration(200)
-            fade.setStartValue(self.windowOpacity())
+            fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+            fade.setDuration(220)
+            fade.setStartValue(self._opacity_effect.opacity())
             fade.setEndValue(0.0)
             fade.setEasingCurve(QEasingCurve.OutCubic)
-            fade.finished.connect(self._finish_accept)
+            fade.finished.connect(lambda: super(CustomModelsWindow, self).accept())
             fade.start()
             self._fade_out = fade
         except Exception:
@@ -7221,39 +7353,38 @@ class CustomModelsWindow(QDialog):
             except Exception:
                 pass
 
-    def _finish_accept(self):
-        try:
-            super().accept()
-        except Exception:
-            pass
-
     def reject(self):
-        try:
-            if getattr(self, "_closing", False):
-                return
-        except Exception:
-            pass
-        self._closing = True
-        try:
-            fade = QPropertyAnimation(self, b"windowOpacity", self)
-            fade.setDuration(200)
-            fade.setStartValue(self.windowOpacity())
-            fade.setEndValue(0.0)
-            fade.setEasingCurve(QEasingCurve.OutCubic)
-            fade.finished.connect(self._finish_reject)
-            fade.start()
-            self._fade_out = fade
-        except Exception:
+        # Изменения уже разосланы сигналами, поэтому Escape/крестик ведут
+        # себя как accept (ничего не теряется).
+        self.accept()
+
+    # ── Перетаскивание самого окна (как у управления Base URL) ──
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._win_drag_offset = (event.globalPosition().toPoint()
+                                     - self.frameGeometry().topLeft())
+            self._win_dragging = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, "_win_dragging", False) and (event.buttons() & Qt.LeftButton):
+            self.move(event.globalPosition().toPoint() - self._win_drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if getattr(self, "_win_dragging", False):
+            self._win_dragging = False
             try:
-                super().reject()
+                self.btn_close.resync_hover(event.globalPosition())
             except Exception:
                 pass
-
-    def _finish_reject(self):
-        try:
-            super().reject()
-        except Exception:
-            pass
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -7261,92 +7392,122 @@ class CustomModelsWindow(QDialog):
             return
         super().keyPressEvent(event)
 
+    def _refit(self):
+        """Высота скролла под число строк (до VISIBLE_ROWS, дальше скролл)."""
+        n = len(self._models)
+        vis = min(max(n, 1), self.VISIBLE_ROWS)
+        h = vis * self.CARD_H + max(vis - 1, 0) * self.GAP + 20
+        self.scroll.setFixedHeight(h)
+
     def set_models(self, models, selected=None):
         self._models = [m for m in (models or [])
                         if isinstance(m, str) and m.strip()]
         if selected is None:
             selected = self._selected
         self._selected = selected if selected in self._models else None
-        self._rebuild_list()
+        self._rebuild_cards()
+
+    def _rebuild_cards(self):
+        """Перестраивает карточки из self._models, подсвечивает выбранную."""
+        while self.cards_layout.count():
+            item = self.cards_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._cards = []
+        for mid in self._models:
+            card = _UrlCard(mid, selected=(mid == self._selected),
+                            accent=self.ACCENT, parent=self.cards_host,
+                            on_delete=self._remove_model)
+            card.setFixedHeight(self.CARD_H)
+            card.clicked.connect(lambda m=mid: self._select(m))
+            self.cards_layout.addWidget(card)
+            self._cards.append(card)
+        self.empty_lbl.setVisible(not self._models)
+        self.scroll.setVisible(bool(self._models))
+        self._refit()
+        # Окно должно и расти, и уменьшаться: сбрасываем запомненные
+        # ограничения и переподгоняем размер асинхронно.
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        QTimer.singleShot(0, self._refit_window)
+
+    def _refit_window(self):
+        # Пересчёт высоты под текущий контент. Позицию держим по левому
+        # верхнему углу — иначе Qt при уменьшении «подтягивает» окно вверх.
+        if not self.isVisible():
+            return
+        top_left = self.pos()
         try:
-            self.adjustSize()
+            self.layout().activate()
         except Exception:
             pass
+        self.adjustSize()
+        try:
+            target_h = max(self.sizeHint().height(),
+                           self.minimumSizeHint().height())
+        except Exception:
+            target_h = self.height()
+        self.resize(self.WIDTH, target_h)
+        self.setFixedWidth(self.WIDTH)
+        if getattr(self, "_positioned", False):
+            self.move(top_left)
+        # Принудительная перерисовка (frameless + translucent): иначе после
+        # add/delete остаются «призраки» удалённых виджетов.
+        try:
+            self._container.update()
+            self.scroll.viewport().update()
+        except Exception:
+            pass
+        self.update()
+        self.repaint()
 
-    def _clear_list(self):
-        while self._list_box.count():
-            item = self._list_box.takeAt(0)
-            w = item.widget() if item is not None else None
-            if w is not None:
-                try:
-                    w.deleteLater()
-                except Exception:
-                    pass
-
-    def _rebuild_list(self):
-        self._clear_list()
-        for mid in self._models:
-            btn = CustomModelButton(mid, parent=self)
-            if mid == self._selected:
-                btn.set_lit(True)
-            btn.clicked.connect(lambda _checked=False, m=mid: self._on_pick(m))
-            btn.delete_clicked.connect(
-                lambda m=mid: self._on_delete(m))
-            self._list_box.addWidget(btn)
-
-    def _on_pick(self, model_id):
+    def _select(self, model_id):
+        """Клик по карточке — выбрать модель (окно остаётся открытым,
+        закрывается крестиком)."""
         if model_id not in self._models:
             return
         self._selected = model_id
+        try:
+            for card in self._cards:
+                card.set_selected(card._url == model_id)
+        except Exception:
+            pass
         try:
             self.picked.emit(model_id)
         except Exception:
             pass
 
-    def _on_delete(self, model_id):
+    def _remove_model(self, model_id):
+        """Крестик на карточке: подтверждение, удаление, фолбэк выбора."""
         if model_id not in self._models:
             return
-        try:
-            dlg = ConfirmDeleteDialog(model_id, parent=self,
+        confirm = ConfirmDeleteDialog(model_id, self,
                                       question_text=tr("Удалить свою модель?"))
-            if dlg.exec() != QDialog.Accepted:
-                return
-        except Exception:
+        if confirm.exec() != QDialog.Accepted:
             return
-        try:
-            self._models.remove(model_id)
-        except Exception:
-            return
+        self._models.remove(model_id)
         if self._selected == model_id:
-            self._selected = None
-        self._rebuild_list()
+            self._selected = self._models[0] if self._models else None
+        self._rebuild_cards()
         try:
             self.model_deleted.emit(model_id)
         except Exception:
             pass
-        try:
-            self.adjustSize()
-        except Exception:
-            pass
 
-    def _on_add(self):
-        try:
-            dlg = AddModelDialog(parent=self,
-                                 title=tr("Добавить модель"),
-                                 label=tr("Введите ID модели:"),
-                                 placeholder=tr("Например: claude-haiku-5.5:free"))
-            if dlg.exec() != QDialog.Accepted:
-                return
-            new_id = dlg.get_model_name()
-        except Exception:
+    def add_model(self):
+        mid = self.model_input.text().strip()
+        if not mid:
             return
-        if not new_id:
+        if mid in self._models:
+            QMessageBox.information(self, "Информация", tr("Модель уже добавлена"))
+            self._select(mid)
             return
-        if new_id not in self._models:
-            self._models.append(new_id)
-            self._rebuild_list()
+        self._models.append(mid)
+        self.model_input.clear()
+        self._rebuild_cards()
         try:
-            self.model_added.emit(new_id)
+            self.model_added.emit(mid)
         except Exception:
             pass
 
@@ -7612,7 +7773,7 @@ class ModelDialog(QDialog):
             pass
 
     def _open_custom_window(self):
-        """Окно списка и добавления своих моделей."""
+        """Окно списка и добавления своих моделей (по центру ModelDialog)."""
         if not getattr(self, "_show_custom", False):
             return
         try:
@@ -7629,6 +7790,15 @@ class ModelDialog(QDialog):
         except Exception:
             pass
         try:
+            win.adjustSize()
+            dw, dh = win.width(), win.height()
+            pg = self.frameGeometry()
+            center = pg.center()
+            win.move(center.x() - dw // 2, center.y() - dh // 2)
+            win._positioned = True
+        except Exception:
+            pass
+        try:
             win.exec()
         except Exception:
             pass
@@ -7639,24 +7809,21 @@ class ModelDialog(QDialog):
             pass
 
     def _on_window_picked(self, model_id):
+        # Окно остаётся открытым — выбрали, смотрим дальше,
+        # закрываем крестиком. Применение — при закрытии ModelDialog.
         self._on_custom_selected(model_id)
-        try:
-            w = self._custom_window
-            self._custom_window = None
-            if w is not None:
-                w.accept()
-        except Exception:
-            pass
 
     def _on_window_added(self, new_id):
+        # Окно остаётся открытым (как при выборе): список обновляем,
+        # добавленную сразу выбираем.
         if not new_id:
             return
         if new_id in self._custom_models:
-            # Уже есть — просто выбрать + подсказка, окно закрыть.
+            # Уже есть — просто выбрать + подсказка.
             self._on_custom_selected(new_id)
             self.desc_lbl.setText(tr("Модель уже добавлена"))
         elif new_id in MODEL_ORDER:
-            # Встроенная — выбрать её на слайдере, окно закрыть.
+            # Встроенная — выбрать её на слайдере.
             self._select_any_model(new_id)
         else:
             self._custom_models.append(new_id)
@@ -7667,10 +7834,9 @@ class ModelDialog(QDialog):
             except Exception:
                 pass
         try:
-            w = self._custom_window
-            self._custom_window = None
-            if w is not None:
-                w.accept()
+            if self._custom_window is not None:
+                self._custom_window.set_models(self._custom_models,
+                                               self._model)
         except Exception:
             pass
         try:
@@ -19980,12 +20146,21 @@ def _oc_build_ccm_tui(settings):
 # ============================================================
 # PUSH-УВЕДОМЛЕНИЯ opencode (Windows-тосты)
 # ------------------------------------------------------------
-# Всё хозяйство — в папке plugin\\: настройки (ccm-push.json) и рантайм
-# (ccm-push.js, ccm-toast.ps1, иконка). В общие настройки
+# Всё хозяйство — в папке plugin\\: настройки (ccm-notify.json) и рантайм
+# (ccm-push.js для v1, ccm-notify.ps1, иконка). В общие настройки
 # ничего не пишем.
 # Плагин ccm-push.js подписывается на события opencode (session.idle,
-# session.error, permission.asked, question.asked) и дёргает ccm-toast.ps1 —
+# session.error, permission.asked, question.asked) и дёргает ccm-notify.ps1 —
 # WinRT-тост «Claude Code Manager» + «Opencode - <событие>».
+# Для opencode v2 — тот же тост через plugin/ccm-notify/index.js
+# (Plugin.define + ctx.event.subscribe; session.execution.succeeded/failed
+# маппятся на session.idle/session.error; question.v2.asked и form.created
+# маппятся на question.asked; дочерние idle молчат — всё как в v1).
+# Тумблер: выкл — плагина нет в scoped-конфиге и файлы снесены, вкл —
+# пересоздаются при запуске (как в v1).
+# V2 грузит плагины только директориями («must be a directory»), поэтому
+# scoped-конфиг пишет ключ plugins с путём папки. Висячие локальные пути
+# из plugin-списков выкидываем при мерже (иначе «failed»-строки).
 # Звук играет сам opencode (тост бесшумный). Клик ничего не делает —
 # плашка просто закрывается. Плагин подключается только
 # per-launch (ключ plugin в scoped opencode.json), глобал не трогаем.
@@ -19994,10 +20169,10 @@ def _oc_build_ccm_tui(settings):
 _OC_PUSH_TITLE = "Claude Code Manager"
 _OC_PUSH_AUMID = "On1Felix.ClaudeCodeManager"
 _OC_PUSH_LNK_NAME = "Claude Code Manager.lnk"
-_OC_PUSH_CONFIG_NAME = "ccm-push.json"
+_OC_PUSH_CONFIG_NAME = "ccm-notify.json"
 
 _OC_PUSH_JS_TEMPLATE = """// Claude Code Manager — push-уведомления opencode.
-// События сессии -> Windows-тост через ccm-toast.ps1. Любая ошибка здесь
+// События сессии -> Windows-тост через ccm-notify.ps1. Любая ошибка здесь
 // молча глотается: уведомление никогда не должно ломать сессию.
 export const CcmPush = async ({ $ }) => {
   const PS1 = __CCM_PS1__;
@@ -20017,18 +20192,42 @@ export const CcmPush = async ({ $ }) => {
       "question.asked": "Answer the question",
     },
   };
+  const readCfgText = async () => {
+    // Bun (штатно под opencode).
+    try {
+      if (typeof Bun !== "undefined" && Bun.file) {
+        const f = Bun.file(CFG);
+        if (await f.exists()) return await f.text();
+      }
+    } catch { /* fall through */ }
+    // Node-фолбэк: Bun может быть недоступен в песочнице плагинов.
+    try {
+      const mod = await import("node:fs/promises").catch(() => null)
+        || await import("fs/promises").catch(() => null);
+      if (mod && mod.readFile) return await mod.readFile(CFG, "utf8");
+    } catch { /* fall through */ }
+    return "";
+  };
+  const parseCfg = (text) => {
+    try {
+      return JSON.parse(text);
+    } catch { /* пробуем как JSONC */ }
+    try {
+      // settings.json у нас с полно-строчными // комментариями.
+      const stripped = String(text || "").split("\\n")
+        .filter((l) => !l.trimStart().startsWith("//")).join("\\n");
+      return JSON.parse(stripped);
+    } catch {
+      return null;
+    }
+  };
   const langOf = async () => {
     // Язык читаем из настроек в момент события — переключение языка
     // в приложении применяется сразу, перезапуск не нужен.
     try {
-      if (typeof Bun !== "undefined" && Bun.file) {
-        const f = Bun.file(CFG);
-        if (await f.exists()) {
-          const d = await f.json();
-          const l = (d && d.app_language) || "";
-          if (l === "en" || l === "ru") return l;
-        }
-      }
+      const d = parseCfg(await readCfgText());
+      const l = (d && d.app_language) || "";
+      if (l === "en" || l === "ru") return l;
     } catch {
       /* fall through to default */
     }
@@ -20268,8 +20467,8 @@ public class ShortcutAumid {
 
 
 def _oc_push_dir():
-    """Папка push-хозяйства: настройки (ccm-push.json) и рантайм
-    (ccm-push.js, тосты, иконка)."""
+    """Папка push-хозяйства: настройки (ccm-notify.json) и рантайм
+    (ccm-push.js для v1, ccm-notify/, тосты, иконка)."""
     try:
         return os.path.join(SETTINGS_DIR, "plugin")
     except Exception:
@@ -20277,7 +20476,7 @@ def _oc_push_dir():
 
 
 def _oc_push_config_path():
-    """Файл настроек плагина: plugin\\ccm-push.json. В общие настройки
+    """Файл настроек плагина: plugin\\ccm-notify.json. В общие настройки
     ничего не пишем."""
     try:
         d = _oc_push_dir()
@@ -20290,7 +20489,8 @@ def _oc_push_config_path():
 
 def _oc_push_config_load():
     """Настройки плагина: enabled по умолчанию True (как звуки для новых).
-    Одноразово подхватываем legacy oc_notify_push из общих/звуковых настроек."""
+    Одноразово подхватываем legacy oc_notify_push из общих/звуковых настроек,
+    а также значение из конфига прошлого поколения (ccm-push.json)."""
     try:
         p = _oc_push_config_path()
         if p and os.path.exists(p):
@@ -20301,6 +20501,15 @@ def _oc_push_config_load():
                     return {"enabled": bool(data.get("enabled", True))}
             except Exception:
                 pass
+        try:
+            old = os.path.join(os.path.dirname(p), "ccm-push.json") if p else ""
+            if old and os.path.exists(old):
+                with open(old, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "enabled" in data:
+                    return {"enabled": bool(data.get("enabled", True))}
+        except Exception:
+            pass
         legacy = None
         try:
             legacy = _oc_legacy_push_flag()
@@ -20319,7 +20528,7 @@ def _oc_legacy_push_flag():
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                data = _parse_settings_text(f.read())
             if isinstance(data, dict) and "oc_notify_push" in data:
                 return bool(data.get("oc_notify_push", True))
     except Exception:
@@ -20337,7 +20546,7 @@ def _oc_legacy_push_flag():
 
 
 def _oc_push_config_save(enabled):
-    """Пишет enabled в plugin\\ccm-push.json (атомарно)."""
+    """Пишет enabled в plugin\\ccm-notify.json (атомарно)."""
     try:
         p = _oc_push_config_path()
         if not p:
@@ -20375,7 +20584,7 @@ def _oc_push_config_save(enabled):
 
 
 def _oc_push_enabled():
-    """Пуши включены? Источник — plugin\\ccm-push.json, дефолт True."""
+    """Пуши включены? Источник — plugin\\ccm-notify.json, дефолт True."""
     try:
         return bool(_oc_push_config_load().get("enabled", True))
     except Exception:
@@ -20564,22 +20773,293 @@ def _oc_push_shortcut_locked():
         return ""
 
 
-def _oc_push_files():
-    """Возвращает (js, ps1), гарантируя свежие файлы в plugin\\. Пусто при неудаче."""
+_OC_PUSH_V2_TEMPLATE = """// CCM Notify — push notifications for opencode v2.
+// Same logic as the v1 plugin: session lifecycle events become silent
+// Windows toasts. Only the transport changed for v2:
+// Plugin.define entrypoint, directory layout, renamed events
+// (session.execution.succeeded/failed carry the session id in
+// event.data.sessionID; the question flow arrives as question.v2.asked
+// or form.created; the permission flow as permission.v2.asked).
+// Nothing here may throw: notifications must never break a session.
+import { Plugin } from "@opencode/plugin";
+
+const TEXTS = {
+  ru: {
+    "session.idle": "Готово",
+    "session.error": "Ошибка",
+    "permission.asked": "Подтвердите действие",
+    "question.asked": "Ответьте на вопрос",
+  },
+  en: {
+    "session.idle": "Done",
+    "session.error": "Error",
+    "permission.asked": "Confirm the action",
+    "question.asked": "Answer the question",
+  },
+};
+const PS1 = __CCM_PS1__;
+const CFG = __CCM_SETTINGS__;
+const APP = "Claude Code Manager";
+const readCfgText = async () => {
+  // Bun (штатно под opencode).
+  try {
+    if (typeof Bun !== "undefined" && Bun.file) {
+      const f = Bun.file(CFG);
+      if (await f.exists()) return await f.text();
+    }
+  } catch { /* fall through */ }
+  // Node-фолбэк: Bun может быть недоступен в песочнице плагинов.
+  try {
+    const mod = await import("node:fs/promises").catch(() => null)
+      || await import("fs/promises").catch(() => null);
+    if (mod && mod.readFile) return await mod.readFile(CFG, "utf8");
+  } catch { /* fall through */ }
+  return "";
+};
+const parseCfg = (text) => {
+  try {
+    return JSON.parse(text);
+  } catch { /* пробуем как JSONC */ }
+  try {
+    // settings.json у нас с полно-строчными // комментариями.
+    const stripped = String(text || "").split("\\n")
+      .filter((l) => !l.trimStart().startsWith("//")).join("\\n");
+    return JSON.parse(stripped);
+  } catch {
+    return null;
+  }
+};
+const langOf = async () => {
+  // Язык читаем из настроек в момент события — переключение языка
+  // в приложении применяется сразу, перезапуск не нужен.
+  try {
+    const d = parseCfg(await readCfgText());
+    const l = (d && d.app_language) || "";
+    if (l === "en" || l === "ru") return l;
+  } catch {
+    /* fall through to default */
+  }
+  return "en";
+};
+const runHidden = async (psArgs) => {
+  // Строго без окна: вспышка консоли крадёт фокус и дёргает терминал.
+  // Ветка Bun — как в v1; ветки `$` в v2 нет, поэтому фолбэк —
+  // обычный node:child_process с тем же ожиданием до 15 секунд.
+  try {
+    if (typeof Bun !== "undefined" && Bun.spawn) {
+      const proc = Bun.spawn(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                              "-WindowStyle", "Hidden", "-File", psArgs.ps1,
+                              "-Title", psArgs.app, "-Message", psArgs.msg], {
+        stdin: "ignore", stdout: "ignore", stderr: "ignore",
+        windowsHide: true,
+      });
+      try {
+        if (Bun.sleep) {
+          await Promise.race([proc.exited, Bun.sleep(15000)]);
+        } else {
+          await proc.exited;
+        }
+      } catch {
+        try { await proc.exited; } catch { /* ignore */ }
+      }
+      return;
+    }
+  } catch { /* fall through to node */ }
+  try {
+    const mod = await import("node:child_process").catch(() => null);
+    if (!mod || !mod.spawn) return;
+    const child = mod.spawn("powershell",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+       "-WindowStyle", "Hidden", "-File", psArgs.ps1,
+       "-Title", psArgs.app, "-Message", psArgs.msg],
+      { windowsHide: true, stdio: "ignore" });
+    await Promise.race([
+      new Promise((resolve) => {
+        try {
+          child.on("exit", resolve);
+          child.on("error", resolve);
+        } catch { resolve(); }
+      }),
+      new Promise((resolve) => {
+        try { setTimeout(resolve, 15000); } catch { resolve(); }
+      }),
+    ]);
+  } catch {
+    /* never break a session */
+  }
+};
+const IDLE_DELAY_MS = 150;
+const QUIET_MS = 6000;
+const DEDUP_MS = 4000;
+const pending = new Map();
+const silenced = new Map();
+const lastShown = new Map();
+const sweepMaps = () => {
+  try {
+    const now = Date.now();
+    if (pending.size + silenced.size + lastShown.size > 100) {
+      for (const [k, v] of silenced) {
+        if (now - v > QUIET_MS + 60000) silenced.delete(k);
+      }
+      for (const [k, v] of lastShown) {
+        if (now - v > DEDUP_MS + 60000) lastShown.delete(k);
+      }
+    }
+  } catch { /* ignore */ }
+};
+const showNow = async (type, sid) => {
+  try {
+    sweepMaps();
+    const k = (sid || "-") + ":" + type;
+    const now = Date.now();
+    const last = lastShown.get(k) || 0;
+    if (now - last < DEDUP_MS) return;
+    lastShown.set(k, now);
+    const lang = await langOf();
+    const dict = TEXTS[lang] || TEXTS.ru;
+    const msg = dict[type] || (lang === "en" ? "Attention" : "Внимание");
+    await runHidden({ ps1: PS1, app: APP, msg });
+  } catch {
+    /* never break a session */
+  }
+};
+const dropPending = (sid) => {
+  try {
+    if (pending.has(sid)) {
+      try { clearTimeout(pending.get(sid)); } catch { /* ignore */ }
+      pending.delete(sid);
+    }
+  } catch { /* ignore */ }
+};
+export default Plugin.define({
+  id: "ccm-notify",
+  setup(ctx) {
+    // Только v2-транспорту нужная страховка (в v1 её нет и быть не может):
+    // если загрузчик пересоздаст подписку без выгрузки старой, шумит
+    // только новейшая копия. При одной копии проверка всегда проходит.
+    const myGen = (globalThis.__ccmNotifyGen =
+      (globalThis.__ccmNotifyGen || 0) + 1);
+    const controller = new AbortController();
+    const timers = new Set();
+    const later = (ms, fn) => {
+      const t = setTimeout(async () => {
+        try { timers.delete(t); } catch { /* ignore */ }
+        try { await fn(); } catch { /* ignore */ }
+      }, ms);
+      try { timers.add(t); } catch { /* ignore */ }
+      return t;
+    };
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          try {
+            try {
+              if (globalThis.__ccmNotifyGen !== myGen) break;
+            } catch { /* ignore */ }
+            let t = event && event.type;
+            if (t === "session.execution.succeeded") t = "session.idle";
+            else if (t === "session.execution.failed") t = "session.error";
+            else if (t === "question.v2.asked" || t === "form.created") t = "question.asked";
+            else if (t === "permission.v2.asked") t = "permission.asked";
+            const props = (event && event.properties) || {};
+            const data = (event && event.data) || {};
+            const sid = data.sessionID || props.sessionID || props.sessionId || "-";
+            if (t === "session.idle") {
+              if (props.parentID || props.parentId
+                  || data.parentID || data.parentId) continue;
+              try {
+                const sil = silenced.get(sid) || 0;
+                if (Date.now() - sil < QUIET_MS) continue;
+              } catch { /* ignore */ }
+              dropPending(sid);
+              pending.set(sid, later(IDLE_DELAY_MS, async () => {
+                try { pending.delete(sid); } catch { /* ignore */ }
+                try {
+                  const sil2 = silenced.get(sid) || 0;
+                  if (Date.now() - sil2 < QUIET_MS) return;
+                  await showNow(t, sid);
+                } catch {
+                  /* never break a session */
+                }
+              }));
+            } else if (t === "session.error") {
+              dropPending(sid);
+              try { silenced.set(sid, Date.now()); } catch { /* ignore */ }
+              await showNow(t, sid);
+            } else if (t === "permission.asked" || t === "question.asked") {
+              dropPending(sid);
+              await showNow(t, sid);
+            }
+          } catch {
+            /* never break a session */
+          }
+        }
+      } catch { /* subscription ended */ }
+    })();
+    return () => {
+      try { controller.abort(); } catch { /* ignore */ }
+      try {
+        for (const t of timers) {
+          try { clearTimeout(t); } catch { /* ignore */ }
+        }
+        timers.clear();
+      } catch { /* ignore */ }
+    };
+  },
+});
+
+"""
+
+
+def _oc_installed_major():
+    """Мажорная версия установленного opencode (1/2) — выбор API плагина
+    и формата scoped-конфига. Не определили — считаем v1 (как раньше)."""
+    try:
+        ver = get_installed_oc_version() or ""
+        major = (ver.strip().split(".")[0] if ver else "")
+        if major.isdigit():
+            return int(major)
+    except Exception:
+        pass
+    return 1
+
+
+_CCM_NOTIFY_PKG_JSON = '{"name": "ccm-notify", "version": "2.0.0", "type": "module"}'
+
+
+def _oc_push_files(v2=False):
+    """Возвращает (путь плагина под версию, ps1), гарантируя свежие файлы.
+    v1: одиночный ccm-push.js. v2: ДИРЕКТОРИЯ plugin/ccm-notify/
+    (package.json + index.js) — одиночные .js-файлы загрузчик v2 отвергает
+    («configured plugin path must be a directory»). Возвращаем путь, который
+    и кладём в scoped-конфиг (файл для v1, директория для v2).
+    Заодно полностью сносит прошлое поколение (ccm-push): его файлы
+    удаляются, а состояние тумблера мигрирует в новый конфиг.
+    Пусто при неудаче."""
     try:
         d = _oc_push_dir()
         if not d:
             return "", ""
         os.makedirs(d, exist_ok=True)
         js = os.path.join(d, "ccm-push.js")
-        ps = os.path.join(d, "ccm-toast.ps1")
+        js2dir = os.path.join(d, "ccm-notify")
+        js2idx = os.path.join(js2dir, "index.js")
+        js2pkg = os.path.join(js2dir, "package.json")
+        ps = os.path.join(d, "ccm-notify.ps1")
         try:
             js_text = _OC_PUSH_JS_TEMPLATE.replace("__CCM_PS1__", json.dumps(ps))
             js_text = js_text.replace("__CCM_SETTINGS__", json.dumps(SETTINGS_FILE))
+            js2_text = _OC_PUSH_V2_TEMPLATE.replace("__CCM_PS1__", json.dumps(ps))
+            js2_text = js2_text.replace("__CCM_SETTINGS__", json.dumps(SETTINGS_FILE))
             ps_text = _OC_PUSH_PS1.replace("__CCM_AUMID__", _OC_PUSH_AUMID)
         except Exception:
             return "", ""
-        for path, text in ((js, js_text), (ps, ps_text)):
+        try:
+            os.makedirs(js2dir, exist_ok=True)
+        except Exception:
+            return "", ""
+        for path, text in ((js, js_text), (js2idx, js2_text),
+                           (js2pkg, _CCM_NOTIFY_PKG_JSON), (ps, ps_text)):
             try:
                 cur = ""
                 if os.path.exists(path):
@@ -20590,6 +21070,47 @@ def _oc_push_files():
                         f.write(text)
             except Exception:
                 return "", ""
+        # Прошлое поколение (ccm-push) сносим полностью: одиночный
+        # ccm-push-v2.js, директория ccm-push/, старый тост ccm-toast.ps1
+        # и старый конфиг ccm-push.json. Без старого ps1 висящие в памяти
+        # копии прошлого поколения гаснут сами (их вызовы молча падают),
+        # а новых failed-строк не будет — конфиги ссылаются на новый путь.
+        # Состояние тумблера перед сносом мигрирует в новый конфиг.
+        try:
+            old_cfg = os.path.join(d, "ccm-push.json")
+            new_cfg = os.path.join(d, _OC_PUSH_CONFIG_NAME)
+            if os.path.exists(old_cfg) and not os.path.exists(new_cfg):
+                try:
+                    with open(old_cfg, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and "enabled" in data:
+                        _oc_push_config_save(bool(data.get("enabled", True)))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        for fn in ("ccm-push-v2.js", "ccm-toast.ps1", "ccm-push.json"):
+            try:
+                p = os.path.join(d, fn)
+                if os.path.exists(p) and not os.path.isdir(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        try:
+            import shutil as _sh3
+            p = os.path.join(d, "ccm-push")
+            if os.path.isdir(p):
+                _sh3.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
+        # Конфиг тумблера могли удалить вручную — восстанавливаем дефолт
+        # (вкл), но существующий НЕ трогаем (состояние пользователя свято).
+        try:
+            cfgp = os.path.join(d, _OC_PUSH_CONFIG_NAME)
+            if not os.path.exists(cfgp):
+                _oc_push_config_save(True)
+        except Exception:
+            pass
         try:
             icon_dst = os.path.join(d, "ccm-icon.png")
             icon_bytes = _oc_push_icon_bytes()
@@ -20606,28 +21127,88 @@ def _oc_push_files():
                         f.write(icon_bytes)
         except Exception:
             pass
-        if os.path.exists(js) and os.path.exists(ps):
+        if (os.path.exists(js) and os.path.isdir(js2dir)
+                and os.path.exists(os.path.join(js2dir, "index.js"))
+                and os.path.exists(ps)):
             # Регистрация ярлыка — фоном (компиляция C# долгая, запуск не ждёт).
             try:
                 threading.Thread(target=_oc_push_shortcut, daemon=True).start()
             except Exception:
                 pass
-            return js, ps
+            return (js2dir if v2 else js), ps
         return "", ""
     except Exception:
         return "", ""
 
 
 def _oc_push_remove_plugin_file():
-    """Удаляет сам плагин ccm-push.js (папка plugin\\ остаётся).
-    Конфиг ccm-push.json не трогаем — состояние тумблера должно сохраниться."""
+    """Удаляет сам плагин (v2 plugin/ccm-notify/, тост ccm-notify.ps1).
+    Папка plugin\\ остаётся. Конфиг ccm-notify.json не трогаем —
+    состояние тумблера должно сохраниться (как в v1)."""
     try:
         d = _oc_push_dir()
         if not d:
             return False
-        p = os.path.join(d, "ccm-push.js")
-        if os.path.exists(p):
-            os.remove(p)
+        for fn in ("ccm-notify.ps1",):
+            p = os.path.join(d, fn)
+            if os.path.exists(p):
+                try:
+                    if os.path.isdir(p):
+                        import shutil as _sh
+                        _sh.rmtree(p, ignore_errors=True)
+                    else:
+                        os.remove(p)
+                except Exception:
+                    pass
+        try:
+            p = os.path.join(d, "ccm-notify")
+            if os.path.isdir(p):
+                import shutil as _sh2
+                _sh2.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _oc_push_scrub_launch():
+    """Вычищает наши plugin-ссылки из per-launch конфига (best effort).
+    Нужна при выключении: файлы снесены, и висячие ссылки давали бы
+    «failed»-строки при следующем резолве сервиса. Молча, безопасно."""
+    try:
+        p = os.path.join(SETTINGS_DIR, "opencode-launch.json")
+    except Exception:
+        return False
+    try:
+        if not p or not os.path.exists(p):
+            return False
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return False
+        changed = False
+        for key in ("plugin", "plugins"):
+            try:
+                lst = data.get(key)
+                if isinstance(lst, list):
+                    kept = [e for e in lst
+                            if "ccm-push" not in str(e)
+                            and "ccm-notify" not in str(e)]
+                    if len(kept) != len(lst):
+                        if kept:
+                            data[key] = kept
+                        else:
+                            data.pop(key, None)
+                        changed = True
+            except Exception:
+                pass
+        if not changed:
+            return True
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, p)
         return True
     except Exception:
         return False
@@ -20644,7 +21225,8 @@ def _oc_global_opencode_config():
             if not os.path.exists(p):
                 continue
             try:
-                with open(p, "r", encoding="utf-8") as f:
+                # utf-8-sig: переживаем BOM (редакторы/PowerShell его любят).
+                with open(p, "r", encoding="utf-8-sig") as f:
                     raw = f.read()
             except Exception:
                 return None
@@ -20664,10 +21246,78 @@ def _oc_global_opencode_config():
     return {}
 
 
+def _oc_sanitize_plugin_list(entries, basedir, file_uri=False):
+    """Чистит plugin-список для scoped-копии: выкидывает локальные пути
+    к несуществующим файлам/папкам. Относительные резолвим от basedir
+    (папка конфига-источника) и переписываем абсолютными — иначе
+    в scoped-копии они резолвятся от чужой папки и плодят битые
+    записи (так было с notify.js: одна висячая ссылка давала две
+    «failed»-строки). file_uri=True — форма file:// (ключ plugin под v1),
+    False — обычный путь (ключ plugins под v2: file://-URI v2-загрузчик
+    молча игнорирует, проверено). Пакетные спеки и словари не трогаем."""
+    try:
+        from urllib.parse import quote as _quote
+    except Exception:
+        _quote = None
+    try:
+        out = []
+        for e in (entries or []):
+            try:
+                if isinstance(e, dict):
+                    out.append(e)
+                    continue
+                s = str(e or "")
+                if not s:
+                    continue
+                low = s.lower()
+                is_path = (low.startswith("file:") or s.startswith("./")
+                           or s.startswith("../") or s.startswith("/")
+                           or s.startswith("\\") or s.startswith("~")
+                           or (len(s) > 2 and s[1] == ":"
+                               and s[2] in ("\\", "/")))
+                if not is_path:
+                    out.append(e)  # пакетный спек — не проверяем
+                    continue
+                if low.startswith("file:"):
+                    try:
+                        from urllib.parse import unquote as _unq
+                        rest = s[len("file://"):] if low.startswith("file://") else s[len("file:"):]
+                        p = _unq(rest)
+                    except Exception:
+                        continue
+                    if p.startswith("/") and len(p) > 2 and p[2] == ":":
+                        p = p[1:]
+                    p = p.replace("/", os.sep)
+                else:
+                    p = os.path.expanduser(s)
+                    if not os.path.isabs(p) and basedir:
+                        p = os.path.normpath(os.path.join(basedir, p))
+                if not os.path.exists(p):
+                    continue  # битая ссылка — выкидываем молча
+                ap = os.path.abspath(p).replace("\\", "/")
+                if file_uri:
+                    try:
+                        rest = ap if ap.startswith("/") else "/" + ap
+                        out.append("file://" + (_quote(rest, safe="/:@")
+                                                if _quote else rest))
+                    except Exception:
+                        out.append(e)
+                else:
+                    out.append(ap)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        try:
+            return list(entries or [])
+        except Exception:
+            return []
+
+
 def _oc_scoped_config_with_push(cfg_path, settings):
-    """Scoped opencode.json для запуска: провайдер + глобал + наш plugin.
-    Пуши выкл — возвращаем исходный путь как есть. Любая неудача — тоже
-    исходный путь (запуск не ломаем никогда)."""
+    """Scoped opencode.json для запуска: провайдер + глобал + наш plugin (v1)
+    или plugins (v2). Пуши выкл — возвращаем исходный путь как есть (как в v1).
+    Любая неудача — тоже исходный путь (запуск не ломаем никогда)."""
     try:
         base_cfg = cfg_path or ""
     except Exception:
@@ -20675,14 +21325,23 @@ def _oc_scoped_config_with_push(cfg_path, settings):
     try:
         if not _oc_push_enabled():
             return base_cfg
-        js, _ps = _oc_push_files()
+        try:
+            v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            v2 = False
+        js, _ps = _oc_push_files(v2=v2)
         if not js or not os.path.exists(js):
             return base_cfg
         try:
-            from urllib.parse import quote as _quote
+            # V2: обычный путь к директории (file://-URI загрузчик v2
+            # молча игнорирует, проверено). V1: file://-URI как раньше.
             _p = os.path.abspath(js).replace("\\", "/")
-            uri = "file://" + (_p if _p.startswith("/") else "/" + _p)
-            uri = "file://" + _quote(uri[len("file://"):], safe="/:@")
+            if v2:
+                entry = _p
+            else:
+                from urllib.parse import quote as _quote
+                rest = _p if _p.startswith("/") else "/" + _p
+                entry = "file://" + _quote(rest, safe="/:@")
         except Exception:
             return base_cfg
         data = {}
@@ -20709,11 +21368,42 @@ def _oc_scoped_config_with_push(cfg_path, settings):
         except Exception:
             plugins = []
         try:
-            plugins = [p for p in plugins if "ccm-push" not in str(p)]
+            plugins_v2 = data.get("plugins")
+            plugins_v2 = list(plugins_v2) if isinstance(plugins_v2, list) else []
+        except Exception:
+            plugins_v2 = []
+        # Висячие локальные пути (файл/папка удалены) — выкидываем, иначе
+        # каждая такая ссылка даёт «failed»-строку в списке плагинов.
+        try:
+            _gdir = os.path.join(os.path.expanduser("~"), ".config", "opencode")
+        except Exception:
+            _gdir = ""
+        try:
+            _srcdir = (os.path.dirname(os.path.abspath(base_cfg))
+                       if base_cfg and os.path.exists(base_cfg) else _gdir)
+        except Exception:
+            _srcdir = ""
+        try:
+            plugins = _oc_sanitize_plugin_list(plugins, _srcdir, file_uri=True)
+            plugins_v2 = _oc_sanitize_plugin_list(plugins_v2, _srcdir)
         except Exception:
             pass
-        plugins.append(uri)
-        data["plugin"] = plugins
+        try:
+            plugins = [p for p in plugins
+                       if "ccm-push" not in str(p) and "ccm-notify" not in str(p)]
+            plugins_v2 = [p for p in plugins_v2
+                          if "ccm-push" not in str(p) and "ccm-notify" not in str(p)]
+        except Exception:
+            pass
+        if v2:
+            # V2: ключ plugins обычным путём к директории (V1-ключ со
+            # старыми записями не трогаем — чужие плагины пользователя
+            # остаются как были).
+            plugins_v2.append(entry)
+            data["plugins"] = plugins_v2
+        else:
+            plugins.append(entry)
+            data["plugin"] = plugins
         try:
             data.setdefault("$schema", "https://opencode.ai/config.json")
         except Exception:
@@ -20733,6 +21423,32 @@ def _oc_scoped_config_with_push(cfg_path, settings):
             return cfg_path or ""
         except Exception:
             return ""
+
+
+def _oc_build_ccm_cli_content(settings):
+    """Inline-JSON для OPENCODE_CLI_CONFIG_CONTENT (opencode v2): те же
+    attention и тема, что в per-launch tui.ccm.json. Пусто — не нужно."""
+    try:
+        sounds_on = bool((settings or {}).get("oc_notify_enabled", False))
+        theme_on = bool((settings or {}).get("oc_theme_enabled", False))
+        if not (sounds_on or theme_on):
+            return ""
+        data = {}
+        if sounds_on:
+            try:
+                data["attention"] = _oc_make_attention(_oc_tui_sounds_from(settings))
+            except Exception:
+                pass
+        if theme_on:
+            try:
+                data["theme"] = {"name": _OC_THEME_FILE.replace(".json", "")}
+            except Exception:
+                pass
+        if not data:
+            return ""
+        return json.dumps(data, ensure_ascii=False)
+    except Exception:
+        return ""
 
 
 def _oc_launch_env(base_env, settings):
@@ -20942,7 +21658,7 @@ class OcNotifyDialog(QDialog):
         tog_row.addWidget(self.toggle)
         layout.addLayout(tog_row)
 
-        # Push-уведомления: состояние живёт в plugin\ccm-push.json
+        # Push-уведомления: состояние живёт в plugin\ccm-notify.json
         # (не в общих настройках), по умолчанию включено.
         push_row = QHBoxLayout()
         push_row.setContentsMargins(0, 0, 0, 0)
@@ -21232,9 +21948,11 @@ class OcNotifyDialog(QDialog):
         self._apply_enabled()
 
     def _on_push_toggle(self, on):
-        # Push-тосты вкл/выкл — пишется в plugin\ccm-push.json, общие настройки не трогаем.
-        # При выкл сам плагин удаляется (папка остаётся); при вкл файлы
-        # пересоздадутся при следующем запуске opencode.
+        # Push-тосты вкл/выкл — пишется в plugin\ccm-notify.json, общие настройки не трогаем.
+        # При выкл сам плагин удаляется (папка остаётся), а per-launch конфиг
+        # чистится от ссылок (иначе резолв сервиса даст «failed»-строки).
+        # При вкл файлы пересоздаются СРАЗУ (и при входе в приложение,
+        # если включены, — ручное удаление тоже лечится само).
         try:
             _oc_push_config_save(bool(on))
         except Exception:
@@ -21242,6 +21960,15 @@ class OcNotifyDialog(QDialog):
         if not on:
             try:
                 _oc_push_remove_plugin_file()
+            except Exception:
+                pass
+            try:
+                _oc_push_scrub_launch()
+            except Exception:
+                pass
+        else:
+            try:
+                _oc_push_files()
             except Exception:
                 pass
 
@@ -22710,8 +23437,9 @@ class OcModelDialog(QDialog):
 
 class _OcModelsLoader(QThread):
     """Фоновая загрузка моделей вкладки Custom URL без блокировки UI:
-    HTTP {base_url}/models (список ID) + opencode models --verbose
-    (capabilities.reasoning для эндпоинта и для бесплатных моделей opencode).
+    HTTP {base_url}/models (список ID) + opencode models (v1 --verbose:
+    capabilities.reasoning для эндпоинта и для бесплатных моделей opencode;
+    v2 — плоский список, reasoning неизвестен).
     Методы owner не трогают GUI, поэтому их вызов из потока безопасен."""
 
     loaded = Signal(list, dict, list, dict)  # endpoint_ids, endpoint_reasoning, free_ids, free_reasoning
@@ -25539,16 +26267,23 @@ class _UrlCard(QFrame):
     """Карточка Base URL в менеджере (стиль менеджера ключей): клик —
     выбрать URL, крестик — удалить. Выбранная плавно «загорается» зелёным
     (флэш + интерполяция, как у KeyCard), у базовых (DEFAULT_URLS) крестика
-    нет — только пометка «Базовый»."""
+    нет — только пометка «Базовый».
+    accent=(r,g,b) — перекрасить подсветку (свои модели: серый 145,145,150).
+    badge_text — свой текст бейджа вместо «Базовый» (None — без бейджа)."""
 
     clicked = Signal()
 
     def __init__(self, url, selected=False, is_default=False,
-                 on_delete=None, parent=None):
+                 on_delete=None, parent=None, accent=None, badge_text=None):
         super().__init__(parent)
         self._url = url
         self._is_default = bool(is_default)
         self._on_delete = on_delete
+        try:
+            self._accent = tuple(accent) if accent else (52, 211, 153)
+        except Exception:
+            self._accent = (52, 211, 153)
+        self._badge_text = badge_text
         self.setObjectName("urlCard")
         self.setCursor(Qt.PointingHandCursor)
         # Рамку и свечение рисуем сами в paintEvent (как KeyCard) —
@@ -25575,6 +26310,12 @@ class _UrlCard(QFrame):
         self.badge.setFont(QFont("Segoe UI", 8, QFont.Bold))
         if self._is_default:
             self.badge.setText(tr("Базовый"))
+            self.badge.setStyleSheet(
+                "color: rgb(150,150,158); background: rgba(120,120,130,0.10); "
+                "border: 1px solid rgba(120,120,130,0.35); border-radius: 6px; "
+                "padding: 2px 8px;")
+        elif self._badge_text:
+            self.badge.setText(self._badge_text)
             self.badge.setStyleSheet(
                 "color: rgb(150,150,158); background: rgba(120,120,130,0.10); "
                 "border: 1px solid rgba(120,120,130,0.35); border-radius: 6px; "
@@ -25617,22 +26358,23 @@ class _UrlCard(QFrame):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(24, 24, 31))
         p.drawRoundedRect(rect, 10, 10)
-        # Зелёная подложка — только с выбором (в покое чистый серый).
+        # Подложка — только с выбором (в покое чистый серый).
+        ar, ag, ab = self._accent
         tint_a = int(26 * sel)
-        p.setBrush(QColor(52, 211, 153, min(255, tint_a)))
+        p.setBrush(QColor(ar, ag, ab, min(255, tint_a)))
         p.drawRoundedRect(rect, 10, 10)
-        # Рамка: серая в покое, зелёная и толще при выборе
+        # Рамка: серая в покое, в цвете акцента и толще при выборе
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(
-            QColor(int(60 + (52 - 60) * sel), int(60 + (211 - 60) * sel),
-                   int(65 + (153 - 65) * sel)),
+            QColor(int(60 + (ar - 60) * sel), int(60 + (ag - 60) * sel),
+                   int(65 + (ab - 65) * sel)),
             2.0 + 1.2 * sel
         ))
         p.drawRoundedRect(rect, 10, 10)
         # Индикатор выбора — точка слева вверху, как у ключей
         if sel > 0.02:
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(52, 211, 153, int(255 * min(1.0, sel))))
+            p.setBrush(QColor(ar, ag, ab, int(255 * min(1.0, sel))))
             p.drawEllipse(QPointF(11.5, 9.5), 3.2, 3.2)
         p.end()
 
@@ -31194,6 +31936,9 @@ class ClaudeManager(QMainWindow):
             self.fm_url_combo.setCurrentText(self.settings["custom_base_url"])
         self.fm_url_combo.set_picker(title=tr("Выбор Base URL"))
         self.fm_url_combo.currentTextChanged.connect(self._fm_url_changed)
+        # Только отображение: выбор — через «Управление», как в Custom URL.
+        # Disabled гасит клики (пикера нет) и затемняет поле.
+        self.fm_url_combo.setEnabled(False)
         url_row.addWidget(self.fm_url_combo, 1)
 
         self.fm_btn_manage = StyledButton(tr("Управление"))
@@ -31415,6 +32160,9 @@ class ClaudeManager(QMainWindow):
             self.oa_url_combo.setCurrentText(self.settings["openai_base_url"])
         self.oa_url_combo.set_picker(title=tr("Выбор Base URL"))
         self.oa_url_combo.currentTextChanged.connect(self._oa_url_changed)
+        # Только отображение: выбор — через «Управление», как в Custom URL.
+        # Disabled гасит клики (пикера нет) и затемняет поле.
+        self.oa_url_combo.setEnabled(False)
         oa_url_row.addWidget(self.oa_url_combo, 1)
 
         self.oa_btn_manage_urls = StyledButton(tr("Управление"))
@@ -32992,10 +33740,79 @@ class ClaudeManager(QMainWindow):
         if getattr(self, "_oc_info_dlg", None) is not None:
             self._oc_info_dlg = None
 
-    def _oc_run_models_cmd(self, provider=None, config_path=None):
-        """Запускает `opencode models --verbose [provider]` и возвращает stdout.
+    def _oc_parse_plain_models(self, out):
+        """Парсит плоский вывод `opencode models` (v2, без --verbose):
+        строки вида 'provider/name', по одной на строку. Возвращает список
+        (provider, short). Строки без '/' или с пробелами пропускаем."""
+        parsed = []
+        for ln in (out or "").splitlines():
+            s = (ln or "").strip()
+            if not s or s.startswith("{"):
+                continue
+            if "/" not in s or " " in s:
+                continue
+            prov, _, short = s.partition("/")
+            prov, short = prov.strip(), short.strip()
+            if prov and short:
+                parsed.append((prov, short))
+        return parsed
+
+    def _oc_run_models_plain(self, config_path=None, retries=2):
+        """Плоский `opencode models` для v2: без --verbose и без позиционного
+        provider (оба убраны из CLI v2). config_path — через OPENCODE_CONFIG.
+        Пустой вывод повторяем до retries раз, как в verbose-варианте."""
+        exe = shutil.which("opencode")
+        if not exe:
+            return ""
+        env = os.environ.copy()
+        if config_path:
+            env["OPENCODE_CONFIG"] = config_path
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        # npm-шимы на Windows — это .cmd/.ps1; subprocess не может их запустить
+        # напрямую, поэтому через cmd /c.
+        if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+            args = ["cmd", "/c", exe, "models"]
+        else:
+            args = [exe, "models"]
+        try:
+            tries = max(1, int(retries) + 1)
+        except Exception:
+            tries = 3
+        out = ""
+        for attempt in range(tries):
+            try:
+                r = subprocess.run(
+                    args,
+                    capture_output=True, text=True, timeout=40, env=env, creationflags=flags,
+                )
+                out = r.stdout or ""
+            except Exception:
+                out = ""
+            if (out or "").strip():
+                break
+            if attempt < tries - 1:
+                try:
+                    time.sleep(2)
+                except Exception:
+                    pass
+        return out
+
+    def _oc_run_models_cmd(self, provider=None, config_path=None, retries=2):
+        """Запускает `opencode models` и возвращает stdout.
+        v1: `models --verbose [provider]` (слоёный текст + JSON с ценами).
+        v2: --verbose и позиционный provider убраны из CLI — только плоский
+        `models` (строки provider/name). config_path прокидывается через
+        OPENCODE_CONFIG в обеих версиях.
         Без provider — глобальный каталог всех провайдеров (включая бесплатные
-        opencode-модели). config_path прокидывается через OPENCODE_CONFIG."""
+        opencode-модели). config_path прокидывается через OPENCODE_CONFIG.
+        Пустой вывод (холодный старт/транзиент) — повторяем до retries раз
+        с паузой, иначе первый же пролёт показывал бы «Ошибка»."""
+        try:
+            _v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            _v2 = False
+        if _v2:
+            return self._oc_run_models_plain(config_path, retries)
         exe = shutil.which("opencode")
         if not exe:
             return ""
@@ -33012,13 +33829,27 @@ class ClaudeManager(QMainWindow):
         if provider:
             args.append(provider)
         try:
-            r = subprocess.run(
-                args,
-                capture_output=True, text=True, timeout=40, env=env, creationflags=flags,
-            )
-            return r.stdout or ""
+            tries = max(1, int(retries) + 1)
         except Exception:
-            return ""
+            tries = 3
+        out = ""
+        for attempt in range(tries):
+            try:
+                r = subprocess.run(
+                    args,
+                    capture_output=True, text=True, timeout=40, env=env, creationflags=flags,
+                )
+                out = r.stdout or ""
+            except Exception:
+                out = ""
+            if (out or "").strip():
+                break
+            if attempt < tries - 1:
+                try:
+                    time.sleep(2)
+                except Exception:
+                    pass
+        return out
 
     def _parse_verbose_sections(self, out):
         """Делит вывод `opencode models --verbose` на секции и возвращает список
@@ -33052,9 +33883,24 @@ class ClaudeManager(QMainWindow):
 
     def _oc_fetch_capabilities(self, provider, config_path):
         """Запускает `opencode models --verbose <provider>` и извлекает
-        capabilities.reasoning для каждой модели провайдера."""
+        capabilities.reasoning для каждой модели провайдера.
+        v2: CLI не отдаёт capabilities — reasoning неизвестен, всем False."""
         if not provider:
             return {}
+        try:
+            _v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            _v2 = False
+        if _v2:
+            caps = {}
+            try:
+                plain = self._oc_run_models_plain(config_path)
+            except Exception:
+                plain = ""
+            for prov, short in self._oc_parse_plain_models(plain):
+                if prov == provider:
+                    caps[short] = False
+            return caps
         caps = {}
         for prov, short, reasoning, _free in self._parse_verbose_sections(self._oc_run_models_cmd(provider, config_path)):
             if prov == provider:
@@ -33065,7 +33911,25 @@ class ClaudeManager(QMainWindow):
         """Бесплатные модели opencode: `opencode models --verbose` БЕЗ
         OPENCODE_CONFIG (глобальный каталог). Возвращает (free_ids,
         free_reasoning) для провайдера 'opencode' — только модели с нулевой
-        ценой (cost.input == 0 и cost.output == 0)."""
+        ценой (cost.input == 0 и cost.output == 0).
+        v2: цен в CLI-выводе нет — бесплатные = весь провайдер 'opencode'
+        из плоского `opencode models` (reasoning неизвестен, всем False)."""
+        try:
+            _v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            _v2 = False
+        if _v2:
+            try:
+                plain = self._oc_run_models_plain()
+            except Exception:
+                plain = ""
+            free_ids = []
+            free_reasoning = {}
+            for prov, short in self._oc_parse_plain_models(plain):
+                if prov == "opencode":
+                    free_ids.append(short)
+                    free_reasoning[short] = False
+            return free_ids, free_reasoning
         out = self._oc_run_models_cmd(None, None)
         free_ids = []
         free_reasoning = {}
@@ -34025,18 +34889,22 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            def _ps(s):
-                # экранируем одинарные кавычки для PowerShell-литералов
-                return tr(s).replace("'", "''")
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                f"Write-Host '{_ps('Останавливаю запущенные процессы codex...')}' -ForegroundColor Cyan; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                f"Write-Host '{_ps('Установка Codex CLI через npm...')}' -ForegroundColor Cyan; "
+                "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
+                "$npmBin = Join-Path $env:APPDATA 'npm'; "
+                "if (Test-Path $npmBin) { "
+                "  Get-ChildItem $npmBin -Force -Filter '.codex*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
+                "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
+                "npm uninstall -g @openai/codex 2>$null; "
+                "Write-Host '[4/4] Installing latest (@openai/codex)...' -ForegroundColor Cyan; "
                 "npm install -g @openai/codex; "
-                f"Write-Host '`n{_ps('Готово. Проверь команду: codex -V')}' -ForegroundColor Green; "
-                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Done. Check: codex -V' -ForegroundColor Green; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -34121,34 +34989,31 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            def _ps(s):
-                # экранируем одинарные кавычки для PowerShell-литералов
-                return tr(s).replace("'", "''")
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                f"Write-Host '{_ps('Останавливаю запущенные процессы codex...')}' -ForegroundColor Cyan; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                f"Write-Host '{_ps('Удаление Codex CLI (npm)...')}' -ForegroundColor Cyan; "
+                "Write-Host '[2/3] Removing Codex CLI (npm)...' -ForegroundColor Cyan; "
                 "npm uninstall -g @openai/codex; "
                 "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@openai\\codex'; "
                 "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('Повторная попытка (файл был залочен)...')}' -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
                 "  npm uninstall -g @openai/codex; "
                 "} "
                 "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('NPM не смог удалить — удаляю папку напрямую...')}' -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'NPM could not remove — deleting folder directly...' -ForegroundColor Yellow; "
                 "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
                 "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'codex*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
                 "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('Не всё удалось удалить — закрой все окна Codex и попробуй снова.')}' -ForegroundColor Red; "
+                "  Write-Host ''; Write-Host '[3/3] Not everything was removed — close all Codex windows and try again.' -ForegroundColor Red; "
                 "} else { "
-                f"  Write-Host '`n{_ps('Codex CLI полностью удалён.')}' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host '[3/3] Codex CLI fully removed.' -ForegroundColor Green; "
                 "} "
-                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -34375,7 +35240,7 @@ class ClaudeManager(QMainWindow):
             pass
 
     def _install_oc_cli(self):
-        """Ставит/обновляет opencode CLI (последняя версия) через npm i -g opencode-ai."""
+        """Ставит/обновляет opencode CLI (последняя версия) через npm install -g @opencode/cli."""
         installed = self._is_oc_installed()
         local = getattr(self, "_oc_local_version", "")
         latest = getattr(self, "_oc_latest_version", "") or tr("последняя")
@@ -34392,7 +35257,7 @@ class ClaudeManager(QMainWindow):
         else:
             title = tr("Установка opencode CLI")
             message = tr(
-                "Будет установлен opencode CLI (npm-пакет opencode-ai).\n\n"
+                "Будет установлен opencode CLI (npm-пакет @opencode/cli).\n\n"
                 "Откроется окно PowerShell, где пойдёт установка."
             )
             confirm_text = tr("Установить")
@@ -34402,7 +35267,7 @@ class ClaudeManager(QMainWindow):
         dlg = ConfirmActionDialog(
             title=title,
             message=message,
-            detail="npm i -g opencode-ai",
+            detail="npm install -g @opencode/cli",
             confirm_text=confirm_text,
             icon=icon,
             icon_color=icon_color,
@@ -34427,15 +35292,23 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            def _ps(s):
-                # экранируем одинарные кавычки для PowerShell-литералов
-                return tr(s).replace("'", "''")
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                f"Write-Host '{_ps('Установка opencode через npm...')}' -ForegroundColor Cyan; "
-                "npm i -g opencode-ai; "
-                f"Write-Host '`n{_ps('Готово. Проверь команду: opencode -v')}' -ForegroundColor Green; "
-                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running opencode processes...' -ForegroundColor Cyan; "
+                "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 600; "
+                "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
+                "$npmBin = Join-Path $env:APPDATA 'npm'; "
+                "if (Test-Path $npmBin) { "
+                "  Get-ChildItem $npmBin -Force -Filter '.opencode*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
+                "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
+                "npm uninstall -g opencode-ai 2>$null; "
+                "npm uninstall -g @opencode/cli 2>$null; "
+                "Write-Host '[4/4] Installing latest (@opencode/cli)...' -ForegroundColor Cyan; "
+                "npm install -g @opencode/cli; "
+                "Write-Host ''; Write-Host 'Done. Check: opencode -v' -ForegroundColor Green; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -34496,7 +35369,7 @@ class ClaudeManager(QMainWindow):
                 tr("Будет удалён глобальный npm-пакет opencode") + version_part + ". " +
                 tr("Настройки в %USERPROFILE%\\.local\\share\\opencode не пострадают — удалится только бинарь.")
             ),
-            detail="npm uninstall -g opencode-ai",
+            detail="npm uninstall -g @opencode/cli",
             confirm_text=tr("Удалить"),
             icon="×",
             icon_color=(235, 90, 90),
@@ -34520,25 +35393,35 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            def _ps(s):
-                # экранируем одинарные кавычки для PowerShell-литералов
-                return tr(s).replace("'", "''")
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                f"Write-Host '{_ps('Удаление opencode (npm)...')}' -ForegroundColor Cyan; "
-                "npm uninstall -g opencode-ai; "
-                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\opencode-ai'; "
-                "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('NPM не смог удалить — удаляю папку напрямую...')}' -ForegroundColor Yellow; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running opencode processes...' -ForegroundColor Cyan; "
+                "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 600; "
+                "Write-Host '[2/3] Removing opencode (npm)...' -ForegroundColor Cyan; "
+                "npm uninstall -g @opencode/cli 2>$null; "
+                "npm uninstall -g opencode-ai 2>$null; "
+                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@opencode\\cli'; "
+                "$npmDirLegacy = Join-Path $env:APPDATA 'npm\\node_modules\\opencode-ai'; "
+                "if ((Test-Path $npmDir) -or (Test-Path $npmDirLegacy)) { "
+                "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
+                "  Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "  Start-Sleep -Seconds 2; "
+                "  npm uninstall -g @opencode/cli 2>$null; "
+                "  npm uninstall -g opencode-ai 2>$null; "
+                "} "
+                "if ((Test-Path $npmDir) -or (Test-Path $npmDirLegacy)) { "
+                "  Write-Host ''; Write-Host 'NPM could not remove — deleting folders directly...' -ForegroundColor Yellow; "
                 "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
+                "  Remove-Item -Recurse -Force $npmDirLegacy -ErrorAction SilentlyContinue; "
                 "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'opencode*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
-                "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('Не всё удалось удалить — попробуй позже.')}' -ForegroundColor Red; "
+                "if ((Test-Path $npmDir) -or (Test-Path $npmDirLegacy)) { "
+                "  Write-Host ''; Write-Host '[3/3] Not everything was removed — close all opencode windows and try again.' -ForegroundColor Red; "
                 "} else { "
-                f"  Write-Host '`n{_ps('opencode полностью удалён.')}' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host '[3/3] opencode fully removed.' -ForegroundColor Green; "
                 "} "
-                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -34842,14 +35725,33 @@ class ClaudeManager(QMainWindow):
         # OPENCODE_TUI_CONFIG живёт только на время работы opencode: ставим
         # его в скрипте и чистим после выхода — иначе повторные ручные запуски
         # в этой же вкладке подхватят наш конфиг. Из окружения сессии убираем.
+        # V2: плюс OPENCODE_CLI_CONFIG_CONTENT с тем же attention/темой.
         try:
             if not isinstance(env, dict):
                 env = {}
+            prefix_parts = []
+            suffix_parts = []
             tui_cfg = env.pop("OPENCODE_TUI_CONFIG", "") or ""
             if tui_cfg and os.path.exists(tui_cfg):
-                launch_cmd = ("$env:OPENCODE_TUI_CONFIG='%s'; opencode; "
-                              "Remove-Item Env:\\OPENCODE_TUI_CONFIG "
-                              "-ErrorAction SilentlyContinue" % tui_cfg.replace("'", "''"))
+                prefix_parts.append("$env:OPENCODE_TUI_CONFIG='%s'"
+                                    % tui_cfg.replace("'", "''"))
+                suffix_parts.append("Remove-Item Env:\\OPENCODE_TUI_CONFIG"
+                                    " -ErrorAction SilentlyContinue")
+            try:
+                v2_run = (_oc_installed_major() >= 2)
+            except Exception:
+                v2_run = False
+            if v2_run:
+                cli_content = _oc_build_ccm_cli_content(
+                    getattr(self, "settings", None))
+                if cli_content:
+                    prefix_parts.append("$env:OPENCODE_CLI_CONFIG_CONTENT='%s'"
+                                        % cli_content.replace("'", "''"))
+                    suffix_parts.append("Remove-Item Env:\\OPENCODE_CLI_CONFIG_CONTENT"
+                                        " -ErrorAction SilentlyContinue")
+            if prefix_parts:
+                launch_cmd = ("; ".join(prefix_parts) + "; opencode; "
+                              + "; ".join(suffix_parts))
         except Exception:
             pass
         profile = None
@@ -35720,22 +36622,24 @@ class ClaudeManager(QMainWindow):
         try:
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                # 1) Прибить все запущенные claude.exe — иначе файл залочен и npm падает
-                "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
+                # 1) Kill running claude.exe — locked file breaks npm
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running claude processes...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                # 1b) Битые временные шимы npm — как в safe-установщике
-                "Write-Host 'Проверяю целостность шимов npm...' -ForegroundColor Cyan; "
+                # 1b) Broken npm temp shims — like the safe installer
+                "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
                 "$npmBin = Join-Path $env:APPDATA 'npm'; "
                 "if (Test-Path $npmBin) { "
                 "  Get-ChildItem $npmBin -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
-                # 2) Установка/обновление последней версии через npm
-                "Write-Host 'Установка/обновление Claude Code через npm...' -ForegroundColor Cyan; "
+                # 2) Remove old version via npm
+                "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
                 "npm uninstall -g @anthropic-ai/claude-code 2>$null; "
+                # 3) Install/update latest via npm
+                "Write-Host '[4/4] Installing latest (@anthropic-ai/claude-code)...' -ForegroundColor Cyan; "
                 "npm install -g @anthropic-ai/claude-code@latest; "
-                "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
-                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Done. Check: claude --version' -ForegroundColor Green; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -35963,16 +36867,16 @@ class ClaudeManager(QMainWindow):
         try:
             subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                "Write-Host 'Устанавливаю Node.js LTS через winget...' -ForegroundColor Cyan; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host 'Устанавливаю Node.js LTS через winget...' -ForegroundColor Cyan; "
                 "Write-Host 'Источник: OpenJS.NodeJS.LTS (winget по умолчанию берёт официальный пакет с nodejs.org)' -ForegroundColor DarkGray; "
                 "winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements; "
                 "if ($LASTEXITCODE -eq 0) { "
-                "  Write-Host '`nNode.js установлен. Перезапусти Claude Code Manager, чтобы он подхватил npm в PATH.' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host 'Node.js установлен. Перезапусти Claude Code Manager, чтобы он подхватил npm в PATH.' -ForegroundColor Green; "
                 "} else { "
-                "  Write-Host '`nУстановка завершилась с ошибкой. Код выхода:' $LASTEXITCODE -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'Установка завершилась с ошибкой. Код выхода:' $LASTEXITCODE -ForegroundColor Yellow; "
                 "  Write-Host 'Можно поставить вручную с https://nodejs.org/en/download' -ForegroundColor Yellow; "
                 "} "
-                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Нажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -36441,29 +37345,29 @@ class ClaudeManager(QMainWindow):
         try:
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                # 1) Прибить все запущенные claude.exe / node, держащие бинарь — иначе npm падает с EBUSY
-                "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
+                # 1) Kill running claude.exe / node locking the binary — else npm fails with EBUSY
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/5] Stopping running claude processes...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                # 2) Основная попытка удаления npm-версии
-                "Write-Host 'Удаление Claude Code (npm)...' -ForegroundColor Cyan;"
+                # 2) Main npm removal attempt
+                "Write-Host '[2/5] Removing Claude Code (npm)...' -ForegroundColor Cyan;"
                 "npm uninstall -g @anthropic-ai/claude-code; "
-                # 3) Если файл   сё ещё залочен и остался — повторная попытка после паузы
+                # 3) If the file is still locked — retry after a pause
                 "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@anthropic-ai\\claude-code'; "
                 "if (Test-Path $npmDir) { "
-                "  Write-Host '`nПовторная попытка (файл был залочен)...' -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
                 "  npm uninstall -g @anthropic-ai/claude-code; "
                 "} "
                 "if (Test-Path $npmDir) { "
-                "  Write-Host '`nNPM не смог удалить — удаляю папку напрямую...' -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'NPM could not remove — deleting folder directly...' -ForegroundColor Yellow; "
                 "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
                 "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
-                # 4) Снести установку через install.ps1 (~/.local/bin + ~/.claude/local)
-                "Write-Host '`nУдаление Claude Code (install.ps1)...' -ForegroundColor Cyan; "
+                # 4) Remove install.ps1 setup (~/.local/bin + ~/.claude/local)
+                "Write-Host ''; Write-Host '[3/5] Removing Claude Code (install.ps1)...' -ForegroundColor Cyan; "
                 "$localBin = Join-Path $env:USERPROFILE '.local\\bin'; "
                 "if (Test-Path $localBin) { "
                 "  Get-ChildItem $localBin -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue; "
@@ -36472,15 +37376,16 @@ class ClaudeManager(QMainWindow):
                 "if (Test-Path $claudeLocal) { "
                 "  Remove-Item -Recurse -Force $claudeLocal -ErrorAction SilentlyContinue; "
                 "} "
-                # 5) Финальная проверка
+                # 5) Final check
+                "Write-Host '[4/5] Verifying removal...' -ForegroundColor Cyan; "
                 "$leftNpm = Test-Path $npmDir; "
                 "$leftLocal = (Test-Path $claudeLocal) -or (Test-Path (Join-Path $localBin 'claude.exe')); "
                 "if ($leftNpm -or $leftLocal) { "
-                "  Write-Host '`nНе всё удалось удалить — закрой все окна Claude Code и попробуй снова.' -ForegroundColor Red; "
+                "  Write-Host ''; Write-Host '[5/5] Not everything was removed — close all Claude Code windows and try again.' -ForegroundColor Red; "
                 "} else { "
-                "  Write-Host '`nClaude Code полностью удалён.' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host '[5/5] Claude Code fully removed.' -ForegroundColor Green; "
                 "} "
-                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
