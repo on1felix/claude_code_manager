@@ -72,4 +72,4 @@ Build the exe: `build.bat` (needs PyInstaller — `pip install pyinstaller`).
 ---
 
 By [on1felix](https://github.com/on1felix). Open source, free, no ads.
-Questions: Telegram [@On1Felix](https://t.me/On1Felix).
+Questions: Telegram [@on1felix001](https://t.me/on1felix001).
