@@ -14,7 +14,7 @@
 AUTHOR_NAME = "on1felix"
 AUTHOR_DISCORD = "on1felix"
 AUTHOR_GITHUB = "https://github.com/on1felix/claude_code_manager"
-AUTHOR_TELEGRAM = "https://t.me/On1Felix"
+AUTHOR_TELEGRAM = "https://t.me/on1felix001"
 APP_SITE_URL = "https://claude-code-manager.netlify.app"
 import sys, subprocess, os, threading, time, json, socket, math, ssl, random, shutil, re, calendar, tempfile
 from pathlib import Path
@@ -22,14 +22,14 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
-                               QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy, QSlider)
-from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize, QEvent
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics, QIntValidator, QCursor, QGuiApplication, QHelpEvent
+                                QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy, QSlider,
+                                QGraphicsScene, QGraphicsPixmapItem, QGraphicsBlurEffect)
+from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize, QEvent, QLockFile
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QImage, QImageReader, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics, QIntValidator, QCursor, QGuiApplication, QHelpEvent
 from PySide6.QtCore import QPointF, QRectF, QRect, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "5.9.9"  # Для обновлений
-REQUIRED_CLAUDE_VERSION = "2.1.173"  # Последняя стабильная версия Claude Code: новее может работать нестабильно или не работать, а с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.
+APP_VERSION = "6.0.2"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -452,11 +452,107 @@ def release_provider_color(pid):
         _save_provider_colors(colors)
 
 
+def _strip_settings_comments(text):
+    """Выкидывает только полно-строчные // комментарии (такие пишет наш
+    writer ниже). Значений не касается: в нашем формате значение никогда
+    не начинается с // с начала строки (URL всегда после "key": )."""
+    try:
+        return "\n".join(l for l in text.split("\n")
+                         if not l.lstrip().startswith("//"))
+    except Exception:
+        return text
+
+
+def _parse_settings_text(raw):
+    """Парсит текст settings.json: сначала как обычный JSON, затем —
+    как JSONC с нашими комментариями. Кидает исключение, если оба
+    варианта не разобрались."""
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    return json.loads(_strip_settings_comments(raw))
+
+
+# Порядок блоков в settings.json: файл сам раскладывается по полочкам
+# при каждом сохранении (см. _dump_settings_ordered). Неизвестные ключи
+# не теряются — уезжают в хвост ("Other").
+_SETTINGS_BLOCKS = (
+    ("App", (
+        "app_language", "app_mode", "auto_update_enabled",
+        "seen_update_id", "last_run_version", "official_warning_dismissed",
+        "working_directory", "working_directory_anthropic",
+        "working_directory_official", "working_directory_openai",
+        "working_directory_customurl",
+    )),
+    ("Anthropic + Claude Code - shared models, effort and keys", (
+        "use_custom_token", "custom_model", "reasoning_effort",
+        "reasoning_ultracode", "custom_base_url", "custom_base_urls",
+        "api_keys", "selected_key_id", "custom_api_key",
+    )),
+    ("Custom models (Anthropic)", (
+        "custom_models",
+    )),
+    ("OpenAI (Codex)", (
+        "openai_model", "openai_effort", "openai_base_url",
+        "openai_base_urls",
+    )),
+    ("Custom URL (opencode)", (
+        "oc_base_url", "oc_base_urls", "oc_keys", "oc_selected_key_id",
+        "oc_api_key", "oc_notify_enabled",
+    )),
+)
+
+
+def _dump_settings_ordered(data):
+    """Текст settings.json: блоки по _SETTINGS_BLOCKS, между блоками —
+    одна пустая строка, над блоком — английский // комментарий.
+    Кидает исключение при несериализуемых значениях (вызывающий
+    откатывается на обычный json.dump)."""
+    items = dict(data) if isinstance(data, dict) else {}
+    blocks = []
+    seen = set()
+    for comment, keys in _SETTINGS_BLOCKS:
+        present = [k for k in keys if k in items]
+        if present:
+            blocks.append((comment, present))
+            seen.update(present)
+    rest = [k for k in items if k not in seen]
+    if rest:
+        blocks.append(("Other (kept as-is)", rest))
+    rendered = []
+    for comment, keys in blocks:
+        pairs = []
+        for k in keys:
+            val = json.dumps(items[k], ensure_ascii=False, indent=2)
+            vlines = val.split("\n")
+            first = "  " + json.dumps(k, ensure_ascii=False) + ": " + vlines[0]
+            body = ["  " + ln for ln in vlines[1:]]
+            pairs.append([first] + body)
+        rendered.append((comment, pairs))
+    lines = ["{"]
+    total = sum(len(pairs) for _, pairs in rendered)
+    done = 0
+    for bi, (comment, pairs) in enumerate(rendered):
+        if bi > 0:
+            lines.append("")
+        lines.append("  // " + comment)
+        for pair in pairs:
+            done += 1
+            comma = "," if done < total else ""
+            pair[-1] = pair[-1] + comma
+            lines.extend(pair)
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
+                # Файл у нас с // комментариями-блоков: обычный json.load
+                # их не возьмёт, поэтому парсим с фолбэком на JSONC.
+                loaded = _parse_settings_text(f.read())
         except Exception as e:
             # Файл существует, но не распарсился (битый JSON и т.п.).
             # Делаем бэкап, чтобы save_settings НЕ затёр пользовательские данные дефолтами.
@@ -476,7 +572,7 @@ def load_settings():
             # Возвращаем None-подобный сигнал через исключение наверх было бы правильнее,
             # но чтобы не ломать вызывающий код — возвращаем дефолт. Бэкап уже сделан.
             print(f"[load_settings] Ошибка чтения {SETTINGS_FILE}: {e}. Бэкап сохранён рядом.")
-            return _default_settings()
+            return _overlay_sidecars(_default_settings())
         else:
             # Дописываем недостающие поля для совместимости.
             # Проливаем ВСЕ отсутствующие ключи из дефолтов — иначе старые
@@ -484,20 +580,28 @@ def load_settings():
             # selected_model и т.п.).
             for _k, _v in _default_settings().items():
                 loaded.setdefault(_k, _v)
+            # Миграция ultracode в отдельный флаг: раньше он был значением
+            # шкалы effort, теперь — тумблер поверх любого уровня.
+            try:
+                if loaded.get("reasoning_effort") == "ultracode":
+                    loaded["reasoning_effort"] = "max"
+                    loaded["reasoning_ultracode"] = True
+            except Exception:
+                pass
             # custom_base_urls — гарантируем что дефолтный URL всегда в списке
             if not loaded.get("custom_base_urls"):
-                loaded["custom_base_urls"] = ["https://cc.freemodel.dev"]
+                loaded["custom_base_urls"] = list(DEFAULT_BASE_URLS)
             else:
-                for u in ["https://cc.freemodel.dev"]:
+                for u in DEFAULT_BASE_URLS:
                     if u not in loaded["custom_base_urls"]:
                         loaded["custom_base_urls"].insert(0, u)
             if not loaded.get("custom_base_url"):
                 loaded["custom_base_url"] = loaded["custom_base_urls"][0]
             # openai_base_urls — та же гарантия для вкладки OpenAI
             if not loaded.get("openai_base_urls"):
-                loaded["openai_base_urls"] = ["https://api.freemodel.dev"]
+                loaded["openai_base_urls"] = list(DEFAULT_OPENAI_BASE_URLS)
             else:
-                for u in ["https://api.freemodel.dev"]:
+                for u in DEFAULT_OPENAI_BASE_URLS:
                     if u not in loaded["openai_base_urls"]:
                         loaded["openai_base_urls"].insert(0, u)
             if not loaded.get("openai_base_url"):
@@ -512,36 +616,44 @@ def load_settings():
             # oc_model/oc_models, auth_token, custom_endpoint) из чужих
             # файлов не вычищаем — оставляем как есть. В новые файлы они
             # не попадают (их нет в _default_settings), код их не читает.
+            # Сайдкары звуков/темы — поверх общих (они их владельцы).
+            try:
+                _overlay_sidecars(loaded)
+            except Exception:
+                pass
             return loaded
-    return _default_settings()
+    # Файла нет: дефолты + сайдкары, если уцелели (удалил общий —
+    # звуки/тема подхватятся из своих файлов).
+    try:
+        return _overlay_sidecars(_default_settings())
+    except Exception:
+        return _default_settings()
 
 def _default_settings():
     return {
         "working_directory": "",
         "use_custom_token": True,
         "custom_api_key": "",
-        "custom_base_url": "https://cc.freemodel.dev",
-        "custom_base_urls": [
-            "https://cc.freemodel.dev"
-        ],
+        "custom_base_url": DEFAULT_BASE_URLS[0],
+        "custom_base_urls": list(DEFAULT_BASE_URLS),
         "custom_model": "Opus 4.8",
-        "app_language": "ru",
+        "custom_models": [],
+        "app_language": "en",
         "auto_update_enabled": True,
-        "use_1m_context": False,
         "api_keys": [],
         "selected_key_id": "",
-        "app_mode": "anthropic",
-        "openai_base_url": "https://api.freemodel.dev",
-        "openai_base_urls": [
-            "https://api.freemodel.dev"
-        ],
+        "app_mode": "customurl",
+        "openai_base_url": DEFAULT_OPENAI_BASE_URLS[0],
+        "openai_base_urls": list(DEFAULT_OPENAI_BASE_URLS),
         "openai_model": "gpt-5.6-sol",
         "openai_effort": "low",
+        "reasoning_ultracode": False,
         "oc_base_url": "",
         "oc_base_urls": [],
         "oc_keys": [],
         "oc_selected_key_id": "",
         "oc_api_key": "",
+        "oc_notify_enabled": True,
         "seen_update_id": "",
         "last_run_version": ""
     }
@@ -575,11 +687,56 @@ def migrate_settings(settings):
 
 def save_settings(settings):
     ensure_settings_dir()
+    # Разносим по файлам: звуки/тема — в свои сайдкары (пишем, только если
+    # в словаре есть их ключи или файл уже существует), остальное — в общий.
     try:
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-    except:
+        data = dict(settings) if isinstance(settings, dict) else {}
+    except Exception:
+        data = {}
+    try:
+        snd = {k: data.pop(k) for k in _OC_SOUND_SETTING_KEYS if k in data}
+    except Exception:
+        snd = {}
+    try:
+        thm = {k: data.pop(k) for k in _OC_THEME_SETTING_KEYS if k in data}
+    except Exception:
+        thm = {}
+    # Сайдкары звуков/темы — только при установленном opencode CLI.
+    # Иначе каждый save_settings (в т.ч. стартовый через _apply_app_mode)
+    # создавал бы папки sounds//images/ и писал файлы интеграции в пустоту.
+    try:
+        _sidecars_ok = _oc_have_cli()
+    except Exception:
+        _sidecars_ok = False
+    try:
+        _sp = _oc_sounds_config_path()
+        if _sp and _sidecars_ok and (snd or os.path.exists(_sp)):
+            _write_sidecar(_sp, snd)
+    except Exception:
         pass
+    try:
+        _tp = _oc_theme_config_path()
+        if _tp and _sidecars_ok and (thm or os.path.exists(_tp)):
+            _write_sidecar(_tp, thm)
+    except Exception:
+        pass
+    tmp = SETTINGS_FILE + ".tmp"
+    try:
+        # Пишем по полочкам: блоки + английские комментарии (см. выше).
+        # Не вышло — обычный дамп, лишь бы не потерять данные.
+        try:
+            text = _dump_settings_ordered(data)
+        except Exception:
+            text = json.dumps(data, ensure_ascii=False, indent=2)
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(text)
+        os.replace(tmp, SETTINGS_FILE)
+    except:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except:
+            pass
 
 def _next_settings_backup_path():
     """Подбираем имя бэкапа так, чтобы не затирать существующие: сначала .bak,
@@ -612,6 +769,132 @@ def save_settings_with_backup(settings):
     связанных с изменением данных в управлении ключами."""
     backup_settings_before_change()
     save_settings(settings)
+
+
+# ============================================================
+# САЙДКАРЫ НАСТРОЕК (звуки/тема отдельно от общих)
+# ------------------------------------------------------------
+# Чтобы не засорять общий settings.json: звуковые ключи живут в
+# sounds/oc_sounds.json, ключи темы/фона — в images/oc_theme.json.
+# В памяти всё равно один словарь (код выше не меняется): слияние —
+# в load_settings, разделение — в save_settings. Бэкапов для сайдкаров
+# нет (только атомарная запись tmp+replace), пустые файлы не создаём.
+# ============================================================
+
+_OC_SOUND_SETTING_KEYS = (
+    "oc_notify_enabled",
+    "oc_notify_sounds",
+    "oc_notify_volumes",
+    "oc_prev_attention",
+)
+_OC_THEME_SETTING_KEYS = (
+    "oc_theme_enabled",
+    "oc_theme_image",
+    "oc_theme_image_opacity",
+    "oc_theme_image_blur",
+    "oc_theme_image_zoom",
+    "oc_theme_image_posx",
+    "oc_theme_image_posy",
+    "oc_theme_tabrow_ours",
+    "oc_theme_prev",
+)
+
+
+def _oc_sounds_config_path():
+    """Файл настроек звуков: sounds/oc_sounds.json."""
+    try:
+        return os.path.join(_oc_sounds_dir(), "oc_sounds.json")
+    except Exception:
+        return ""
+
+
+def _oc_theme_config_path():
+    """Файл настроек темы/фона: images/oc_theme.json."""
+    try:
+        return os.path.join(_oc_images_dir(), "oc_theme.json")
+    except Exception:
+        return ""
+
+
+def _read_sidecar(path, keys):
+    """Читает сайдкар, отдаёт только известные ключи. Пусто при любой проблеме."""
+    out = {}
+    try:
+        if not path or not os.path.exists(path):
+            return out
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return out
+        for k in keys or ():
+            try:
+                if k in data:
+                    out[k] = data[k]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _write_sidecar(path, payload):
+    """Атомарная запись сайдкара (tmp+replace, без бэкапов).
+    Не пишет, если содержимое не изменилось. True если файл на месте."""
+    try:
+        if not path:
+            return False
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            pass
+        try:
+            text = json.dumps(payload if isinstance(payload, dict) else {},
+                              ensure_ascii=False, indent=2)
+        except Exception:
+            return False
+        try:
+            cur = ""
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    cur = f.read()
+            if cur == text:
+                return True
+        except Exception:
+            pass
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+        return os.path.exists(path)
+    except Exception:
+        try:
+            if os.path.exists(path + ".tmp"):
+                os.remove(path + ".tmp")
+        except Exception:
+            pass
+        return False
+
+
+def _overlay_sidecars(loaded):
+    """Подмешивает сайдкары звуков/темы поверх словаря (на месте).
+    Сайдкар — владелец своих ключей после переезда."""
+    try:
+        if not isinstance(loaded, dict):
+            return loaded
+        for _p, _ks in ((_oc_sounds_config_path(), _OC_SOUND_SETTING_KEYS),
+                        (_oc_theme_config_path(), _OC_THEME_SETTING_KEYS)):
+            try:
+                _extra = _read_sidecar(_p, _ks)
+            except Exception:
+                _extra = {}
+            if _extra:
+                try:
+                    loaded.update(_extra)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return loaded
 
 
 # ============================================================
@@ -891,6 +1174,8 @@ def migrate_oc_keys(settings):
 # кода.
 
 TRANSLATIONS = {
+    # ── один экземпляр приложения
+    "Приложение уже запущено": "The app is already running",
     # ── вкладка OpenAI / Codex CLI
     "Установить Codex CLI": "Install Codex CLI",
     "Удалить Codex CLI": "Uninstall Codex CLI",
@@ -948,13 +1233,22 @@ TRANSLATIONS = {
     "Выбор Base URL": "Select Base URL",
     "Установить opencode": "Install opencode",
     "Удалить opencode": "Uninstall opencode",
+    "Сначала установите opencode": "Install opencode first",
+    "Интеграция opencode развёрнута": "opencode integration deployed",
+    "Завершить сессию?": "End session?",
+    "Завершить": "End",
+    "Вы не потеряете свои чаты, если завершите сессию.":
+        "You won't lose your chats if you end the session.",
+    "Сессия завершена": "Session ended",
+    "Не удалось завершить сессию": "Could not end the session",
+    "Сессия завершается...": "Session is ending...",
     "Обновить opencode": "Update opencode",
     "Запустить opencode": "Start opencode",
     "Установка opencode CLI": "Install opencode CLI",
     "Обновление opencode CLI": "Update opencode CLI",
     "Удалить opencode CLI": "Uninstall opencode CLI",
     "npm установит последнюю версию opencode.": "npm will install the latest opencode version.",
-    "Будет установлен opencode CLI (npm-пакет opencode-ai).\n\nОткроется окно PowerShell, где пойдёт установка.": "opencode CLI (the opencode-ai npm package) will be installed.\n\nA PowerShell window will open where the install will run.",
+    "Будет установлен opencode CLI (npm-пакет @opencode/cli).\n\nОткроется окно PowerShell, где пойдёт установка.": "opencode CLI (the @opencode/cli npm package) will be installed.\n\nA PowerShell window will open where the install will run.",
     "Установка opencode через npm...": "Installing opencode via npm...",
     "Готово. Проверь команду: opencode -v": "Done. Check the command: opencode -v",
     "Будет удалён глобальный npm-пакет opencode": "The global npm package opencode will be removed",
@@ -973,6 +1267,8 @@ TRANSLATIONS = {
     "Как изменить модель": "How to change the model",
     "В терминале opencode введите /model и выберите нужную вам модель из списка.\n\nСписок обновляется автоматически при каждом открытии этого окна — если моделей добавили или убрали, здесь это отразится само.": "In the opencode terminal type /model and pick the model you need from the list.\n\nThe list refreshes automatically every time you open this window — if models were added or removed, it will be reflected here on its own.",
     "Какие модели доступны": "What models are available",
+    "Обновляем модели": "Updating models",
+    "Ошибка обновления моделей": "Failed to refresh models",
     "Модели:": "Models:",
     "моделей": "models",
     "бесплатных": "free",
@@ -982,6 +1278,7 @@ TRANSLATIONS = {
     "Управление провайдерами": "Manage providers",
     "Звуки": "Sounds",
     "Звуки opencode": "opencode sounds",
+    "Push-уведомления": "Push notifications",
     "Звуки opencode: когда код готов или когда ИИ нужно твоё действие — вопрос, разрешение или исправление ошибки.": "opencode sounds: when the code is ready or when the AI needs you — a question, a permission request, or an error to fix.",
     "Код готов": "Code ready",
     "Готово": "Done",
@@ -996,6 +1293,39 @@ TRANSLATIONS = {
     "Да, сбросить": "Yes, reset",
     "После изменения перезапустите opencode CLI": "Restart the opencode CLI after making changes",
     "Поддерживаются только WAV-файлы.": "Only WAV files are supported.",
+    "Файл не найден — возможно, он был перемещён.": "File not found — it may have been moved.",
+    "Не удалось добавить звук: {}": "Could not add sound: {}",
+    "Не удалось добавить звук: копия не создана.": "Could not add sound: copy was not created.",
+    "Тема": "Theme",
+    "Настройки": "Settings",
+    "Вкл": "On",
+    "Выкл": "Off",
+    "Прозрачная тема opencode": "Transparent opencode theme",
+    "Включишь — тема opencode станет прозрачной. Добавишь картинку — она станет фоном терминала.": "Turn it on — the opencode theme becomes transparent. Add a picture — it becomes the terminal background.",
+    "Пока включено, тема действует во всех окнах opencode.": "While enabled, the theme applies to all opencode windows.",
+    "Картинка для фона:": "Background picture:",
+    "Выбрать картинку": "Pick a picture",
+    "Убрать": "Remove",
+    "Без картинки": "No picture",
+    "Яркость картинки": "Image brightness",
+    "Размытие": "Blur",
+    "Предпросмотр": "Preview",
+    "Предпросмотр фона": "Background preview",
+    "Для блюра/масштаба гифки нужен Pillow": "GIF blur/zoom needs Pillow",
+    "Масштаб": "Zoom",
+    "Лево — право": "Left - right",
+    "Верх — низ": "Top - bottom",
+    "Положение": "Position",
+    "Центр": "Center",
+    "Сверху": "Top",
+    "Снизу": "Bottom",
+    "Слева": "Left",
+    "Справа": "Right",
+    "Сверху слева": "Top left",
+    "Сверху справа": "Top right",
+    "Снизу слева": "Bottom left",
+    "Снизу справа": "Bottom right",
+    "Нет wt — только тема, без картинки.": "No wt — theme only, no picture.",
     "Провайдеры opencode": "opencode providers",
     "Провайдеры из конфига и auth.json. Удаление убирает и креду, и определение.": "Providers from config and auth.json. Deleting removes both the credential and the definition.",
     "Провайдеров не найдено": "No providers found",
@@ -1023,7 +1353,6 @@ TRANSLATIONS = {
     "Проверяю версию…": "Checking version…",
     "Установлен": "Installed",
     "нужна": "need",
-    "запуск заблокирован": "launch blocked",
     # ── метки секций
     "Модель:": "Model:",
     "API ключ:": "API key:",
@@ -1078,6 +1407,12 @@ TRANSLATIONS = {
         "does not support ultracode — effort lowered to max",
     "не поддерживает ultracode — понижаю до max":
         "does not support ultracode — lowering to max",
+    "не поддерживает ultracode — ultracode выключен":
+        "does not support ultracode — ultracode turned off",
+    "включён (ultracode)":
+        "on",
+    "выключен (ultracode)":
+        "off",
     # ── Официальный запуск (под-режим Claude двойной ячейки)
     "ultracode недоступен в официальном режиме — понижаю до max":
         "ultracode is unavailable in official mode — lowering to max",
@@ -1116,6 +1451,19 @@ TRANSLATIONS = {
     "максимум мощности + многоагентная оркестрация": "maximum power + multi-agent orchestration",
     "Reasoning effort изменён на": "Reasoning effort changed to",
     "Модель изменена на": "Model changed to",
+    # ── Свои модели (только Anthropic)
+    "Свои модели": "Custom models",
+    "Введите ID модели:": "Enter model ID:",
+    "Например: claude-haiku-5.5:free": "E.g.: claude-haiku-5.5:free",
+    "Модель уже добавлена": "Model already added",
+    "Своя модель — ID передаётся CLI как есть": "Custom model — ID is passed to CLI as-is",
+    "Модель удалена": "Model removed",
+    # ── Окно своих моделей (дизайн как у Base URL)
+    "Клик — выбрать модель.": "Click — pick a model.",
+    "Моделей пока нет — добавьте первую ниже": "No custom models yet — add the first one below",
+    "Добавить новую модель:": "Add a new model:",
+    "Своя модель недоступна в официальном режиме — переключено на Opus 4.8": "Custom model is unavailable in official mode — switched to Opus 4.8",
+    "Удалить свою модель?": "Delete custom model?",
     # ── Фоновый запуск (тяжёлое в рабочих потоках)
     "Проверяю версию Claude Code...": "Checking Claude Code version...",
     "Готовлю запуск opencode...": "Preparing opencode launch...",
@@ -1176,7 +1524,7 @@ TRANSLATIONS = {
     "Подготовка…": "Preparing…",
     "Status line установлен ✓": "Status line installed ✓",
     "Не удалось установить": "Installation failed",
-    "Скачивание обновления": "Downloading update",
+    "Обновляем": "Updating",
     "Обновление скачано!": "Update downloaded!",
     "Завершаем обновление…": "Finalizing update…",
     "Ошибка скачивания": "Download error",
@@ -1416,65 +1764,10 @@ TRANSLATIONS = {
         "Claude Code is not responding, gives API errors, or behaves strangely "
         "after switching authorization method.",
     # ── Install dialog texts
-    "Откат Claude Code до": "Rollback Claude Code to",
     "Установка Claude Code": "Install Claude Code",
     "У тебя установлена": "You currently have installed",
-    "последняя стабильная версия, "
-    "на которой приложение проверено целиком. Более новые версии могут работать "
-    "нестабильно или вовсе не запускаться, а начиная с v2.1.181 Anthropic "
-    "заблокировала сторонние Base URL и API ключи — все запросы уходят тол  ко "
-    "в официальный сервис Anthropic, и FreeModel / opencode / прокси не работают.\n\n"
-    "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude "
-    "не пострадают.":
-        "the last stable version on which the app was fully tested. "
-        "Newer versions may work unstably or not start at all, and starting from v2.1.181 "
-        "Anthropic blocked third-party Base URLs and API keys — all requests now go only "
-        "to the official Anthropic service, and FreeModel / opencode / proxy don't work.\n\n"
-        "npm will reinstall the package to the required version. Settings in %USERPROFILE%\\.claude "
-        "will not be affected.",
-    "Будет установлена фиксированная": "A pinned version will be installed",
-    "последняя стабильная версия, с которой это приложение работает гарантированно. "
-    "Более новые версии могут работать нестабильно или совсем не запускаться.":
-        "the last stable version with which this app is guaranteed to work. "
-        "Newer versions may work unstably or not start at all.",
-    "Будет установлена фиксированная версия": "A pinned version will be installed",
-    "через npm — "
-    "последняя стабильная, на которой проверено это приложение. "
-    "Более новые версии могут работать нестабильно или вовсе не запускаться, "
-    "а версии с 2.1.181 Anthropic блокирует сторонние Base URL и API ключи.\n\n"
-    "Откроется окно PowerShell, где пойдёт установка.":
-        "via npm — "
-        "the last stable version this app was tested on. "
-        "Newer versions may work unstably or not start at all, "
-        "and versions starting from 2.1.181 Anthropic blocks third-party Base URLs and API keys.\n\n"
-        "A PowerShell window will open where the installation will happen.",
-    "Откатить": "Rollback",
     "Продолжить": "Continue",
-    "Откатить до": "Rollback to",
     "установлен": "installed",
-    "Обновить до": "Update to",
-    "Устаревшая версия Claude Code": "Outdated Claude Code version",
-    "У тебя установлена Claude Code": "You have Claude Code installed",
-    "это устаревшая версия.": "this is an outdated version.",
-    "Проверенная и стабильная версия, на которой это приложение работает гарантированно, — ":
-        "The tested and stable version that this app is guaranteed to work with is ",
-    "На более старых версиях возможны "
-    "несовместимости (изменения в формате settings.json, путях, флагах CLI), "
-    "из-за которых запуск через opencode / FreeModel может вести себя нестабильно.\n\n":
-        "Older versions may have incompatibilities "
-        "(changes in the settings.json format, paths, CLI flags) "
-        "that can make startup via opencode / FreeModel behave unreliably.\n\n",
-    "Рекомендуем обновить до": "We recommend updating to",
-    "npm переустановит пакет, "
-    "настройки в %USERPROFILE%\\.claude не пострадают.":
-        "npm will reinstall the package, "
-        "settings in %USERPROFILE%\\.claude will not be affected.",
-    # ── version block dialog
-    "Запуск заблокирован": "Launch blocked",
-    "а приложение работает только с": "but the app only works with",
-    "Нажми «Откатить» — npm переустановит CLI на":
-        "Press «Rollback» — npm will reinstall the CLI to",
-    "и запуск снова заработает.": "and launch will work again.",
     # ── npm dialog
     "В системе не найден npm — он входит в состав Node.js. "
     "Без npm Claude Code установить нельзя.\n\n"
@@ -1533,9 +1826,10 @@ TRANSLATIONS = {
 
     # ── status label
     "Установлена": "Installed",
+    "Сессия не активна": "Session inactive",
+    "Сессия активна": "Session active",
     "Доступно обновление": "Update available",
     "Обновить Claude Code": "Update Claude Code",
-    "Откатить Claude Code": "Rollback Claude Code",
 
     # ── Add to PATH button + dialog
     "Добавить в PATH": "Add to PATH",
@@ -1564,46 +1858,39 @@ TRANSLATIONS = {
     "Ок": "OK",
     "Добавить": "Add",
 
-    # ── Safe-mode install / rollback / block-launch dialogs
-    "проверенная ст  бильная версия, на которой приложение работает всегда. "
-    "Установщик поставит именно её. Настройки в %USERPROFILE%\\.claude не пострадают.":
-        "the proven stable version the app always works on. "
-        "The installer will pin exactly this version. Settings in %USERPROFILE%\\.claude are untouched.",
-    "проверенная стабильная версия, на которой приложение работает всегда.":
-        "the proven stable version the app always works on.",
-    "проверенная стабильная версия, на которой приложение работает всегда.\n\n"
-    "Откроется окно PowerShell, где пойдёт установка.":
-        "the proven stable version the app always works on.\n\n"
-        "A PowerShell window will open and the install will start.",
-    "а приложение сейчас в безопасном режиме и работает только с":
-        "and the app is in safe mode and only runs on",
-    "проверенная стабильная версия, на которой приложение работает всегда.\n\n"
-    "Нажми «Откатить» — установщик поставит проверенную версию, и запуск снова заработает.\n\n"
-    "Если откатывать версию не хочется — включи «Авто-обновление» на панели над кнопками. "
-    "В этом режиме приложение перестаёт следить за версией и запускает любую установленную.":
-        "the proven stable version the app always works on.\n\n"
-        "Click «Roll back» — the installer will put back the proven version and launch will work again.\n\n"
-        "If you don't want to roll back — turn on «Auto-update» on the panel above the buttons. "
-        "In that mode the app stops watching the version and launches whatever is installed.",
-    "установщик поставит нужную версию, настройки в %USERPROFILE%\\.claude не пострадают.":
-        "the installer will put the required version; settings in %USERPROFILE%\\.claude aren't affected.",
 
-    # ── Auto-update toggle confirm dialog
-    "Включится официальный установщик "
-    "(npm install -g @anthropic-ai/claude-code). Claude Code будет "
-    "обновляться сам до последней версии.\n\n"
-    "Сейчас всё работает и на последней версии. Если что-то "
-    "вдруг перестанет работать — просто выключи этот переключатель, "
-    "и приложение вернёт проверенную версию, на которой всё "
-    "гарантированно работает.":
-        "The official installer will kick in "
-        "(npm install -g @anthropic-ai/claude-code). Claude Code will "
-        "keep itself updated to the latest version.\n\n"
-        "Right now everything works on the latest version too. If something "
-        "suddenly breaks — just turn this switch off and the app will bring back "
-        "the proven version everything is guaranteed to work on.",
     "Включить": "Enable",
 
+    # ── Auto-update toggle
+    "Включить авто-обновление": "Enable auto-update",
+    "Выключить авто-обновление": "Disable auto-update",
+    "Выключить": "Disable",
+    "Приложение будет само обновлять Claude Code до последней версии "
+    "через npm (npm install -g @anthropic-ai/claude-code), а встроенный "
+    "автообновлятор CLI будет включён.\n\n"
+    "Выключить можно в любой момент — тогда приложение перестанет "
+    "что-либо ставить само, а встроенный обновлятор CLI выключится "
+    "и версия будет заморожена.":
+        "The app will keep Claude Code updated to the latest version itself "
+        "via npm (npm install -g @anthropic-ai/claude-code), and the CLI's "
+        "built-in auto-updater will be enabled.\n\n"
+        "You can turn it off at any time — then the app stops installing "
+        "anything itself, and the CLI's built-in updater turns off, "
+        "freezing the version.",
+    "Приложение перестанет само обновлять Claude Code. Встроенный "
+    "автообновлятор CLI тоже будет выключен "
+    "(DISABLE_UPDATES=1, autoUpdates=false), и версия "
+    "будет заморожена на текущей — ничего само не обновится, "
+    "пока не включишь обратно.":
+        "The app will stop updating Claude Code itself. The CLI's built-in "
+        "auto-updater will also be turned off "
+        "(DISABLE_UPDATES=1, autoUpdates=false), and the version "
+        "will freeze at the current one — nothing updates itself "
+        "until you turn it back on.",
+    "Включение авто-обновления отменено": "Enabling auto-update cancelled",
+    "Авто-обновление Claude Code включено": "Claude Code auto-update enabled",
+    "Выключение авто-обновления отменено": "Disabling auto-update cancelled",
+    "Авто-обновление Claude Code выключено — версия заморожена": "Claude Code auto-update disabled — version frozen",
     # ── Install Claude Code (official variant title/text)
     "Скачает и поставит последнюю версию Claude Code через npm "
     "(@anthropic-ai/claude-code).\n\n"
@@ -1616,39 +1903,7 @@ TRANSLATIONS = {
     "Обновление Claude Code": "Update Claude Code",
     "последняя": "latest",
 
-    # ── Safe-mode switch (turning auto-update OFF)
-    "Переход в безопасный режим": "Switching to safe mode",
-    "Приложение перестанет обновлять Claude Code и зафиксируется "
-    f"на проверенной версии v{REQUIRED_CLAUDE_VERSION} — именно на ней "
-    "гарантированно работают FreeModel / opencode / любые сторонние "
-    "Base URL и API-ключи.\n\n"
-    "Встроенный автообновлятор Claude Code будет выключен "
-    "(DISABLE_UPDATES=1, autoUpdates=false), чтобы CLI сам не "
-    "подтянул новую версию за спиной. Если сейчас установлена "
-    "версия новее — запуск будет заблокирован, пока не откатишь "
-    "её кнопкой «Откатить Claude Code».\n\n"
-    "Включай этот режим только если сам этого хочешь или если "
-    "на новой версии реально появились проблемы.":
-        "The app will stop updating Claude Code and will pin to the proven "
-        f"version v{REQUIRED_CLAUDE_VERSION} — the one that reliably works "
-        "with FreeModel / opencode / any third-party Base URLs and API keys.\n\n"
-        "Claude Code's built-in auto-updater will be turned off "
-        "(DISABLE_UPDATES=1, autoUpdates=false), so the CLI can't quietly "
-        "pull in a newer version behind your back. If you currently have a "
-        "newer version installed, launch will be blocked until you roll it "
-        "back with the «Roll back Claude Code» button.\n\n"
-        "Turn this on only if you actually want to, or if the newer version "
-        "has caused real problems for you.",
-    "Перейти в безопасный режим": "Switch to safe mode",
-    "Поддержка новых версий: включение отменено": "Support for new versions: enabling cancelled",
-    "Поддержка новых версий Claude Code включена": "Support for new Claude Code versions enabled",
-    "Безопасный режим: переход отменён": "Safe mode: switch cancelled",
-    "Поддержка новых версий Claude Code выключена — вернулись к безопасному режиму":
-        "Support for new Claude Code versions disabled — back to safe mode",
 
-    # ── 1M-context toggle
-    "1M-контекст включён": "1M context enabled",
-    "1M-контекст выключен": "1M context disabled",
     # ── переводы консоли и диалогов (автодобавление) ──
     "Терминал не найден": "Terminal not found",
     "Для нормальной работы PowerShell нужен Windows Terminal. Без него не работает вставка текста через CTRL+V, вкладки и другие возможности современного терминала.\n\nУстанови Terminal — это официальный установщик Microsoft, всегда последняя версия.":
@@ -1679,7 +1934,7 @@ TRANSLATIONS = {
     "opencode установлен. Перезапусти программу, чтобы она увидела новую команду и обновлённый PATH.":
         "opencode is installed. Restart the app so it picks up the new command and updated PATH.",
     "В системе не найден npm — он входит в состав Node.js. Без npm Claude Code установить нельзя.\n\nНа твоей системе нет winget, поэтому установить автоматически не получится. Нажми «Скачать Node.js» — откроется официальная страница nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, поставь его и перезапусти это приложение.": "npm was not found on this system — it ships with Node.js. Without npm, Claude Code cannot be installed.\n\nwinget is not available on your system, so automatic installation is not possible. Click “Download Node.js” — the official nodejs.org/en/download page will open. Download the Windows Installer (.msi) LTS, install it and restart this app.",
-    "Вы действит  льно хотите переустановить status line? Ваш текущий блок statusLine в ~/.claude/settings.json и файл ~/.claude/statusline-command.sh будут полностью перезаписаны нашей версией. Откатить это нельзя.": "Do you really want to reinstall the status line? Your current statusLine block in ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be fully overwritten with our version. This cannot be undone.",
+    "Вы действительно хотите переустановить status line? Ваш текущий блок statusLine в ~/.claude/settings.json и файл ~/.claude/statusline-command.sh будут полностью перезаписаны нашей версией. Откатить это нельзя.": "Do you really want to reinstall the status line? Your current statusLine block in ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be fully overwritten with our version. This cannot be undone.",
     "Вы действительно хотите удалить status line? Блок statusLine уйдёт из ~/.claude/settings.json, а файл ~/.claude/statusline-command.sh — будет стёрт. Остальные настройки Claude Code останутся как есть.": "Do you really want to remove the status line? The statusLine block will be removed from ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be erased. Other Claude Code settings stay as they are.",
     "Сейчас приложение работает в обычном режиме и часть\nопераций может завершаться ошибкой PermissionDenied.\n\nБез админ-прав могут не сработать:\n  •  установка Node.js (инсталлятор пишет в %ProgramFiles%)\n  •  установка Claude Code (npm i -g в системные папки)\n  •  полное удаление Claude Code и чистка залоченных файлов\n  •  запись в системные папки (%ProgramFiles%, %ProgramData%)\n  •  правки в чужих профилях и общих директориях\n\nБазовые сценарии — Fix Claude, смена модели и API-ключа —\nработают и без админа.": "The app is running in normal mode and some\noperations may fail with PermissionDenied.\n\nWithout admin rights these may not work:\n  •  installing Node.js (the installer writes to %ProgramFiles%)\n  •  installing Claude Code (npm i -g into system folders)\n  •  fully uninstalling Claude Code and cleaning locked files\n  •  writing to system folders (%ProgramFiles%, %ProgramData%)\n  •  editing other users' profiles and shared directories\n\nBasic scenarios — Fix Claude, model and API key switching —\nwork without admin as well.",
     "проверенная стабильная версия, на которой приложение работает всегда. npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude не пострадают.": "a proven stable version the app always works on. npm will reinstall the package at the required version. Settings in %USERPROFILE%\\.claude are untouched.",
@@ -1694,7 +1949,6 @@ TRANSLATIONS = {
     "Запускаю установку Codex CLI через npm...": "Installing Codex CLI via npm...",
     "Запускаю установку opencode через npm...": "Installing opencode via npm...",
     "Не удалось записать конфиг провайдера": "Failed to write the provider config",
-    "Не удалось получить /models — модели будут пустые": "Failed to fetch /models — the model list will be empty",
     "Base URL {} сохранён": "Base URL {} saved",
     "Claude Code v{} уже установлен": "Claude Code v{} is already installed",
     "Claude Code запущен (--model {})": "Claude Code launched (--model {})",
@@ -1709,7 +1963,6 @@ TRANSLATIONS = {
     "Запуск Claude Code ({})...": "Launching Claude Code ({})...",
     "Запуск Claude Code с кастомным токеном...": "Launching Claude Code with a custom token...",
     "Запуск Codex CLI ({})...": "Launching Codex CLI ({})...",
-    "Запуск заблокирован: установлена v{}, требуется v{}": "Launch blocked: v{} is installed, v{} is required",
     "Запускаю {} Claude Code v{} через npm...": "Running {} Claude Code v{} via npm...",
     "Запускаю {} Claude Code через npm (@anthropic-ai/claude-code)...": "Running {} Claude Code via npm (@anthropic-ai/claude-code)...",
     "Используется кастомный токен для {} (effort={})": "Using a custom token for {} (effort={})",
@@ -1741,13 +1994,13 @@ def _load_lang_setting():
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                d = json.load(f)
-                lang = d.get("app_language", "ru")
+                d = _parse_settings_text(f.read())
+                lang = d.get("app_language", "en")
                 if lang in ("ru", "en"):
                     return lang
     except:
         pass
-    return "ru"
+    return "en"
 
 
 class LanguageManager(QObject):
@@ -1794,7 +2047,7 @@ def tr(ru_text):
 def check_oc_latest_version():
     """Возвращает последнюю версию opencode CLI из npm-реестра"""
     try:
-        req = Request("https://registry.npmjs.org/opencode-ai/latest", headers={'User-Agent': 'ClaudeManager-Updater'})
+        req = Request("https://registry.npmjs.org/@opencode/cli/latest", headers={'User-Agent': 'ClaudeManager-Updater'})
         with urlopen(req, timeout=10, context=_ssl_context) as resp:
             data = json.loads(resp.read().decode('utf-8'))
         return data.get('version', '')
@@ -1825,6 +2078,243 @@ def get_installed_oc_version(exe=None):
         return m.group(1) if m else ""
     except Exception:
         return ''
+
+def _oc_have_cli():
+    """True, если opencode CLI найден (PATH или известные папки npm).
+    Без self — для точек без доступа к окну (сторож пушей)."""
+    try:
+        if shutil.which("opencode"):
+            return True
+    except Exception:
+        pass
+    try:
+        candidates = [
+            os.path.join(os.environ.get("APPDATA", ""), "npm"),
+            os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
+        ]
+        for d in candidates:
+            if not os.path.isdir(d):
+                continue
+            for name in ("opencode.exe", "opencode.cmd", "opencode.bat",
+                         "opencode.ps1", "opencode"):
+                if os.path.isfile(os.path.join(d, name)):
+                    return True
+    except Exception:
+        pass
+    return False
+
+_OC_WATCH_INTERVAL_S = 3  # пауза между опросами внутри наблюдателя
+_OC_WATCH_STALE_S = 12  # старше — наблюдатель мёртв, пора перестарта
+_OC_WATCH_MAX_RESPAWNS = 5  # столько мгновенных смертей терпим, дальше сдаёмся
+
+
+def _oc_watch_state_path():
+    """Файл состояния наблюдателя: `1|<epoch>` или `0|0`."""
+    try:
+        return os.path.join(os.environ.get("TEMP", ""), "ccm-opencode-watch.state")
+    except Exception:
+        return ""
+
+
+def _oc_watch_pid_path():
+    """Файл с PID процесса-наблюдателя (пишет CCM при старте)."""
+    try:
+        return os.path.join(os.environ.get("TEMP", ""), "ccm-opencode-watch.pid")
+    except Exception:
+        return ""
+
+
+def _oc_watch_script_path():
+    """Сам скрипт наблюдателя: открытый текст, можно прочитать."""
+    try:
+        return os.path.join(os.environ.get("TEMP", ""), "ccm-opencode-watch.ps1")
+    except Exception:
+        return ""
+
+
+def _oc_watch_script_text(state_file):
+    """Тело наблюдателя: WMI-опрос `serve --service` + атомарная запись
+    состояния. Только чтение процессов и запись своего файла — ни сети,
+    ни реестра, ни автозагрузки."""
+    safe = (state_file or "").replace("'", "''")
+    return (
+        "$ErrorActionPreference = 'SilentlyContinue'\n"
+        "$stateFile = '%s'\n" % safe +
+        "$tmpFile = \"$stateFile.tmp\"\n"
+        "while ($true) {\n"
+        "  try {\n"
+        "    $svc = Get-CimInstance Win32_Process -Filter \"Name='opencode.exe'\" | "
+        "Where-Object { $_.CommandLine -match 'serve' } | Select-Object -First 1\n"
+        "    if ($svc) {\n"
+        "      $line = \"1|$([long]([DateTimeOffset]$svc.CreationDate).ToUnixTimeSeconds())\"\n"
+        "    } else {\n"
+        "      $line = '0|0'\n"
+        "    }\n"
+        "    Set-Content -LiteralPath $tmpFile -Value $line -Encoding ASCII\n"
+        "    Move-Item -LiteralPath $tmpFile -Destination $stateFile -Force\n"
+        "  } catch { }\n"
+        "  Start-Sleep -Seconds %d\n" % _OC_WATCH_INTERVAL_S +
+        "}\n"
+    )
+
+
+def _oc_wait_pid_gone(pid, tries=15):
+    """True, если PID ушёл из таблицы процессов. Проверка tasklist по цифрам
+    PID — без зависимости от языка системы (os.kill(pid, 0) в этом Windows
+    не бросает исключение даже для мёртвых PID и как проверка бесполезен)."""
+    try:
+        pid = int(pid)
+    except Exception:
+        return True
+    if pid <= 0:
+        return True
+    try:
+        for _ in range(int(tries) or 1):
+            try:
+                chk = subprocess.run(
+                    ["tasklist", "/FI", "PID eq %d" % pid, "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
+                if str(pid) not in (chk.stdout or ""):
+                    return True
+            except Exception:
+                pass
+            try:
+                time.sleep(0.2)
+            except Exception:
+                pass
+        return False
+    except Exception:
+        return True
+
+
+def _oc_service_pids():
+    """PID'ы процессов `opencode serve --service` (обычно один)."""
+    out = []
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='opencode.exe'\" | "
+             "Where-Object { $_.CommandLine -match 'serve' } | "
+             "ForEach-Object { $_.ProcessId }"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        for line in (proc.stdout or "").splitlines():
+            try:
+                _p = int(line.strip())
+            except Exception:
+                continue
+            if _p > 0 and _p not in out:
+                out.append(_p)
+    except Exception:
+        pass
+    return out
+
+
+def _oc_kill_service():
+    """Останавливает сервис opencode (все serve-PID). True, если все ушли.
+    Вызывается только по явному клику пользователя."""
+    try:
+        pids = _oc_service_pids()
+    except Exception:
+        return False
+    if not pids:
+        return True
+    ok = True
+    for _p in pids:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(_p)],
+                capture_output=True, text=True, timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+        except Exception:
+            pass
+        try:
+            if not _oc_wait_pid_gone(_p):
+                ok = False
+        except Exception:
+            ok = False
+    return bool(ok)
+
+
+def _oc_watch_kill_pid(pid):
+    """Глушит процесс-наблюдатель по PID, но только если это powershell.
+    True, если такого процесса больше нет. Смерть проверяется повторами
+    через tasklist (os.kill(pid, 0) в этом Windows не бросает исключение
+    даже для мёртвых PID — как проверка он бесполезен). Спавны только здесь,
+    вызывается редко (старт/стоп/подбор осиротевших)."""
+    try:
+        pid = int(pid)
+    except Exception:
+        return True
+    if pid <= 0:
+        return True
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid), "/FI", "IMAGENAME eq powershell.exe"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    except Exception:
+        pass
+    # taskkill асинхронен: убеждаемся, что PID реально ушёл из таблицы.
+    try:
+        return bool(_oc_wait_pid_gone(pid))
+    except Exception:
+        return True
+
+
+def _oc_watch_kill_stale():
+    """Глушит осиротевшего наблюдателя от прошлого запуска (если есть).
+    Спавнит taskkill — вызывать редко (старт/стоп/холодный старт без CLI)."""
+    try:
+        _pp = _oc_watch_pid_path()
+        if not _pp or not os.path.exists(_pp):
+            return
+        try:
+            with open(_pp, "r", encoding="ascii", errors="replace") as f:
+                _old = int((f.read() or "").strip() or 0)
+        except Exception:
+            _old = 0
+        if _old > 0:
+            try:
+                _oc_watch_kill_pid(_old)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _oc_watch_read_state():
+    """Читает файл состояния: (active, start_ts, fresh). Только чтение
+    файла — ни одного дочернего процесса. Протухший файл = (False, 0, False)."""
+    try:
+        path = _oc_watch_state_path()
+        if not path or not os.path.exists(path):
+            return False, 0.0, False
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except Exception:
+            return False, 0.0, False
+        if age > _OC_WATCH_STALE_S:
+            return False, 0.0, False
+        with open(path, "r", encoding="ascii", errors="replace") as f:
+            line = (f.read() or "").strip()
+        parts = line.split("|")
+        if len(parts) != 2 or parts[0] != "1":
+            return False, 0.0, True
+        try:
+            ts = float(parts[1])
+        except Exception:
+            return False, 0.0, True
+        if ts <= 0:
+            return False, 0.0, True
+        return True, ts, True
+    except Exception:
+        return False, 0.0, False
 
 def _write_user_path_entry(target):
     """Добавляет папку в пользовательскую PATH (HKCU\\Environment) и шлёт
@@ -1877,7 +2367,7 @@ def find_windows_terminal():
         return local
     return None
 
-def spawn_powershell_session(working_dir, ps_body, env=None):
+def spawn_powershell_session(working_dir, ps_body, env=None, wt_profile=None):
     """Открывает интерактивное окно PowerShell с ps_body в рабочей директории.
 
     Движок всегда системный powershell.exe — ровно тот, что запускает поиск
@@ -1907,8 +2397,13 @@ def spawn_powershell_session(working_dir, ps_body, env=None):
                 ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {ps_body}"],
                 env=env
             )
+        wt_args = [wt]
+        # Профиль терминала — только по явной просьбе (тема Custom URL).
+        # Нет профиля / нет wt — обычный запуск, остальные вкладки не трогаем.
+        if wt_profile:
+            wt_args += ["-p", wt_profile]
         proc = subprocess.Popen(
-            [wt, "-d", working_dir, "powershell", "-NoExit",
+            wt_args + ["-d", working_dir, "powershell", "-NoExit",
              "-ExecutionPolicy", "Bypass", "-File", script],
             env=env
         )
@@ -2207,7 +2702,8 @@ class _PixelRippleOverlay(QWidget):
     _PX = 1.5  # размер пикселя
     _STEP = 4.0  # шаг сетки (кучность)
 
-    def __init__(self, button, pos, rgb, inset=(3, 3, 3, 3), radius=8, step=0.035):
+    def __init__(self, button, pos, rgb, inset=(3, 3, 3, 3), radius=8, step=0.035,
+                 reverse=False):
         super().__init__(button)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         try:
@@ -2235,6 +2731,11 @@ class _PixelRippleOverlay(QWidget):
             self._step_dt = float(step)
         except Exception:
             self._step_dt = 0.035
+        # Реверс: фронт идёт снаружи в точку (выключение), а не из неё.
+        try:
+            self._reverse = bool(reverse)
+        except Exception:
+            self._reverse = False
         w = max(1, button.width())
         h = max(1, button.height())
         self.setGeometry(0, 0, w, h)
@@ -2319,7 +2820,11 @@ class _PixelRippleOverlay(QWidget):
         # Перерисовываем объединение прошлой и новой полосы фронта:
         # старая полоса стирается (шлейфов нет), остальное не трогаем.
         try:
-            front = self._t * self._max_r
+            try:
+                _rev = bool(self._reverse)
+            except Exception:
+                _rev = False
+            front = (1.0 - self._t) * self._max_r if _rev else self._t * self._max_r
             band = max(14.0, self._max_r * 0.10)
             ext = front + band * 3.0 + 4.0
             cur = (int(self._cx - ext), int(self._cy - ext),
@@ -2352,7 +2857,11 @@ class _PixelRippleOverlay(QWidget):
                        max(1.0, self.height() - ti - bi)),
                 self._radius, self._radius)
             p.setClipPath(clip)
-            front = self._t * self._max_r
+            try:
+                rev = bool(self._reverse)
+            except Exception:
+                rev = False
+            front = (1.0 - self._t) * self._max_r if rev else self._t * self._max_r
             fade = 1.0 - self._t * 0.5
             # Таяние в конце: последние 15% волна растворяется — даже если
             # финальный репейнт потеряется, обрубка пикселей не будет.
@@ -2428,12 +2937,20 @@ class StyledButton(QPushButton):
         self.setCursor(Qt.PointingHandCursor)
         self._hover_progress = 0.0
         self._hover_color = (60, 140, 200)  # default — голубой
+        self._lit = False  # постоянное свечение (вкл-состояние), не ховер
+        self._lit_progress = 0.0  # 0 — обычная, 1 — горит; анимируется плавно
+        self._pad_l = 12  # левый паддинг текста (под иконку — больше)
         self._hover_timer = QTimer()
         self._hover_timer.timeout.connect(self._animate_hover)
         self._hover_timer.start(20)
         self._is_hovered = False
         self.setMouseTracking(True)
         self._update_style()
+
+    def set_lit(self, on=True):
+        """Постоянная подсветка рамки цветом ховера (вкл) или обычная (выкл).
+        Переход плавный — прогресс догоняет флаг в _animate_hover."""
+        self._lit = bool(on)
 
     def set_hover_color(self, r, g, b):
         self._hover_color = (r, g, b)
@@ -2456,15 +2973,25 @@ class StyledButton(QPushButton):
             if self._hover_progress > 0.0:
                 self._hover_progress = max(0.0, self._hover_progress - 0.1)
                 self._update_style()
+        lt = 1.0 if getattr(self, "_lit", False) else 0.0
+        lp = getattr(self, "_lit_progress", 0.0)
+        if abs(lp - lt) > 0.004:
+            self._lit_progress = min(1.0, max(0.0, lp + (0.1 if lt > lp else -0.1)))
+            self._update_style()
+        elif lp != lt:
+            self._lit_progress = lt
+            self._update_style()
 
     def _update_style(self):
         base_r, base_g, base_b = 60, 60, 65
         hover_r, hover_g, hover_b = self._hover_color
+        k = max(self._hover_progress, getattr(self, "_lit_progress", 0.0))
 
-        r = int(base_r + (hover_r - base_r) * self._hover_progress)
-        g = int(base_g + (hover_g - base_g) * self._hover_progress)
-        b = int(base_b + (hover_b - base_b) * self._hover_progress)
+        r = int(base_r + (hover_r - base_r) * k)
+        g = int(base_g + (hover_g - base_g) * k)
+        b = int(base_b + (hover_b - base_b) * k)
         pad_v = 2 if self._compact else 8
+        pad_l = getattr(self, "_pad_l", 12)
 
         self.setStyleSheet(f"""
             QPushButton {{
@@ -2472,7 +2999,7 @@ class StyledButton(QPushButton):
                 color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 8px;
-                padding: {pad_v}px 12px;
+                padding: {pad_v}px 12px {pad_v}px {pad_l}px;
             }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
@@ -2481,18 +3008,113 @@ class StyledButton(QPushButton):
             }}
         """)
 
+class _GlyphButton(StyledButton):
+    """StyledButton с рисованной векторной иконкой слева внутри
+    (та же техника, что у иконок чейнджлога). Иконка — дочерний QLabel
+    поверх кнопки, прозрачна для мыши, вертикально по центру."""
+
+    GLYPH_SIZE = 16
+    GLYPH_X = 8
+    GLYPH_DIM = (150, 150, 158)
+    GLYPH_LIT = (52, 211, 153)
+
+    def __init__(self, text, glyph, parent=None, compact=False):
+        super().__init__(text, parent, compact)
+        self._pad_l = 30  # место под иконку слева (после super: он ставит 12)
+        self._update_style()
+        self._glyph_name = glyph
+        self._glyph_color = tuple(self.GLYPH_DIM)
+        self._glyph_progress = 0.0
+        self._glyph = QLabel(self)
+        self._glyph.setFixedSize(self.GLYPH_SIZE, self.GLYPH_SIZE)
+        self._glyph.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._glyph.setStyleSheet("background: transparent; border: none;")
+        self._paint_glyph()
+        self._place_glyph()
+        self._glyph_timer = QTimer(self)
+        self._glyph_timer.timeout.connect(self._glyph_tick)
+        self._glyph_timer.start(20)
+
+    def set_lit(self, on=True):
+        super().set_lit(on)
+        self._glyph_target = 1.0 if on else 0.0
+
+    def _animate_hover(self):
+        super()._animate_hover()
+        # Глиф загорается вместе с кнопкой: при наведении или вкл-состоянии —
+        # цель 1.0, иначе 0.0. Цвет цели — hover-цвет кнопки.
+        try:
+            hover = bool(getattr(self, "_is_hovered", False) and self.isEnabled())
+            lit = bool(getattr(self, "_lit", False))
+            self._glyph_target = 1.0 if (hover or lit) else 0.0
+        except Exception:
+            pass
+
+    def _glyph_tick(self):
+        tgt = getattr(self, "_glyph_target", 0.0)
+        cur = getattr(self, "_glyph_progress", 0.0)
+        if abs(cur - tgt) > 0.01:
+            cur = min(1.0, max(0.0, cur + (0.1 if tgt > cur else -0.1)))
+            self._glyph_progress = cur
+            d = self.GLYPH_DIM
+            li = tuple(getattr(self, "_hover_color", self.GLYPH_LIT))
+            self.set_glyph_color((int(d[0] + (li[0] - d[0]) * cur),
+                                  int(d[1] + (li[1] - d[1]) * cur),
+                                  int(d[2] + (li[2] - d[2]) * cur)))
+        elif cur != tgt:
+            self._glyph_progress = tgt
+
+    def _paint_glyph(self):
+        try:
+            self._glyph.setPixmap(
+                _paint_update_glyph(self._glyph_name, self.GLYPH_SIZE,
+                                    self._glyph_color))
+        except Exception:
+            pass
+
+    def set_glyph_color(self, color):
+        self._glyph_color = tuple(color)
+        self._paint_glyph()
+
+    def _place_glyph(self):
+        try:
+            self._glyph.move(self.GLYPH_X,
+                             (self.height() - self.GLYPH_SIZE) // 2)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_glyph()
+        self._paint_glyph()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._place_glyph()
+
+
 class OcSpinner(QWidget):
-    """Вращающийся спиннер-загрузка. Рисуется через QPainter поверх кнопки,
-    поэтому не влияет на размеры/раскладку родителя. Цвет сероватый."""
+    """Вращающийся спиннер-загрузка: 12 палочек по кругу (голова яркая,
+    хвост гаснет). Рисуется через QPainter поверх кнопки, поэтому не влияет
+    на размеры/раскладку родителя. Цвет задаётся через set_color."""
 
     def __init__(self, parent=None, size=18):
         super().__init__(parent)
         self.setFixedSize(size, size)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._angle = 0
+        self._dot = (190, 190, 195)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._rotate)
         self._timer.start(50)
+
+    def set_color(self, r, g, b):
+        """Цвет кометы (по умолчанию серый)."""
+        try:
+            self._dot = (max(0, min(255, int(r))), max(0, min(255, int(g))),
+                         max(0, min(255, int(b))))
+        except Exception:
+            pass
 
     def _rotate(self):
         self._angle = (self._angle + 30) % 360
@@ -2503,16 +3125,28 @@ class OcSpinner(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         cx, cy = w / 2.0, h / 2.0
-        r = min(w, h) / 2.0 - 2.0
+        r_out = min(w, h) / 2.0 - 1.5
+        r_in = r_out * 0.62
+        # Перо масштабируется от размера: мелким не жирно, крупным не тоще.
+        pen_w = min(3.0, max(1.6, min(w, h) * 0.11))
         p.setPen(Qt.NoPen)
-        # Траектория-дуга «догоняет» себя: хвост гаснет позади головы.
-        for i in range(8):
-            phase = (i / 8.0) * 360
-            a = self._angle - phase
-            alpha = 25 + int(225 * ((i / 8.0) ** 2))
-            pen = QPen(QColor(190, 190, 195, alpha), 2.4, Qt.SolidLine, Qt.RoundCap)
+        # 12 палочек по кругу. Голова (i=0) всегда на _angle, хвост тянется
+        # позади против часовой — голова идёт по часовой стрелке
+        # (экранные координаты, ось y вниз: вправо → вниз → влево → вверх).
+        n = 12
+        for i in range(n):
+            a_deg = self._angle - i * (360.0 / n)
+            frac = i / float(n)
+            alpha = 70 + int(185 * ((1.0 - frac) ** 1.4))
+            r, g, b = self._dot
+            pen = QPen(QColor(r, g, b, alpha), pen_w, Qt.SolidLine, Qt.RoundCap)
             p.setPen(pen)
-            p.drawArc(QRectF(cx - r, cy - r, r * 2, r * 2), int(a * 16), int(38 * 16))
+            rad = math.radians(a_deg)
+            x1 = cx + r_in * math.cos(rad)
+            y1 = cy + r_in * math.sin(rad)
+            x2 = cx + r_out * math.cos(rad)
+            y2 = cy + r_out * math.sin(rad)
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
         p.end()
 
 
@@ -2890,7 +3524,7 @@ class YellowButton(QPushButton):
         """)
 
 class OrangeButton(QPushButton):
-    """Как RedButton, но с оранжевым hover — для кнопок «Откатить»."""
+    """Как RedButton, но с оранжевым hover."""
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
         enable_pixel_ripple(self, (235, 150, 90))
@@ -3508,6 +4142,10 @@ class PickerComboBox(StyledComboBox):
             self._pick_disabled = set(disabled)
 
     def showPopup(self):
+        # Отключённое поле (Base URL в Anthropic/OpenAI) — только
+        # отображение: пикеру тут делать нечего, даже программно.
+        if not self.isEnabled():
+            return
         # Если уже открыт — игнорируем повторный вызов
         if self._picker_dlg is not None:
             return
@@ -3568,151 +4206,21 @@ class PickerComboBox(StyledComboBox):
             self.setCurrentText(value)
 
 
-class EffortPickerComboBox(PickerComboBox):
-    """PickerComboBox с подменённым popup: вместо PickerDialog со списком
-    карточек открывается компактный EffortDialog с ползунком.
-    Текст текущего значения рисуется вручную — центр, жирный, ВЕРХНИЙ регистр
-    (как метки в EffortSlider), чтобы состояние комбо визуально совпадало с
-    активной ячейкой ползунка."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        # Явно храним QColor текста — чтобы не парсить его   аждый paintEvent.
-        # Обновляется через setTextColor().
-        self._text_qcolor = QColor(200, 200, 200)
-        # Живые пиксели фона на ultra/ultracode — как в слайдерах.
-        self._ultra_cells = {}
-        self._accent_full = False
-        self._px_timer = QTimer(self)
-        self._px_timer.timeout.connect(self._tick_px)
-        # Тот же темп, что у пилюли слайдера (16мс), — частота вспышек как в пилюле.
-        self._px_timer.start(16)
-        # Комбо на главной странице — display-only. Effort меняется теперь
-        # внутри ModelDialog через встроенный EffortSlider, поэтому клик по
-        # самому комбо ничего не открывает: убираем указатель, отключаем
-        # клавиатурный фокус.
-        self.setCursor(Qt.ArrowCursor)
-        self.setFocusPolicy(Qt.NoFocus)
-
-    def setTextColor(self, color):
-        # Синхронизируем свой QColor и позволяем базе применить CSS
-        # (нужно только для цвета placeholder-текста стрелки drop-down).
-        try:
-            if isinstance(color, QColor):
-                self._text_qcolor = QColor(color)
-            elif isinstance(color, tuple) and len(color) >= 3:
-                self._text_qcolor = QColor(int(color[0]), int(color[1]), int(color[2]))
-            elif isinstance(color, str):
-                m = re.search(r"(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", color)
-                if m:
-                    self._text_qcolor = QColor(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except Exception:
-            pass
-        super().setTextColor(color)
-
-    def paintEvent(self, event):
-        # Сначала рисуем стандартный «фон + рамка» через стиль, но БЕЗ текста
-        # (currentText = "") — потом рисуем свой центрированный жирный UPPERCASE.
-        from PySide6.QtWidgets import QStyleOptionComboBox, QStylePainter, QStyle
-        painter = QStylePainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        opt = QStyleOptionComboBox()
-        self.initStyleOption(opt)
-        opt.currentText = ""
-        opt.currentIcon = QIcon()
-        painter.drawComplexControl(QStyle.CC_ComboBox, opt)
-
-        # ultra/ultracode: живые пиксели поверх тёмного фона, под текстом.
-        # Без заливки — текст остаётся акцентно-фиолетовым и читается.
-        if self._is_ultra():
-            try:
-                ac = self._accent_color
-                if isinstance(ac, QColor):
-                    base = (ac.red(), ac.green(), ac.blue())
-                elif isinstance(ac, (tuple, list)) and len(ac) >= 3:
-                    base = (int(ac[0]), int(ac[1]), int(ac[2]))
-                else:
-                    base = (167, 139, 252)
-                inner = QRectF(self.rect().adjusted(3, 3, -3, -3))
-                painter.save()
-                pp = QPainterPath()
-                pp.addRoundedRect(inner, 6, 6)
-                painter.setClipPath(pp)
-                # Как в пилюле: те же частота зажигания и динамика.
-                _paint_ultra_pixels(painter, inner, base, self._ultra_cells,
-                                    dark=False)
-                painter.restore()
-            except Exception:
-                try:
-                    painter.restore()
-                except Exception:
-                    pass
-
-        # Наш текст: жирный, UPPERCASE, по центру
-        text = (self.currentText() or "").upper()
-        if not text:
-            return
-        f = QFont(self.font())
-        f.setBold(True)
-        painter.setFont(f)
-        painter.setPen(QPen(self._text_qcolor))
-        # Оставляем небольшой отступ справа под треугольник drop-down,
-        # чтобы длинное "ULTRACODE" не наезжало на стрелку.
-        rect = self.rect().adjusted(6, 0, -14, 0)
-        painter.drawText(rect, Qt.AlignCenter, text)
-
-    def showPopup(self):
-        # Отдельного popup больше нет: effort меняется через EffortSlider
-        # внутри ModelDialog. Оставляем метод как no-op, чтобы стандартный
-        # QComboBox-механизм не пытался открыть системный список.
-        return
-
-    def _is_ultra(self):
-        """True если текущий effort — ultra/ultracode (нужны пиксели фона)."""
-        try:
-            return (self.currentText() or "").strip().lower() in ("ultracode", "ultra")
-        except Exception:
-            return False
-
-    def _tick_px(self):
-        """Кадр пикселей фона на ultra — дёргаем перерисовку. Заодно держим
-        рамку в полной яркости акцента (в цвет пилюли)."""
-        try:
-            ultra = self._is_ultra()
-            if getattr(self, "_accent_full", False) != ultra:
-                self._accent_full = ultra
-                self._update_style()
-            if ultra and self.isVisible():
-                self.update()
-        except Exception:
-            pass
-
-    def mousePressEvent(self, event):
-        # Клик по комбо ничего не делает — комбо теперь display-only.
-        event.accept()
-
-    def mouseReleaseEvent(self, event):
-        event.accept()
-
-    def keyPressEvent(self, event):
-        # Space/Enter на native QComboBox открывают popup — нам это не нужно.
-        event.accept()
-
-    def enterEvent(self, event):
-        # Комбо display-only — hover-подсветка рамки не нужна. Явно держим
-        # _is_hovered=False, чтобы StyledComboBox._animate_hover не оживил
-        # рамку до яркого цвета акцента.
-        self._is_hovered = False
-        # super() базового QWidget всё равно нужен для системных сигналов
-        # (курсор и т.п.), но НЕ StyledComboBox.enterEvent, который взводит флаг.
-        QComboBox.enterEvent(self, event)
-
-    def leaveEvent(self, event):
-        self._is_hovered = False
-        QComboBox.leaveEvent(self, event)
-
-
 class ModelPickerComboBox(PickerComboBox):
+    custom_added = Signal(str)  # своя модель добавлена из ModelDialog
+    custom_deleted = Signal(str)  # своя модель удалена из ModelDialog
+
+    def _on_custom_added(self, model_id):
+        try:
+            self.custom_added.emit(model_id)
+        except Exception:
+            pass
+
+    def _on_custom_deleted(self, model_id):
+        try:
+            self.custom_deleted.emit(model_id)
+        except Exception:
+            pass
     """PickerComboBox для FreeModel-модели: при клике открывает ModelDialog
     вместо стандартного списка карточек. Текст в комбо просто жирный —
     без принудительного UPPERCASE (модели уже читаются в 'Opus 4.8' виде,
@@ -3721,26 +4229,46 @@ class ModelPickerComboBox(PickerComboBox):
     # Отдельный сигнал: model + effort. Родитель (ClaudeCodeManager) слушает
     # его и вызывает и _fm_model_changed, и _on_effort_changed. Стандартный
     # currentTextChanged на комбо продолжает работать для модели.
-    modelEffortPicked = Signal(str, str)
+    modelEffortPicked = Signal(str, str, bool)
 
     def showPopup(self):
         if self._picker_dlg is not None:
             return
         cur = self.currentText()
-        if cur not in MODEL_ORDER:
+        # Свои модели — только Anthropic: в official-режиме диалог их прячет.
+        customs = []
+        show_custom = True
+        try:
+            parent_win = self.window()
+            if parent_win is not None and hasattr(parent_win, "settings"):
+                raw = parent_win.settings.get("custom_models", []) or []
+                customs = [m for m in raw
+                           if isinstance(m, str) and m.strip()]
+                show_custom = (parent_win.settings.get("app_mode", "customurl")
+                               != "official")
+        except Exception:
+            pass
+        if cur not in MODEL_ORDER and cur not in customs:
             cur = "Opus 4.8"
-        # Пробрасываем текущий effort из settings в ModelDialog
+        # Пробрасываем текущий effort и ultracode из settings в ModelDialog
         current_effort = "high"
+        current_ultra = False
         try:
             parent_win = self.window()
             if parent_win is not None and hasattr(parent_win, "settings"):
                 eff = parent_win.settings.get("reasoning_effort", "high")
                 if eff in EFFORT_LEVELS:
                     current_effort = eff
+                current_ultra = bool(parent_win.settings.get("reasoning_ultracode", False))
         except Exception:
             pass
-        dlg = ModelDialog(current_model=cur, parent=self.window(), current_effort=current_effort)
+        dlg = ModelDialog(current_model=cur, parent=self.window(), current_effort=current_effort,
+                          current_ultra=current_ultra,
+                          custom_models=(customs if show_custom else []),
+                          show_custom=show_custom)
         dlg.applied.connect(self._on_model_effort_picked)
+        dlg.custom_added.connect(self._on_custom_added)
+        dlg.custom_deleted.connect(self._on_custom_deleted)
         dlg.destroyed.connect(self._on_picker_destroyed)
         self._picker_dlg = dlg
 
@@ -3759,15 +4287,14 @@ class ModelPickerComboBox(PickerComboBox):
 
         QTimer.singleShot(0, _show_and_position)
 
-    def _on_model_effort_picked(self, model, effort):
+    def _on_model_effort_picked(self, model, effort, ultra):
         # Сначала выставляем сам текст комбо (currentTextChanged триггерит
-        # _fm_model_changed → _on_effort_changed через downgrade-логику), а
-        # потом отдельно пробрасываем effort, чтобы владелец приложения
-        # сохранил его и обновил EffortPickerComboBox.
+        # _fm_model_changed), а потом отдельно пробрасываем effort и ultra,
+        # чтобы владелец приложения сохранил их и обновил палочку-индикатор.
         if model and model != self.currentText():
             self.setCurrentText(model)
         try:
-            self.modelEffortPicked.emit(model, effort)
+            self.modelEffortPicked.emit(model, effort, bool(ultra))
         except Exception:
             pass
 
@@ -3813,7 +4340,7 @@ class ModelListModel(QAbstractListModel):
 # ============================================================
 
 class AddModelDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, title=None, label=None, placeholder=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -3837,19 +4364,19 @@ class AddModelDialog(QDialog):
         layout.setSpacing(15)
 
         # Заголовок
-        title = QLabel(tr("Добавить модель"))
-        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
-        layout.addWidget(title)
+        title_lbl = QLabel(title or tr("Добавить модель"))
+        title_lbl.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title_lbl.setAlignment(Qt.AlignCenter)
+        title_lbl.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        layout.addWidget(title_lbl)
 
-        label = QLabel(tr("Введите название модели:"))
-        label.setFont(QFont("Segoe UI", 11))
-        label.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
-        layout.addWidget(label)
+        lab = QLabel(label or tr("Введите название модели:"))
+        lab.setFont(QFont("Segoe UI", 11))
+        lab.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
+        layout.addWidget(lab)
 
         self.input = QLineEdit()
-        self.input.setPlaceholderText(tr("Например: kr/claude-sonnet-4.5"))
+        self.input.setPlaceholderText(placeholder or tr("Например: kr/claude-sonnet-4.5"))
         self.input.setFont(QFont("Segoe UI", 10))
         self.input.setStyleSheet("""
             QLineEdit {
@@ -4464,14 +4991,17 @@ class ConfirmActionDialog(QDialog):
         btn_layout.addWidget(self.cancel_btn)
 
         # Действие: «Обновить» — жёлтое, «Откатить» — оранжевое,
-        # «Удалить» — красное, остальное (Продолжить/Установить/Подтвердить
-        # и т.п.) — зелёное. Отмена всегда зелёная.
-        ctext = (confirm_text or "")
-        if "обнов" in ctext.lower():
+        # «Удалить»/«Завершить» — красное, остальное (Продолжить/Установить/
+        # Подтвердить и т.п.) — зелёное. Отмена всегда зелёная.
+        # Матчим оба языка: confirm_text уже переведён tr() на момент вызова.
+        ctext = (confirm_text or "").lower()
+        if "обнов" in ctext or "updat" in ctext:
             self.confirm_btn = YellowButton(confirm_text)
-        elif "откат" in ctext.lower():
+        elif "откат" in ctext or "rollback" in ctext or "revert" in ctext:
             self.confirm_btn = OrangeButton(confirm_text)
-        elif "удал" in ctext.lower():
+        elif "удал" in ctext or "delet" in ctext or "remov" in ctext or "uninstall" in ctext:
+            self.confirm_btn = RedButton(confirm_text)
+        elif "заверш" in ctext or "end" in ctext or "finish" in ctext:
             self.confirm_btn = RedButton(confirm_text)
         else:
             self.confirm_btn = GreenButton(confirm_text)
@@ -5121,8 +5651,10 @@ class AnimatedProgressBar(QWidget):
                 painter.setBrush(gradient)
                 painter.drawRoundedRect(0, 0, progress_width, self.height(), 8, 8)
 
-        # Текст - сначала белый на темном фоне (не накрытая часть)
-        painter.setFont(QFont("Consolas", 9, QFont.Bold))
+        # Текст - сначала белый на темном фоне (не накрытая часть).
+        # Жирный Black + сглаживание текста: мелкий Consolas мылит на баре.
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setFont(QFont("Consolas", 10, QFont.Black))
         if self._total_mb > 0:
             text = f"{self._progress}%  •  {self._downloaded_mb:.1f} / {self._total_mb:.1f} {tr('МБ')}"
         else:
@@ -5572,7 +6104,7 @@ class LanguageToggle(QWidget):
     _EN_COL = (52, 211, 153)   # новый зелёный
     _RU_COL = (106, 169, 255)  # #6aa9ff
 
-    def __init__(self, lang="ru", parent=None):
+    def __init__(self, lang="en", parent=None):
         super().__init__(parent)
         self.setFixedSize(78, 22)
         self.setCursor(Qt.PointingHandCursor)
@@ -5753,218 +6285,154 @@ class LanguageToggle(QWidget):
         p.end()
 
 
-class ContextToggle(QWidget):
-    """Компактный переключатель размера контекста 200K / 1M.
+class EffortStick(QWidget):
+    """Вертикальная палочка-индикатор reasoning effort внутри строки модели.
 
-    Полная стилистическая копия LanguageToggle: слегка скруглённый прямоугольник
-    (radius ~6), плавная анимация цвета пилюли и яркости лейблов, hover-подсветка
-    неактивной стороны в цвет соответствующей опции.
-
-    200K активен → холодная голубоватая (#6aa9ff, как RU в LanguageToggle).
-    1M активен → зелёная (#34d399, как EN — унифицированный зелёный).
+    Display-only и прозрачна для мыши (WA_TransparentForMouseEvents) — клики
+    падают в комбобокс модели и открывают ModelDialog как обычно. Рисует:
+    сегментированную вертикальную палочку (сегменты до текущего уровня
+    светятся в цвете уровня, остальные тусклые) и подпись уровня справа.
+    Шкала задаётся параметрами (у Custom URL и OpenAI уровни разные).
+    На верхнем уровне (ultracode/ultra) — приглушённые ultra-пиксели
+    на всю надпись стика.
     """
-    toggled = Signal(bool)  # True = 1M, False = 200K
-
-    _200K_COL = (106, 169, 255)  # #6aa9ff (как RU)
-    _1M_COL = (52, 211, 153)     # новый зелёный (как EN)
-
-    def __init__(self, one_m=False, parent=None):
+    def __init__(self, parent=None, levels=None, labels=None, colors=None):
         super().__init__(parent)
-        self.setFixedSize(78, 22)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMouseTracking(True)
-        self._one_m = bool(one_m)
-        self._progress = 1.0 if self._one_m else 0.0
-        self._target = self._progress
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self._levels = list(levels) if levels else list(EFFORT_LEVELS)
+        self._labels = dict(labels) if labels else dict(EFFORT_LABELS)
+        self._colors = dict(colors) if colors else dict(EFFORT_COLORS)
+        self._effort = self._levels[2] if len(self._levels) > 2 else self._levels[0]
+        self._ultra = False
+        self._ultra_cells = {}
+        self._font = QFont("Segoe UI", 8, QFont.Bold)
+        self._bar_w = 5
+        self._gap = 5
+        self._pad = 5
+        self._refit()
+        self._px_timer = QTimer(self)
+        self._px_timer.timeout.connect(self._tick_px)
+        self._px_timer.start(16)
 
-        self._hover_200 = 0.0
-        self._hover_1m = 0.0
-        self._hover_200_target = 0.0
-        self._hover_1m_target = 0.0
-
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(16)
-
-    def isOneM(self):
-        return self._one_m
-
-    def setOneM(self, val, animate=True):
-        val = bool(val)
-        if val == self._one_m:
+    def setEffort(self, level):
+        if level not in self._levels:
             return
-        self._one_m = val
-        self._target = 1.0 if val else 0.0
-        if not animate:
-            self._progress = self._target
-        self.update()
+        if level != self._effort:
+            self._effort = level
+            self.update()
+        self._refit()
 
-    def _tick(self):
-        changed = False
-        diff = self._target - self._progress
-        if abs(diff) > 0.004:
-            self._progress += diff * 0.18
-            changed = True
-        elif self._progress != self._target:
-            self._progress = self._target
-            changed = True
-        for name in ("_hover_200", "_hover_1m"):
-            cur = getattr(self, name)
-            tgt = getattr(self, name + "_target")
-            d = tgt - cur
-            if abs(d) > 0.003:
-                setattr(self, name, cur + d * 0.07)
-                changed = True
-            elif cur != tgt:
-                setattr(self, name, tgt)
-                changed = True
-        if changed:
+    def setUltra(self, on):
+        """Подсветка ultracode поверх (для шкал без уровня ultra,
+        например FM). У шкал со своим уровнем ultra (OpenAI) оверлей
+        и так включается через _is_top."""
+        try:
+            on = bool(on)
+        except Exception:
+            on = False
+        if on != self._ultra:
+            self._ultra = on
             self.update()
 
-    def mousePressEvent(self, event):
-        is_right = event.pos().x() >= self.width() / 2
-        new_val = is_right
-        if new_val != self._one_m:
-            self._one_m = new_val
-            self._target = 1.0 if new_val else 0.0
-            self.toggled.emit(new_val)
-            self.update()
+    def _refit(self):
+        """Ширина строго под текущую подпись — текст всегда кончается на одном
+        отступе от правого края (у FM и OA стиков зазор одинаковый). Затем
+        прилипаем к правому краю родителя-комбобокса."""
+        try:
+            label = self._labels.get(self._effort, self._effort.upper())
+            text_w = QFontMetrics(self._font).horizontalAdvance(label)
+            w = int(self._pad + self._bar_w + self._gap + text_w + self._pad) + 2
+            if w != self.width():
+                self.setFixedSize(w, 24)
+            combo = self.parent()
+            if combo is not None and hasattr(combo, "width") and hasattr(combo, "height"):
+                cw, ch = combo.width(), combo.height()
+                if cw > w and ch > 0:
+                    self.move(max(0, cw - w - 8), max(0, (ch - self.height()) // 2))
+        except Exception:
+            pass
 
-    def mouseMoveEvent(self, event):
-        is_right = event.pos().x() >= self.width() / 2
-        if is_right:
-            self._hover_1m_target = 0.0 if self._one_m else 1.0
-            self._hover_200_target = 0.0
-        else:
-            self._hover_200_target = 0.0 if not self._one_m else 1.0
-            self._hover_1m_target = 0.0
-        super().mouseMoveEvent(event)
+    def _is_top(self):
+        try:
+            return bool(self._levels) and self._effort == self._levels[-1]
+        except Exception:
+            return False
 
-    def leaveEvent(self, event):
-        self._hover_200_target = 0.0
-        self._hover_1m_target = 0.0
-        super().leaveEvent(event)
+    def _ultra_on(self):
+        """Оверлей ultra-пикселей: явный флаг (FM) либо верхний уровень
+        у шкал со своим ultra (OpenAI)."""
+        try:
+            if self._ultra:
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(self._is_top() and "ultra" in self._levels)
+        except Exception:
+            return False
+
+    def _tick_px(self):
+        try:
+            if self._ultra_on() and self.isVisible():
+                self.update()
+        except Exception:
+            pass
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        t = self._progress
         w, h = self.width(), self.height()
-
-        track_r = 6.0
-        pill_r = 5.0
-
-        p.setBrush(QColor(28, 28, 33))
-        p.setPen(QPen(QColor(60, 60, 65), 1.4))
-        p.drawRoundedRect(QRectF(0.7, 0.7, w - 1.4, h - 1.4), track_r, track_r)
-
-        r0, g0, b0 = self._200K_COL
-        r1, g1, b1 = self._1M_COL
-        r = int(r0 + (r1 - r0) * t)
-        g = int(g0 + (g1 - g0) * t)
-        b = int(b0 + (b1 - b0) * t)
-
-        pad = 2.5
-        pill_w = w / 2 - pad
-        pill_x = pad / 2 + (w / 2) * t
-
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
-        p.save()
-        p.setClipPath(clip)
-        for i in range(1, 4):
-            alpha = int(48 * (1 - (i - 1) / 3.2))
-            p.setPen(QPen(QColor(r, g, b, alpha), 1))
-            p.setBrush(Qt.NoBrush)
-            ex = i * 1.4
-            p.drawRoundedRect(
-                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
-                pill_r + ex, pill_r + ex
-            )
-        p.restore()
-
-        grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
-        grad.setColorAt(0.0, QColor(min(255, r + 18), min(255, g + 18), min(255, b + 18), 240))
-        grad.setColorAt(1.0, QColor(max(0, r - 10), max(0, g - 10), max(0, b - 10), 240))
-        p.setBrush(QBrush(grad))
+        # Подложка в цвет фона комбо, чтобы текст модели не просвечивал.
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
-
-        p.setFont(QFont("Segoe UI", 9, QFont.Bold))
-
-        left_active = 1.0 - t
-        if left_active > 0.5:
-            left_pen = QColor(20, 22, 28)
-        else:
-            shade = int(130 + 25 * (1 - t))
-            base = QColor(shade, shade, shade + 5)
-            hr, hg, hb = self._200K_COL
-            hover = self._hover_200
-            left_pen = QColor(
-                int(base.red()   + (hr - base.red())   * hover),
-                int(base.green() + (hg - base.green()) * hover),
-                int(base.blue()  + (hb - base.blue())  * hover),
-            )
-        p.setPen(left_pen)
-        p.drawText(QRectF(0, 0, w / 2, h), Qt.AlignCenter, "200K")
-
-        if t > 0.5:
-            right_pen = QColor(15, 28, 22)
-        else:
-            shade = int(130 + 25 * t)
-            base = QColor(shade, shade + 5, shade)
-            hr, hg, hb = self._1M_COL
-            hover = self._hover_1m
-            right_pen = QColor(
-                int(base.red()   + (hr - base.red())   * hover),
-                int(base.green() + (hg - base.green()) * hover),
-                int(base.blue()  + (hb - base.blue())  * hover),
-            )
-        p.setPen(right_pen)
-        p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignCenter, "1M")
-
+        p.setBrush(QColor(26, 26, 33, 228))
+        inner = QRectF(0.5, 0.5, w - 1, h - 1)
+        p.drawRoundedRect(inner, 6, 6)
+        try:
+            idx = self._levels.index(self._effort)
+        except ValueError:
+            idx = 2
+        r, g, b = self._colors.get(self._effort, (200, 200, 200))
+        # Верхний уровень: приглушённые ultra-пиксели на всю надпись стика.
+        if self._ultra_on():
+            try:
+                clip = QPainterPath()
+                clip.addRoundedRect(QRectF(1.0, 1.0, w - 2.0, h - 2.0), 6, 6)
+                p.save()
+                p.setClipPath(clip)
+                p.setOpacity(0.45)
+                _paint_ultra_pixels(p, QRectF(2.0, 2.0, w - 4.0, h - 4.0),
+                                    (r, g, b), self._ultra_cells, dark=False)
+                p.restore()
+            except Exception:
+                try:
+                    p.restore()
+                except Exception:
+                    pass
+        # Палочка: сегменты снизу вверх, зажжены до текущего уровня.
+        n = len(self._levels)
+        bx = float(self._pad)
+        top, bottom = 3.0, h - 3.0
+        seg_h = (bottom - top) / n
+        for i in range(n):
+            y1 = bottom - (i + 1) * seg_h + 1.0
+            y0 = bottom - i * seg_h - 1.0
+            if i <= idx:
+                t = i / max(1, n - 1)
+                rr = int(r + (255 - r) * t * 0.25)
+                gg = int(g + (255 - g) * t * 0.25)
+                bb = int(b + (255 - b) * t * 0.25)
+                p.setBrush(QColor(rr, gg, bb))
+            else:
+                p.setBrush(QColor(75, 75, 85, 160))
+            p.drawRoundedRect(QRectF(bx, y1, self._bar_w, max(1.0, y0 - y1)), 2, 2)
+        # Подпись уровня справа от палочки.
+        p.setFont(self._font)
+        p.setPen(QPen(QColor(r, g, b)))
+        tx = bx + self._bar_w + self._gap
+        p.drawText(QRectF(tx, 0, w - tx - 2, h), Qt.AlignVCenter | Qt.AlignLeft,
+                   self._labels.get(self._effort, self._effort.upper()))
         p.end()
-
-
-class _CtxSeparator(QWidget):
-    """Тонкая сероватая вертикальная полоска — визуальный разделитель между
-    текстом выбранной модели и 1M-тумблером. Служит также «hover-щитом»:
-    когда курсор над ней, рамка combobox'а модели не подсвечивается."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(6, 22)
-        # Курсор — стрелка (не рука), полоска не кликабельная
-        self.setCursor(Qt.ArrowCursor)
-
-    def paintEvent(self, ev):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(QPen(QColor(120, 120, 130), 1.2))
-        x = self.width() / 2.0
-        p.drawLine(QPointF(x, 3.0), QPointF(x, self.height() - 3.0))
-        p.end()
-
-
-class _CtxShield(QWidget):
-    """Прозрачный «щит» на всю правую полосу combobox'а — от палочки-разделителя
-    до правого края. Ничего не рисует, но:
-      • перехватывает клики (чтобы под ним не открывался picker модели);
-      • при Enter/Leave (через eventFilter в главном окне) гасит подсветку
-        рамки combobox'а, чтобы она не «загоралась» при наведении в этой
-        полосе — в том числе в зазорах вокруг самого тумблера."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setCursor(Qt.ArrowCursor)
-        # Прозрачный: не рисуем фон/содержимое
-
-    def mousePressEvent(self, ev):
-        ev.accept()
-
-    def mouseReleaseEvent(self, ev):
-        ev.accept()
-
-    def mouseDoubleClickEvent(self, ev):
-        ev.accept()
 
 
 # ============================================================
@@ -5974,7 +6442,11 @@ class _CtxShield(QWidget):
 # Ползунок плавно скользит между ячейками, цвет пилюли плавно лерпится
 # между цветами уровней. Ultracode подсвечивается фиолетовым свечением.
 
-EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultracode"]
+EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+# Ultracode — больше не уровень шкалы, а отдельный тумблер поверх любого
+# effort (записи "ultracode" в EFFORT_COLORS/LABELS ниже оставлены для его
+# ячейки). Совместимость: reasoning_effort=="ultracode" в старых настройках
+# мигрирует в ("max", reasoning_ultracode=True) при загрузке.
 
 EFFORT_COLORS = {
     "low":       (120, 220, 130),  # зелёный
@@ -6013,10 +6485,11 @@ def _tick_ultra_cells(cells, cols, rows, ignite_p=0.20):
 
 
 def _paint_ultra_pixels(p, rect, base_color, cells, cell=5.0, dark=True,
-                        ignite_p=0.32):
+                        ignite_p=0.32, fade=1.0):
     """Живой пиксельный фон: весь фон в мелких квадратиках, отдельные
     случайно вспыхивают и плавно гаснут. dark=True — вспышки тёмные
-    (для залитой пилюли), dark=False — светлые (для тёмного фона комбо)."""
+    (для залитой пилюли), dark=False — светлые (для тёмного фона комбо).
+    fade=1.0 — общий множитель яркости (плавное затухание ячейки)."""
     r, g, b = base_color
     # Сетка ровно по размеру блока (дробный шаг — без непокрытых полос
     # по краям): цель ~5px, как в пилюле слайдера.
@@ -6034,12 +6507,12 @@ def _paint_ultra_pixels(p, rect, base_color, cells, cell=5.0, dark=True,
             if bright < 0.05:
                 continue
             if dark:
-                a = int(200 * bright)
+                a = int(200 * bright * fade)
                 dk = int(110 * bright)
                 p.setBrush(QColor(max(0, r - dk), max(0, g - dk),
                                   max(0, b - dk), a))
             else:
-                a = int(255 * bright)
+                a = int(255 * bright * fade)
                 boost = int(90 * bright)
                 p.setBrush(QColor(min(255, r + boost), min(255, g + int(60 * bright)),
                                   min(255, b + boost), a))
@@ -6048,13 +6521,23 @@ def _paint_ultra_pixels(p, rect, base_color, cells, cell=5.0, dark=True,
 
 
 class EffortSlider(QWidget):
-    """Широкий 5-позиционный ползунок выбора reasoning-effort.
-    Пилюля плавно скользит между позициями, цвет плавно интерполируется
-    между цветами соседних уровней. Клик по любой ячейке = переход на неё."""
+    """Широкий 5-позиционный ползунок выбора reasoning-effort + отдельная
+    ячейка ultracode справа через небольшой пробел. Пилюля плавно скользит
+    между позициями шкалы, цвет интерполируется между цветами соседних
+    уровней. Клик по ячейке шкалы = переход на неё; клик по ячейке
+    ultracode = вкл/выкл фичи (пилюля туда не едет). Все эффекты
+    (пульс, живые пиксели, волна) сохранены."""
 
     changed = Signal(str)  # эмит с новым уровнем
+    ultra_changed = Signal(bool)  # эмит вкл/выкл ultracode
 
-    def __init__(self, level="high", parent=None, disabled_levels=None):
+    # Ultracode — отдельная ячейка справа через небольшой пробел, как обычная
+    # ячейка с текстом: клик — вкл/выкл, пилюля туда не ездит.
+    ULTRA_GAP = 12.0
+    ULTRA_W = 76.0
+
+    def __init__(self, level="high", parent=None, disabled_levels=None,
+                 ultra=False, ultra_enabled=True):
         super().__init__(parent)
         self.setFixedSize(468, 34)
         self.setCursor(Qt.PointingHandCursor)
@@ -6069,18 +6552,29 @@ class EffortSlider(QWidget):
         self._hover_idx = -1
         self._hover_alpha = {i: 0.0 for i in range(len(EFFORT_LEVELS))}
         self._hover_target = {i: 0.0 for i in range(len(EFFORT_LEVELS))}
-        # Заблокированные уровни (например, ultracode при 4.6-tier модели) —
-        # клик по такой ячейке не переключает выбор, текст рисуется тусклым.
-        self._disabled = set(disabled_levels or ())
-        # пульс фиолетового свечения для ultracode
-        self._pulse = 0.0
+        # Заблокированные уровни — клик по такой ячейке не переключает выбор,
+        # текст рисуется тусклым. "ultracode" здесь игнорируем: фича управляется
+        # отдельно через ultra_enabled.
+        self._disabled = set(disabled_levels or ()) - {"ultracode"}
+        # Ultracode — отдельная ячейка справа через пробел.
+        self._ultra = bool(ultra)
+        self._ultra_enabled = bool(ultra_enabled)
+        self._ultra_hover = 0.0
+        self._ultra_hover_target = 0.0
+        # Видимая яркость ячейки 0..1 — догоняет логическое состояние:
+        # включение разгорается, выключение плавно тает.
+        self._ultra_alpha = 1.0 if (self._ultra and self._ultra_enabled) else 0.0
         # живые пиксели ultracode: (яркость, цель) по клеткам
         self._ultra_cells = {}
+        self._ultra_cells_bg = {}
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
 
     def set_level(self, level, animate=True):
+        if level == "ultracode":
+            self.set_ultra(True)
+            return
         if level not in EFFORT_LEVELS:
             return
         if level in self._disabled:
@@ -6093,11 +6587,37 @@ class EffortSlider(QWidget):
             self._progress = self._target
         self.update()
 
+    def set_ultra(self, on):
+        """Вкл/выкл ячейки ultracode (пилюля не двигается)."""
+        on = bool(on)
+        if on and not self._ultra_enabled:
+            return
+        if on == self._ultra:
+            return
+        self._ultra = on
+        self.ultra_changed.emit(on)
+        self.update()
+
+    def is_ultra(self):
+        return bool(self._ultra)
+
+    def set_ultra_enabled(self, enabled):
+        """Доступность ячейки ultracode (нет поддержки у модели — гаснет).
+        При выключении включённая фича гаснет тоже."""
+        enabled = bool(enabled)
+        if enabled == self._ultra_enabled:
+            return
+        self._ultra_enabled = enabled
+        if not enabled and self._ultra:
+            self._ultra = False
+            self.ultra_changed.emit(False)
+        self.update()
+
     def set_disabled_levels(self, disabled_levels):
         """Обновляет набор запрещённых уровней на лету. Если сам текущий
         уровень попал в запрет — сдвигаем ползунок на ближайший разрешённый
-        слева, чтобы Ultracode плавно поехал на MAX при выборе 4.6-модели."""
-        new_disabled = set(disabled_levels or ())
+        слева. "ultracode" в наборе игнорируется (см. set_ultra_enabled)."""
+        new_disabled = set(disabled_levels or ()) - {"ultracode"}
         if new_disabled == self._disabled:
             return
         self._disabled = new_disabled
@@ -6124,13 +6644,29 @@ class EffortSlider(QWidget):
     def level(self):
         return self._level
 
+    def _geom(self):
+        """Ширина ячейки шкалы (пробел и ячейка ultracode не в счёт)."""
+        return ((self.width() - self.ULTRA_GAP - self.ULTRA_W)
+                / len(EFFORT_LEVELS))
+
     def _cell_width(self):
-        return self.width() / len(EFFORT_LEVELS)
+        return self._geom()
 
     def _idx_from_x(self, x):
-        cw = self._cell_width()
+        cw = self._geom()
         idx = int(x // cw)
         return max(0, min(len(EFFORT_LEVELS) - 1, idx))
+
+    def _ultra_at_x(self, x):
+        """Клик в ячейке ultracode (с захватом половины пробела)."""
+        cw = self._geom()
+        return x >= len(EFFORT_LEVELS) * cw + self.ULTRA_GAP / 2.0
+
+    def _ultra_rect(self):
+        """Прямоугольник ячейки ultracode."""
+        cw = self._geom()
+        return QRectF(len(EFFORT_LEVELS) * cw + self.ULTRA_GAP, 0,
+                      self.ULTRA_W, self.height())
 
     def _lerp_color(self, prog):
         """Плавная интерполяция цвета пилюли на основе непрерывной позиции."""
@@ -6167,25 +6703,35 @@ class EffortSlider(QWidget):
             elif cur != tgt:
                 self._hover_alpha[i] = tgt
                 changed = True
-        # пульс фиолетового ultracode — вечная синусоида
-        self._pulse = (self._pulse + 0.045) % (math.pi * 2)
-        if self._level == "ultracode" or abs(self._progress - (len(EFFORT_LEVELS) - 1)) < 0.5:
+        if self._ultra:
+            changed = True
+        d = self._ultra_hover_target - self._ultra_hover
+        if abs(d) > 0.003:
+            self._ultra_hover += d * 0.09
+            changed = True
+        elif self._ultra_hover != self._ultra_hover_target:
+            self._ultra_hover = self._ultra_hover_target
+            changed = True
+        # Яркость ячейки догоняет состояние — выключение тает ~0.3с.
+        ua_tgt = 1.0 if (self._ultra and self._ultra_enabled) else 0.0
+        d = ua_tgt - self._ultra_alpha
+        if abs(d) > 0.004:
+            self._ultra_alpha += d * 0.12
+            changed = True
+        elif self._ultra_alpha != ua_tgt:
+            self._ultra_alpha = ua_tgt
             changed = True
         if changed:
             self.update()
 
     def mousePressEvent(self, event):
-        idx = self._idx_from_x(event.pos().x())
-        new_level = EFFORT_LEVELS[idx]
-        if new_level in self._disabled:
-            return
-        if new_level != self._level:
-            self._level = new_level
-            self._target = float(idx)
-            self.changed.emit(new_level)
-            # Клик по ultracode: одноразовая пиксельная волна по всему окну
-            # выбора (как у кнопок) — проигрывается до конца и гаснет.
-            if new_level == "ultracode":
+        if self._ultra_at_x(event.pos().x()):
+            # Ячейка ultracode — тумблер: пилюля не едет. Волна только
+            # при включении; при выключении ячейка просто гаснет.
+            if not self._ultra_enabled:
+                return
+            self.set_ultra(not self._ultra)
+            if self._ultra:
                 try:
                     win = self.window()
                     pos = self.mapTo(win, event.pos()) if win is not None else event.pos()
@@ -6195,11 +6741,31 @@ class EffortSlider(QWidget):
                 except Exception:
                     pass
             self.update()
+            return
+        idx = self._idx_from_x(event.pos().x())
+        new_level = EFFORT_LEVELS[idx]
+        if new_level in self._disabled:
+            return
+        if new_level != self._level:
+            self._level = new_level
+            self._target = float(idx)
+            self.changed.emit(new_level)
+            self.update()
 
     def mouseMoveEvent(self, event):
-        idx = self._idx_from_x(event.pos().x())
+        x = event.pos().x()
+        if self._ultra_at_x(x):
+            for i in range(len(EFFORT_LEVELS)):
+                self._hover_target[i] = 0.0
+            self._ultra_hover_target = 1.0 if self._ultra_enabled else 0.0
+            self._hover_idx = -1
+            super().mouseMoveEvent(event)
+            return
+        idx = self._idx_from_x(x)
         # Подсвечиваем ТОЛЬКО ячейку под курсором, если она не текущая
-        # и не заблокирована.
+        # и не заблокирована. Раз курсор уже не на ячейке ultracode
+        # (граница — палочки-разделители), её hover тут же гаснет.
+        self._ultra_hover_target = 0.0
         cur_idx = EFFORT_LEVELS.index(self._level)
         for i in range(len(EFFORT_LEVELS)):
             disabled_here = EFFORT_LEVELS[i] in self._disabled
@@ -6210,6 +6776,7 @@ class EffortSlider(QWidget):
     def leaveEvent(self, event):
         for i in range(len(EFFORT_LEVELS)):
             self._hover_target[i] = 0.0
+        self._ultra_hover_target = 0.0
         self._hover_idx = -1
         super().leaveEvent(event)
 
@@ -6218,7 +6785,7 @@ class EffortSlider(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         n = len(EFFORT_LEVELS)
-        cw = w / n
+        cw = self._geom()
 
         track_r = 8.0
         pill_r = 6.5
@@ -6233,6 +6800,13 @@ class EffortSlider(QWidget):
         for i in range(1, n):
             x = i * cw
             p.drawLine(QPointF(x, 4), QPointF(x, h - 4))
+        # Три палочки в пробеле перед ultracode — видно, что ячейка отдельно.
+        try:
+            _ux = n * cw + self.ULTRA_GAP / 2.0
+            for _dx in (-3.0, 0.0, 3.0):
+                p.drawLine(QPointF(_ux + _dx, 7), QPointF(_ux + _dx, h - 7))
+        except Exception:
+            pass
 
         # Позиция и цвет пилюли
         r, g, b = self._lerp_color(self._progress)
@@ -6241,25 +6815,24 @@ class EffortSlider(QWidget):
         pill_x = self._progress * cw + (cw - pill_w) / 2.0
 
         # Мягкое свечение по периметру пилюли (внутри клипа трека).
-        # У ultracode колец нет — там живые пиксели внутри пилюли, иначе
-        # мелькание сверху/снизу спорит с ними.
-        is_ultra = self._level == "ultracode" or (self._progress > n - 1.5)
-        if not is_ultra:
-            clip = QPainterPath()
-            clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
-            p.save()
-            p.setClipPath(clip)
-            for i in range(1, 4):
-                base_alpha = 48 * (1 - (i - 1) / 3.2)
-                alpha = int(max(0, min(200, base_alpha)))
-                p.setPen(QPen(QColor(r, g, b, alpha), 1))
-                p.setBrush(Qt.NoBrush)
-                ex = i * 1.4
-                p.drawRoundedRect(
-                    QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
-                    pill_r + ex, pill_r + ex
-                )
-            p.restore()
+        # Рисуем всегда — и при включённом ultracode тоже.
+        is_ultra = self._ultra
+        ua = self._ultra_alpha if self._ultra_enabled else 0.0
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(1.4, 1.4, w - 2.8, h - 2.8), track_r - 1, track_r - 1)
+        p.save()
+        p.setClipPath(clip)
+        for i in range(1, 4):
+            base_alpha = 48 * (1 - (i - 1) / 3.2)
+            alpha = int(max(0, min(200, base_alpha)))
+            p.setPen(QPen(QColor(r, g, b, alpha), 1))
+            p.setBrush(Qt.NoBrush)
+            ex = i * 1.4
+            p.drawRoundedRect(
+                QRectF(pill_x - ex, pad - ex, pill_w + ex * 2, h - pad * 2 + ex * 2),
+                pill_r + ex, pill_r + ex
+            )
+        p.restore()
 
         # Сама пилюля — вертикальный градиент
         grad = QLinearGradient(QPointF(0, pad), QPointF(0, h - pad))
@@ -6272,13 +6845,15 @@ class EffortSlider(QWidget):
 
         # ultracode: живой пиксельный фон поверх градиента — квадратики
         # случайно вспыхивают ярче фиолетового и плавно гаснут.
-        if is_ultra:
+        # При выключении тают вместе с ячейкой (fade), новых вспышек нет.
+        if ua > 0.01:
             p.save()
             pp = QPainterPath()
             pp.addRoundedRect(pill_rect, pill_r, pill_r)
             p.setClipPath(pp)
             _paint_ultra_pixels(p, pill_rect, (r, g, b), self._ultra_cells,
-                                dark=False)
+                                dark=False, fade=ua,
+                                ignite_p=0.32 if is_ultra else 0.0)
             p.restore()
 
         # Тексты уровней
@@ -6319,6 +6894,56 @@ class EffortSlider(QWidget):
             p.setPen(pen)
             p.drawText(rect, Qt.AlignCenter, EFFORT_LABELS[lvl])
 
+        # Ячейка ultracode справа через пробел: та же типографика, что у
+        # уровней. Пилюля сюда не ездит — только вкл/выкл по клику.
+        cell = self._ultra_rect()
+        ulbl = EFFORT_LABELS.get("ultracode", "ULTRACODE")
+        ur, ug, ub = EFFORT_COLORS.get("ultracode", (167, 139, 252))
+        if not self._ultra_enabled:
+            upen = QColor(80, 80, 86)
+        else:
+            # Двухступенчатый бленд: база → цвет уровня за hover,
+            # затем → яркий за alpha вкл/выкл. Концы те же, что были,
+            # середина даёт плавное затухание при выключении.
+            shade = 145
+            base = QColor(shade, shade, shade + 4)
+            hov = min(1.0, max(0.0, self._ultra_hover))
+            cr = int(base.red()   + (ur - base.red())   * hov)
+            cg = int(base.green() + (ug - base.green()) * hov)
+            cb = int(base.blue()  + (ub - base.blue())  * hov)
+            br = min(255, ur + 45)
+            bg = min(255, ug + 45)
+            bb = min(255, ub + 45)
+            upen = QColor(
+                int(cr + (br - cr) * ua),
+                int(cg + (bg - cg) * ua),
+                int(cb + (bb - cb) * ua),
+            )
+        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        p.setPen(upen)
+        p.drawText(cell, Qt.AlignCenter, ulbl)
+        uh = self._ultra_hover if self._ultra_enabled else 0.0
+        if ua > 0.01 or uh > 0.01:
+            # Кроссфейд без щелчков: on-вид (170/38) тает с ua, hover-вид
+            # (90/14) проявляется по мере таяния. Концы: вкл — 170/38,
+            # только hover — 90/14, как было.
+            hov_a = uh * (1.0 - ua)
+            pen_a = min(255, int(170 * ua + 90 * hov_a))
+            brush_a = min(255, int(38 * ua + 14 * hov_a))
+            p.setPen(QPen(QColor(ur, ug, ub, pen_a), 1.6))
+            p.setBrush(QColor(ur, ug, ub, brush_a))
+            inner = QRectF(cell.x() + 2.0, 3.0, cell.width() - 4.0, h - 6.0)
+            p.drawRoundedRect(inner, 5, 5)
+            if ua > 0.01:
+                p.save()
+                pp = QPainterPath()
+                pp.addRoundedRect(inner, 5, 5)
+                p.setClipPath(pp)
+                _paint_ultra_pixels(p, inner, (ur, ug, ub),
+                                    self._ultra_cells_bg, dark=False,
+                                    fade=ua, ignite_p=0.32 if is_ultra else 0.0)
+                p.restore()
+
         p.end()
 
 
@@ -6352,7 +6977,7 @@ class EffortDialog(QDialog):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         # Обязательно: без WA_DeleteOnClose сигнал destroyed не эмитится и
-        # EffortPickerComboBox._picker_dlg остаётся non-None → повторный клик
+        # _picker_dlg комбобокса остаётся non-None → повторный клик
         # по комбо ничего не делает до перезапуска приложения.
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(True)
@@ -6580,6 +7205,9 @@ class ModelSlider(QWidget):
         self._hover_target = {i: 0.0 for i in range(len(MODEL_ORDER))}
         # Пульс для Fable 5 — фиолетовое свечение, как ultracode у effort
         self._pulse = 0.0
+        # Дим всего слайдера: когда выбрана своя модель из отдельного ряда,
+        # встроенные гаснут, чтобы было видно, что активна не они.
+        self._dimmed = False
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
@@ -6653,6 +7281,13 @@ class ModelSlider(QWidget):
 
     def model(self):
         return self._model
+
+    def set_dimmed(self, on):
+        """Приглушить весь слайдер (выбрана своя модель из отдельного ряда)."""
+        on = bool(on)
+        if on != self._dimmed:
+            self._dimmed = on
+            self.update()
 
     def _lerp_color(self, prog):
         n = len(MODEL_ORDER)
@@ -6734,6 +7369,8 @@ class ModelSlider(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        if self._dimmed:
+            p.setOpacity(0.45)
         rh = self.ROW_H
         cw = self._cell_width()
         nrows = self._nrows()
@@ -6821,13 +7458,351 @@ class ModelSlider(QWidget):
         p.end()
 
 
+class CustomModelsWindow(QDialog):
+    """Окно своих моделей (только Anthropic): список + добавление.
+    Каждая строка — кнопка с ID (серая) и крестик; удаление — с
+    подтверждением. Всё плавно, как остальные кнопки приложения."""
+
+    picked = Signal(str)  # клик по карточке — выбрать
+    model_added = Signal(str)  # добавление нового ID
+    model_deleted = Signal(str)  # крестик + подтверждение
+
+    CARD_H = 46
+    GAP = 8
+    VISIBLE_ROWS = 4
+    WIDTH = 540
+    ACCENT = (145, 145, 150)
+
+    def __init__(self, models=None, selected=None, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setModal(True)
+        self._models = [m for m in (models or [])
+                        if isinstance(m, str) and m.strip()]
+        self._selected = selected if selected in self._models else None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 14)
+
+        container = DottedFrame()
+        container.setObjectName("customModelsContainer")
+        self._container = container
+        container.setStyleSheet("""
+            QFrame#customModelsContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+        outer.addWidget(container)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(26, 18, 26, 22)
+        layout.setSpacing(10)
+
+        # Заголовок + крестик закрытия
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+
+        # Спейсер слева чтобы заголовок был по центру
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(28, 28)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(left_spacer)
+
+        title = QLabel(tr("Свои модели"))
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        title_row.addWidget(title, 1)
+
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.accept)
+        title_row.addWidget(self.btn_close)
+        layout.addLayout(title_row)
+
+        hint = QLabel(tr("Клик — выбрать модель."))
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color: rgb(160, 160, 168); background: transparent; border: none;")
+        layout.addWidget(hint)
+
+        # Скролл-область со списком — как в управлении Base URL.
+        # Высота фиксирована на VISIBLE_ROWS: дальше — скролл.
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: 2px solid rgb(60, 60, 65); border-radius: 8px; }
+            QScrollArea > QWidget > QWidget { background: transparent; }
+            QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+            QScrollBar::handle:vertical { background: rgb(70,70,78); border-radius: 8px; min-height: 30px; }
+            QScrollBar::handle:vertical:hover { background: rgb(95,95,105); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+        self.cards_host = QWidget()
+        self.cards_host.setStyleSheet("background: transparent;")
+        self.cards_layout = QVBoxLayout(self.cards_host)
+        self.cards_layout.setContentsMargins(8, 8, 12, 8)
+        self.cards_layout.setSpacing(self.GAP)
+        self.scroll.setWidget(self.cards_host)
+        layout.addWidget(self.scroll)
+        self._cards = []
+
+        # Пустой плейсхолдер
+        self.empty_lbl = QLabel(tr("Моделей пока нет — добавьте первую ниже"))
+        self.empty_lbl.setFont(QFont("Segoe UI", 9))
+        self.empty_lbl.setAlignment(Qt.AlignCenter)
+        self.empty_lbl.setStyleSheet("color: rgb(110,110,116); background: transparent; border: none;")
+        layout.addWidget(self.empty_lbl)
+
+        # Разделитель — добавление новой модели
+        add_label = QLabel(tr("Добавить новую модель:"))
+        add_label.setFont(QFont("Segoe UI", 10))
+        add_label.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
+        layout.addWidget(add_label)
+
+        add_row = QHBoxLayout()
+        self.model_input = QLineEdit()
+        self.model_input.setPlaceholderText(tr("Например: claude-haiku-5.5:free"))
+        self.model_input.setFont(QFont("Segoe UI", 9))
+        self.model_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #18181f;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        add_row.addWidget(self.model_input, 1)
+
+        self.btn_add_model = StyledButton(tr("Добавить"), compact=True)
+        self.btn_add_model.set_hover_color(145, 145, 150)
+        self.btn_add_model.setMinimumHeight(0)
+        self.btn_add_model.setFixedHeight(36)
+        self.btn_add_model.setMaximumWidth(110)
+        self.btn_add_model.clicked.connect(self.add_model)
+        add_row.addWidget(self.btn_add_model)
+
+        layout.addLayout(add_row)
+        outer.addWidget(container)
+
+        self._rebuild_cards()
+
+        self.setFixedWidth(self.WIDTH)
+
+        # Плавное появление
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(220)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._closing = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            self._fade_anim.start()
+        except Exception:
+            pass
+
+    def accept(self):
+        try:
+            if getattr(self, "_closing", False):
+                return
+        except Exception:
+            pass
+        self._closing = True
+        try:
+            fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+            fade.setDuration(220)
+            fade.setStartValue(self._opacity_effect.opacity())
+            fade.setEndValue(0.0)
+            fade.setEasingCurve(QEasingCurve.OutCubic)
+            fade.finished.connect(lambda: super(CustomModelsWindow, self).accept())
+            fade.start()
+            self._fade_out = fade
+        except Exception:
+            try:
+                super().accept()
+            except Exception:
+                pass
+
+    def reject(self):
+        # Изменения уже разосланы сигналами, поэтому Escape/крестик ведут
+        # себя как accept (ничего не теряется).
+        self.accept()
+
+    # ── Перетаскивание самого окна (как у управления Base URL) ──
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._win_drag_offset = (event.globalPosition().toPoint()
+                                     - self.frameGeometry().topLeft())
+            self._win_dragging = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, "_win_dragging", False) and (event.buttons() & Qt.LeftButton):
+            self.move(event.globalPosition().toPoint() - self._win_drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if getattr(self, "_win_dragging", False):
+            self._win_dragging = False
+            try:
+                self.btn_close.resync_hover(event.globalPosition())
+            except Exception:
+                pass
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _refit(self):
+        """Высота скролла под число строк (до VISIBLE_ROWS, дальше скролл)."""
+        n = len(self._models)
+        vis = min(max(n, 1), self.VISIBLE_ROWS)
+        h = vis * self.CARD_H + max(vis - 1, 0) * self.GAP + 20
+        self.scroll.setFixedHeight(h)
+
+    def set_models(self, models, selected=None):
+        self._models = [m for m in (models or [])
+                        if isinstance(m, str) and m.strip()]
+        if selected is None:
+            selected = self._selected
+        self._selected = selected if selected in self._models else None
+        self._rebuild_cards()
+
+    def _rebuild_cards(self):
+        """Перестраивает карточки из self._models, подсвечивает выбранную."""
+        while self.cards_layout.count():
+            item = self.cards_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._cards = []
+        for mid in self._models:
+            card = _UrlCard(mid, selected=(mid == self._selected),
+                            accent=self.ACCENT, parent=self.cards_host,
+                            on_delete=self._remove_model)
+            card.setFixedHeight(self.CARD_H)
+            card.clicked.connect(lambda m=mid: self._select(m))
+            self.cards_layout.addWidget(card)
+            self._cards.append(card)
+        self.empty_lbl.setVisible(not self._models)
+        self.scroll.setVisible(bool(self._models))
+        self._refit()
+        # Окно должно и расти, и уменьшаться: сбрасываем запомненные
+        # ограничения и переподгоняем размер асинхронно.
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        QTimer.singleShot(0, self._refit_window)
+
+    def _refit_window(self):
+        # Пересчёт высоты под текущий контент. Позицию держим по левому
+        # верхнему углу — иначе Qt при уменьшении «подтягивает» окно вверх.
+        if not self.isVisible():
+            return
+        top_left = self.pos()
+        try:
+            self.layout().activate()
+        except Exception:
+            pass
+        self.adjustSize()
+        try:
+            target_h = max(self.sizeHint().height(),
+                           self.minimumSizeHint().height())
+        except Exception:
+            target_h = self.height()
+        self.resize(self.WIDTH, target_h)
+        self.setFixedWidth(self.WIDTH)
+        if getattr(self, "_positioned", False):
+            self.move(top_left)
+        # Принудительная перерисовка (frameless + translucent): иначе после
+        # add/delete остаются «призраки» удалённых виджетов.
+        try:
+            self._container.update()
+            self.scroll.viewport().update()
+        except Exception:
+            pass
+        self.update()
+        self.repaint()
+
+    def _select(self, model_id):
+        """Клик по карточке — выбрать модель (окно остаётся открытым,
+        закрывается крестиком)."""
+        if model_id not in self._models:
+            return
+        self._selected = model_id
+        try:
+            for card in self._cards:
+                card.set_selected(card._url == model_id)
+        except Exception:
+            pass
+        try:
+            self.picked.emit(model_id)
+        except Exception:
+            pass
+
+    def _remove_model(self, model_id):
+        """Крестик на карточке: подтверждение, удаление, фолбэк выбора."""
+        if model_id not in self._models:
+            return
+        confirm = ConfirmDeleteDialog(model_id, self,
+                                      question_text=tr("Удалить свою модель?"))
+        if confirm.exec() != QDialog.Accepted:
+            return
+        self._models.remove(model_id)
+        if self._selected == model_id:
+            self._selected = self._models[0] if self._models else None
+        self._rebuild_cards()
+        try:
+            self.model_deleted.emit(model_id)
+        except Exception:
+            pass
+
+    def add_model(self):
+        mid = self.model_input.text().strip()
+        if not mid:
+            return
+        if mid in self._models:
+            QMessageBox.information(self, "Информация", tr("Модель уже добавлена"))
+            self._select(mid)
+            return
+        self._models.append(mid)
+        self.model_input.clear()
+        self._rebuild_cards()
+        try:
+            self.model_added.emit(mid)
+        except Exception:
+            pass
+
+
 class ModelDialog(QDialog):
     """Компактное окно выбора модели FreeModel в стиле EffortDialog.
     Ползунок ModelSlider + короткое описание модели (цветное) под ним.
     Никаких кнопок — крестик/Esc применяет выбор."""
 
     # Эмитим и модель, и effort — теперь ModelDialog управляет обоими.
-    applied = Signal(str, str)
+    applied = Signal(str, str, bool)  # model, effort, ultracode
+    custom_added = Signal(str)  # ID новой своей модели
+    custom_deleted = Signal(str)  # ID удалённой своей модели
 
     LEVEL_DESCRIPTIONS = {
         "Sonnet 4.6": "быстрый и дешёвый — для простых задач",
@@ -6854,7 +7829,8 @@ class ModelDialog(QDialog):
         "Fable 5.1":  "for demanding reasoning and long-horizon agentic work",
     }
 
-    def __init__(self, current_model="Opus 4.8", parent=None, current_effort="high"):
+    def __init__(self, current_model="Opus 4.8", parent=None, current_effort="high",
+                 current_ultra=False, custom_models=None, show_custom=True):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -6862,22 +7838,33 @@ class ModelDialog(QDialog):
         # блокируется, потому что destroyed не эмитится.
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(True)
-        if current_model not in MODEL_ORDER:
+        try:
+            customs = [m for m in (custom_models or [])
+                       if isinstance(m, str) and m.strip()]
+        except Exception:
+            customs = []
+        self._custom_models = list(customs) if show_custom else []
+        # Свои модели — только Anthropic: в official-режиме секция скрыта.
+        self._show_custom = bool(show_custom)
+        if (current_model not in MODEL_ORDER
+                and current_model not in self._custom_models):
             current_model = "Opus 4.8"
+        if current_effort == "ultracode":
+            # Совместимость со старым значением шкалы.
+            current_effort, current_ultra = "max", True
         if current_effort not in EFFORT_LEVELS:
             current_effort = "high"
-        # Начальные disabled для effort — сразу учитывают текущую модель.
-        initial_disabled = set()
-        if current_model in MODELS_WITHOUT_ULTRACODE:
-            initial_disabled.add("ultracode")
-        # Если стартовый effort несовместим с моделью — тихо чиним до max,
-        # чтобы диалог открылся в консистентном состоянии.
-        if current_effort in initial_disabled:
-            current_effort = "max"
+        # Ultracode доступен только моделям с его поддержкой.
+        ultra_enabled = current_model not in MODELS_WITHOUT_ULTRACODE
+        if not ultra_enabled:
+            current_ultra = False
         self._model = current_model
         self._initial_model = current_model
         self._effort = current_effort
         self._initial_effort = current_effort
+        self._ultra = bool(current_ultra)
+        self._initial_ultra = bool(current_ultra)
+        self._ultra_enabled = bool(ultra_enabled)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)
@@ -6947,11 +7934,14 @@ class ModelDialog(QDialog):
         inner.addWidget(sep_lbl)
 
         # Второй ползунок — effort. Тот же самый EffortSlider, что и в
-        # старом EffortDialog. disabled_levels берётся из модели.
+        # старом EffortDialog. Ultracode — отдельной ячейкой справа через
+        # пробел, а не уровнем шкалы.
         eff_row = QHBoxLayout()
         eff_row.addStretch()
-        self.effort_slider = EffortSlider(level=current_effort, disabled_levels=initial_disabled)
+        self.effort_slider = EffortSlider(level=current_effort, ultra=self._ultra,
+                                          ultra_enabled=self._ultra_enabled)
         self.effort_slider.changed.connect(self._on_effort_slider_changed)
+        self.effort_slider.ultra_changed.connect(self._on_ultra_changed)
         eff_row.addWidget(self.effort_slider)
         eff_row.addStretch()
         inner.addLayout(eff_row)
@@ -6963,6 +7953,21 @@ class ModelDialog(QDialog):
         self._apply_effort_desc_color(current_effort)
         self.effort_desc_lbl.setWordWrap(True)
         inner.addWidget(self.effort_desc_lbl)
+
+        # ── Свои модели (только Anthropic): одна полоска (пустая — с "+"),
+        # клик — окно списка и добавления. В official-режиме скрыта целиком.
+        self._custom_window = None
+        strip_wrap = QHBoxLayout()
+        strip_wrap.addStretch()
+        self._custom_strip = StyledButton("+", parent=self, compact=True)
+        self._custom_strip.setFixedSize(468, 34)
+        self._custom_strip.set_hover_color(145, 145, 150)
+        self._custom_strip.setToolTip(tr("Свои модели"))
+        self._custom_strip.clicked.connect(self._open_custom_window)
+        strip_wrap.addWidget(self._custom_strip)
+        strip_wrap.addStretch()
+        inner.addLayout(strip_wrap)
+        self._refresh_custom_strip()
 
         self.setFixedWidth(560)
         self.adjustSize()
@@ -7007,18 +8012,180 @@ class ModelDialog(QDialog):
         self._model = model
         self.desc_lbl.setText(self._desc_text(model))
         self._apply_desc_color(model)
-        # Синхронизируем disabled-набор ползунка effort — при 4.6-модели
-        # ultracode запрещён. set_disabled_levels сам сдвинет ползунок с
-        # ultracode на max, если тот выбран (плавная анимация).
-        new_disabled = set()
-        if model in MODELS_WITHOUT_ULTRACODE:
-            new_disabled.add("ultracode")
-        self.effort_slider.set_disabled_levels(new_disabled)
+        # Встроенная выбрана — дим слайдера снять, полоску обновить.
+        try:
+            self.slider.set_dimmed(False)
+        except Exception:
+            pass
+        self._refresh_custom_strip()
+        # Доступность ultracode зависит от модели: при 4.6-tier ячейка гаснет.
+        # Включённая фича при этом тоже гаснет (effort не трогаем).
+        ultra_enabled = model not in MODELS_WITHOUT_ULTRACODE
+        self._ultra_enabled = bool(ultra_enabled)
+        self.effort_slider.set_ultra_enabled(bool(ultra_enabled))
 
     def _on_effort_slider_changed(self, level):
         self._effort = level
         self.effort_desc_lbl.setText(self._effort_desc_text(level))
         self._apply_effort_desc_color(level)
+
+    def _on_ultra_changed(self, on):
+        self._ultra = bool(on)
+
+    def _refresh_custom_strip(self):
+        """Текст полоски: выбранная своя или "Свои модели"; подсветка;
+        видимость. Заодно синхронизирует дим слайдера — иначе после
+        переоткрытия диалога встроенные не гаснут при выбранной своей."""
+        try:
+            strip = self._custom_strip
+        except Exception:
+            return
+        if strip is None:
+            return
+        try:
+            sel = (self._model if self._model in self._custom_models else None)
+            strip.setText(sel if sel else tr("Свои модели"))
+            strip.set_lit(bool(sel))
+            strip.setVisible(bool(getattr(self, "_show_custom", False)))
+        except Exception:
+            pass
+        try:
+            self.slider.set_dimmed(self._model in self._custom_models)
+        except Exception:
+            pass
+
+    def _open_custom_window(self):
+        """Окно списка и добавления своих моделей (по центру ModelDialog)."""
+        if not getattr(self, "_show_custom", False):
+            return
+        try:
+            win = CustomModelsWindow(models=self._custom_models,
+                                     selected=self._model,
+                                     parent=self)
+        except Exception:
+            return
+        self._custom_window = win
+        try:
+            win.picked.connect(self._on_window_picked)
+            win.model_added.connect(self._on_window_added)
+            win.model_deleted.connect(self._on_window_deleted)
+        except Exception:
+            pass
+        try:
+            win.adjustSize()
+            dw, dh = win.width(), win.height()
+            pg = self.frameGeometry()
+            center = pg.center()
+            win.move(center.x() - dw // 2, center.y() - dh // 2)
+            win._positioned = True
+        except Exception:
+            pass
+        try:
+            win.exec()
+        except Exception:
+            pass
+        self._custom_window = None
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def _on_window_picked(self, model_id):
+        # Окно остаётся открытым — выбрали, смотрим дальше,
+        # закрываем крестиком. Применение — при закрытии ModelDialog.
+        self._on_custom_selected(model_id)
+
+    def _on_window_added(self, new_id):
+        # Окно остаётся открытым (как при выборе): список обновляем,
+        # добавленную сразу выбираем.
+        if not new_id:
+            return
+        if new_id in self._custom_models:
+            # Уже есть — просто выбрать + подсказка.
+            self._on_custom_selected(new_id)
+            self.desc_lbl.setText(tr("Модель уже добавлена"))
+        elif new_id in MODEL_ORDER:
+            # Встроенная — выбрать её на слайдере.
+            self._select_any_model(new_id)
+        else:
+            self._custom_models.append(new_id)
+            self._refresh_custom_strip()
+            self._on_custom_selected(new_id)
+            try:
+                self.custom_added.emit(new_id)
+            except Exception:
+                pass
+        try:
+            if self._custom_window is not None:
+                self._custom_window.set_models(self._custom_models,
+                                               self._model)
+        except Exception:
+            pass
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def _on_window_deleted(self, model_id):
+        if model_id not in self._custom_models:
+            return
+        try:
+            self._custom_models.remove(model_id)
+        except Exception:
+            return
+        if self._model == model_id:
+            self._model = "Opus 4.8"
+            try:
+                self.slider.set_model("Opus 4.8")
+            except Exception:
+                pass
+            self._on_slider_changed("Opus 4.8")
+        self._refresh_custom_strip()
+        try:
+            if self._custom_window is not None:
+                self._custom_window.set_models(self._custom_models,
+                                               self._model)
+        except Exception:
+            pass
+        try:
+            self.custom_deleted.emit(model_id)
+        except Exception:
+            pass
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def _select_any_model(self, name):
+        """Выбор любой модели (встроенная — на слайдере, своя — в ряду)."""
+        if name in MODEL_ORDER:
+            self._on_slider_changed(name)
+            try:
+                self.slider.set_model(name)
+            except Exception:
+                pass
+        elif name in self._custom_models:
+            self._on_custom_selected(name)
+
+    def _on_custom_selected(self, model_id):
+        if model_id not in self._custom_models:
+            return
+        self._model = model_id
+        try:
+            self.slider.set_dimmed(True)
+        except Exception:
+            pass
+        # Ряд тоже перевести на неё (программный выбор: после "+", стрелками).
+        self._refresh_custom_strip()
+        self.desc_lbl.setText(tr("Своя модель — ID передаётся CLI как есть"))
+        self.desc_lbl.setStyleSheet(
+            "color: rgb(145, 145, 150); background: transparent; border: none;")
+        # Своим моделям ultracode доступен всегда (списка без поддержки нет).
+        self._ultra_enabled = True
+        try:
+            self.effort_slider.set_ultra_enabled(True)
+        except Exception:
+            pass
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -7030,10 +8197,11 @@ class ModelDialog(QDialog):
             return
         self._closing = True
         event.ignore()
-        # applied эмитим ВСЕГДА, если что-то изменилось — модель или effort.
-        if self._model != self._initial_model or self._effort != self._initial_effort:
+        # applied эмитим ВСЕГДА, если что-то изменилось — модель, effort или ultra.
+        if (self._model != self._initial_model or self._effort != self._initial_effort
+                or self._ultra != self._initial_ultra):
             try:
-                self.applied.emit(self._model, self._effort)
+                self.applied.emit(self._model, self._effort, self._ultra)
             except Exception:
                 pass
         fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -7050,18 +8218,20 @@ class ModelDialog(QDialog):
             self.close()
             return
         if event.key() == Qt.Key_Left:
-            i = MODEL_ORDER.index(self._model)
-            if i > 0:
-                new_m = MODEL_ORDER[i - 1]
-                self._on_slider_changed(new_m)
-                self.slider.set_model(new_m)
+            # Порядок — встроенные + свои (своих в MODEL_ORDER нет,
+            # прямой index() упал бы с ValueError).
+            order = list(MODEL_ORDER) + [m for m in self._custom_models]
+            if self._model in order:
+                i = order.index(self._model)
+                if i > 0:
+                    self._select_any_model(order[i - 1])
             return
         if event.key() == Qt.Key_Right:
-            i = MODEL_ORDER.index(self._model)
-            if i < len(MODEL_ORDER) - 1:
-                new_m = MODEL_ORDER[i + 1]
-                self._on_slider_changed(new_m)
-                self.slider.set_model(new_m)
+            order = list(MODEL_ORDER) + [m for m in self._custom_models]
+            if self._model in order:
+                i = order.index(self._model)
+                if i < len(order) - 1:
+                    self._select_any_model(order[i + 1])
             return
         super().keyPressEvent(event)
 
@@ -7626,6 +8796,1347 @@ OC_NOTIFY_KEYS = (
     ("permission", "Нужно разрешение"),
     ("error", "Ошибка"),
 )
+
+# Прозрачная тема opencode, вшитая в приложение (flexoki-transparent).
+# Подставляет builder-скрипт; руками не править.
+_OC_TRANSPARENT_THEME_JSON = """{
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "black": "#100F0F",
+    "base950": "#1C1B1A",
+    "base900": "#282726",
+    "base850": "#343331",
+    "base800": "#403E3C",
+    "base700": "#575653",
+    "base600": "#6F6E69",
+    "base500": "#878580",
+    "base300": "#B7B5AC",
+    "base200": "#CECDC3",
+    "base150": "#DAD8CE",
+    "base100": "#E6E4D9",
+    "base50": "#F2F0E5",
+    "paper": "#FFFCF0",
+    "red400": "#D14D41",
+    "red600": "#AF3029",
+    "orange400": "#DA702C",
+    "orange600": "#BC5215",
+    "yellow400": "#D0A215",
+    "yellow600": "#AD8301",
+    "green400": "#879A39",
+    "green600": "#66800B",
+    "cyan400": "#3AA99F",
+    "cyan600": "#24837B",
+    "blue400": "#4385BE",
+    "blue600": "#205EA6",
+    "purple400": "#8B7EC8",
+    "purple600": "#5E409D",
+    "magenta400": "#CE5D97",
+    "magenta600": "#A02F6F"
+  },
+  "theme": {
+    "primary": {
+      "dark": "orange400",
+      "light": "blue600"
+    },
+    "secondary": {
+      "dark": "blue400",
+      "light": "purple600"
+    },
+    "accent": {
+      "dark": "purple400",
+      "light": "orange600"
+    },
+    "error": {
+      "dark": "red400",
+      "light": "red600"
+    },
+    "warning": {
+      "dark": "orange400",
+      "light": "orange600"
+    },
+    "success": {
+      "dark": "green400",
+      "light": "green600"
+    },
+    "info": {
+      "dark": "cyan400",
+      "light": "cyan600"
+    },
+    "text": {
+      "dark": "base200",
+      "light": "black"
+    },
+    "textMuted": {
+      "dark": "base600",
+      "light": "base600"
+    },
+    "selectedListItemText": {
+      "dark": "black",
+      "light": "black"
+    },
+    "background": {
+      "dark": "none",
+      "light": "none"
+    },
+    "backgroundPanel": {
+      "dark": "none",
+      "light": "none"
+    },
+    "backgroundElement": {
+      "dark": "none",
+      "light": "none"
+    },
+    "backgroundMenu": {
+      "dark": "none",
+      "light": "none"
+    },
+    "border": {
+      "dark": "base700",
+      "light": "base300"
+    },
+    "borderActive": {
+      "dark": "base600",
+      "light": "base500"
+    },
+    "borderSubtle": {
+      "dark": "base800",
+      "light": "base200"
+    },
+    "diffAdded": {
+      "dark": "green400",
+      "light": "green600"
+    },
+    "diffRemoved": {
+      "dark": "red400",
+      "light": "red600"
+    },
+    "diffContext": {
+      "dark": "base600",
+      "light": "base600"
+    },
+    "diffHunkHeader": {
+      "dark": "blue400",
+      "light": "blue600"
+    },
+    "diffHighlightAdded": {
+      "dark": "green400",
+      "light": "green600"
+    },
+    "diffHighlightRemoved": {
+      "dark": "red400",
+      "light": "red600"
+    },
+    "diffAddedBg": {
+      "dark": "#1A2D1A",
+      "light": "#D5E5D5"
+    },
+    "diffRemovedBg": {
+      "dark": "#2D1A1A",
+      "light": "#F7D8DB"
+    },
+    "diffContextBg": {
+      "dark": "none",
+      "light": "none"
+    },
+    "diffLineNumber": {
+      "dark": "#888883",
+      "light": "#5a5955"
+    },
+    "diffAddedLineNumberBg": {
+      "dark": "#152515",
+      "light": "#C5D5C5"
+    },
+    "diffRemovedLineNumberBg": {
+      "dark": "#251515",
+      "light": "#E7C8CB"
+    },
+    "markdownText": {
+      "dark": "base200",
+      "light": "black"
+    },
+    "markdownHeading": {
+      "dark": "purple400",
+      "light": "purple600"
+    },
+    "markdownLink": {
+      "dark": "blue400",
+      "light": "blue600"
+    },
+    "markdownLinkText": {
+      "dark": "cyan400",
+      "light": "cyan600"
+    },
+    "markdownCode": {
+      "dark": "cyan400",
+      "light": "cyan600"
+    },
+    "markdownBlockQuote": {
+      "dark": "yellow400",
+      "light": "yellow600"
+    },
+    "markdownEmph": {
+      "dark": "yellow400",
+      "light": "yellow600"
+    },
+    "markdownStrong": {
+      "dark": "orange400",
+      "light": "orange600"
+    },
+    "markdownHorizontalRule": {
+      "dark": "base600",
+      "light": "base600"
+    },
+    "markdownListItem": {
+      "dark": "orange400",
+      "light": "orange600"
+    },
+    "markdownListEnumeration": {
+      "dark": "cyan400",
+      "light": "cyan600"
+    },
+    "markdownImage": {
+      "dark": "magenta400",
+      "light": "magenta600"
+    },
+    "markdownImageText": {
+      "dark": "cyan400",
+      "light": "cyan600"
+    },
+    "markdownCodeBlock": {
+      "dark": "base200",
+      "light": "black"
+    },
+    "syntaxComment": {
+      "dark": "base600",
+      "light": "base600"
+    },
+    "syntaxKeyword": {
+      "dark": "green400",
+      "light": "green600"
+    },
+    "syntaxFunction": {
+      "dark": "orange400",
+      "light": "orange600"
+    },
+    "syntaxVariable": {
+      "dark": "blue400",
+      "light": "blue600"
+    },
+    "syntaxString": {
+      "dark": "cyan400",
+      "light": "cyan600"
+    },
+    "syntaxNumber": {
+      "dark": "purple400",
+      "light": "purple600"
+    },
+    "syntaxType": {
+      "dark": "yellow400",
+      "light": "yellow600"
+    },
+    "syntaxOperator": {
+      "dark": "base300",
+      "light": "base600"
+    },
+    "syntaxPunctuation": {
+      "dark": "base300",
+      "light": "base600"
+    }
+  }
+}
+"""
+
+
+_OC_THEME_FILE = "ccm-transparent.json"
+_OC_WT_PROFILE = "Claude Code Manager"
+
+
+def _oc_config_dir():
+    """Папка конфигов opencode текущего пользователя (XDG или ~/.config)."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    if xdg and os.path.isdir(xdg):
+        cand = os.path.join(xdg, "opencode")
+        try:
+            os.makedirs(cand, exist_ok=True)
+            return cand
+        except Exception:
+            pass
+    cand = os.path.join(os.path.expanduser("~"), ".config", "opencode")
+    try:
+        os.makedirs(cand, exist_ok=True)
+    except Exception:
+        pass
+    return cand
+
+
+def _oc_theme_path():
+    return os.path.join(_oc_config_dir(), "themes", _OC_THEME_FILE)
+
+
+def _oc_theme_source():
+    """Откуда брать прозрачную тему: сначала Downloads\\themes текущего
+    пользователя, иначе вшитая в приложение (для чужих машин)."""
+    try:
+        cand = os.path.join(os.path.expanduser("~"), "Downloads", "themes",
+                            "flexoki-transparent.json")
+        if os.path.exists(cand):
+            with open(cand, "r", encoding="utf-8") as f:
+                content = f.read()
+            json.loads(content)
+            return content
+    except Exception:
+        pass
+    return _OC_TRANSPARENT_THEME_JSON or ""
+
+
+def _oc_write_theme_file():
+    """Кладёт прозрачную тему в папку тем opencode. True если файл на месте."""
+    try:
+        content = _oc_theme_source()
+        if not content.strip():
+            return False
+        path = _oc_theme_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            pass
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content if content.endswith("\n") else content + "\n")
+        return os.path.exists(path)
+    except Exception:
+        return False
+
+
+def _oc_remove_theme_file():
+    """Удаляет только наш файл темы (чужие не трогаем)."""
+    try:
+        path = _oc_theme_path()
+        if os.path.exists(path):
+            os.remove(path)
+        return True
+    except Exception:
+        return False
+
+
+def _oc_images_dir():
+    return os.path.join(SETTINGS_DIR, "images")
+
+
+def _oc_import_image(src_path):
+    """Копирует картинку фона в папку приложения (уникальное имя)."""
+    import shutil
+    dest_dir = _oc_images_dir()
+    os.makedirs(dest_dir, exist_ok=True)
+    stem, ext = os.path.splitext(os.path.basename(src_path) or "bg")
+    stem = re.sub(r"[^A-Za-z0-9а-яА-Я_\\-]", "_", stem[:24] or "bg")
+    if not ext:
+        ext = ".png"
+    dest = os.path.join(dest_dir, "oc_bg_%s%s" % (stem, ext))
+    i = 2
+    while os.path.exists(dest):
+        dest = os.path.join(dest_dir, "oc_bg_%s_%d%s" % (stem, i, ext))
+        i += 1
+        if i > 50:
+            break
+    shutil.copy2(src_path, dest)
+    return dest
+
+
+def _oc_wt_settings_paths():
+    """Кандидаты settings.json Windows Terminal: Store, затем ручная установка."""
+    local = os.environ.get("LOCALAPPDATA", "")
+    out = []
+    if local:
+        out.append(os.path.join(local, "Packages",
+                                "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
+                                "LocalState", "settings.json"))
+        out.append(os.path.join(local, "Microsoft", "Windows Terminal",
+                                "settings.json"))
+    seen = []
+    for p in out:
+        if p not in seen:
+            seen.append(p)
+    return seen
+
+
+def _oc_wt_find_settings():
+    for p in _oc_wt_settings_paths():
+        try:
+            if os.path.exists(p):
+                return p
+        except Exception:
+            pass
+    return ""
+
+
+def _oc_wt_load(path):
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = _strip_jsonc_comments(f.read())
+        data = json.loads(data)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _oc_wt_save(path, data):
+    """Атомарная запись: сначала во временный файл, потом замена.
+    Бэкапов не делаем — профиль наш, изменения просто перезаписывают его."""
+    tmp = path + ".ccm.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def _oc_clamp_opacity(value):
+    """Видимость картинки фона 10–80%, дефолт 35."""
+    try:
+        v = int(value)
+    except Exception:
+        return 35
+    return max(10, min(80, v))
+
+
+def _oc_clamp_blur(value):
+    """Размытие картинки фона 0–30px, дефолт 0 (без изменений)."""
+    try:
+        v = int(value)
+    except Exception:
+        return 0
+    return max(0, min(30, v))
+
+
+def _oc_is_animated(path):
+    """Анимированная гифка? Терминал анимирует gif сам."""
+    try:
+        if not isinstance(path, str) or not path:
+            return False
+        if not os.path.exists(path):
+            return False
+        if os.path.splitext(path)[1].lower() != ".gif":
+            return False
+        return bool(QImageReader(path).imageCount() > 1)
+    except Exception:
+        return False
+
+
+_OC_PIL_OK = False
+
+
+def _oc_pil_available():
+    """Есть ли Pillow (полная обработка анимированных гифок).
+    Без него гифки едут как есть. Флаг True кэшируем, False — нет
+    (поставили посреди сессии — подхватится)."""
+    global _OC_PIL_OK
+    try:
+        if _OC_PIL_OK:
+            return True
+        import importlib.util as _ilu
+        if _ilu.find_spec("PIL.Image") is None:
+            return False
+        if _ilu.find_spec("PIL.ImageFilter") is None:
+            return False
+        if _ilu.find_spec("PIL.ImageSequence") is None:
+            return False
+        from PIL import Image as _PILImage  # noqa
+        from PIL import ImageFilter as _PILFilter  # noqa
+        from PIL import ImageSequence as _PILSeq  # noqa
+        _OC_PIL_OK = True
+        return True
+    except Exception:
+        return False
+
+
+def _oc_gif_frames(src):
+    """Кадры гифки полными RGBA + длительности + loop. Пусто при неудаче."""
+    try:
+        from PIL import Image as _PI
+        from PIL import ImageSequence as _PS
+        im = _PI.open(src)
+        try:
+            loop = int(im.info.get("loop", 0) or 0)
+        except Exception:
+            loop = 0
+        frames = []
+        canvas = None
+        for fr in _PS.Iterator(im):
+            try:
+                rgba = fr.convert("RGBA")
+                try:
+                    disp = int(getattr(fr, "disposal_method", 0) or 0)
+                except Exception:
+                    disp = 0
+                if canvas is None or canvas.size != rgba.size or disp in (2, 3):
+                    canvas = _PI.new("RGBA", rgba.size, (0, 0, 0, 0))
+                canvas = _PI.alpha_composite(canvas, rgba)
+                try:
+                    dur = int(fr.info.get("duration", 100) or 100)
+                except Exception:
+                    dur = 100
+                frames.append((canvas.copy(), dur))
+            except Exception:
+                continue
+            if len(frames) > 120:
+                break
+        try:
+            im.close()
+        except Exception:
+            pass
+        return frames, loop
+    except Exception:
+        return [], 0
+
+
+def _oc_process_gif(src, blur, zoom=100, posx=50, posy=50):
+    """Анимированная гифка со всеми настройками (нужен Pillow).
+    Возвращает путь к анимированной копии или исходник.
+    Прозрачность клеим на тёмную базу (как подложка зум-аута) — проще
+    и быстрее честного альфа-канала, в терминале то же самое."""
+    try:
+        blur = _oc_clamp_blur(blur)
+        zoom = _oc_clamp_zoom(zoom)
+        px = _oc_clamp_pos(posx)
+        py = _oc_clamp_pos(posy)
+        if not _oc_pil_available():
+            return src
+        if not src or not os.path.exists(src):
+            return src
+        folder = _oc_images_dir()
+        os.makedirs(folder, exist_ok=True)
+        base = os.path.splitext(os.path.basename(src))[0] or "bg"
+        dest = os.path.join(folder, "oc_bg_gifb%dr_z%dp_%dx%d_%s.gif" % (blur, zoom, px, py, base))
+        try:
+            if os.path.exists(dest) and os.path.getmtime(dest) >= os.path.getmtime(src):
+                return dest
+        except Exception:
+            pass
+        # Статические PNG-копии этой гифки от прошлой версии — долой.
+        try:
+            for fn in os.listdir(folder):
+                if (fn.startswith("oc_bg_blur") or fn.startswith("oc_bg_frame")) \
+                        and fn != os.path.basename(dest) and ("_%s." % base) in fn:
+                    try:
+                        os.remove(os.path.join(folder, fn))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        from PIL import Image as _PI
+        from PIL import ImageFilter as _PF
+        frames, loop = _oc_gif_frames(src)
+        if not frames:
+            return src
+        W0, H0 = frames[0][0].size
+        sc = 1.0
+        try:
+            if max(W0, H0) > 1280:
+                sc = 1280.0 / max(W0, H0)
+        except Exception:
+            pass
+        dark = (12, 12, 12, 255)
+        outs = []
+        durs = []
+        for (fr, dur) in frames:
+            w, h = fr.size
+            if zoom >= 100:
+                f = 100.0 / zoom
+                cw, ch = max(1, int(w * f)), max(1, int(h * f))
+                x = int(round((w - cw) * px / 100.0))
+                y = int(round((h - ch) * py / 100.0))
+                fr2 = fr.crop((x, y, x + cw, y + ch)).resize((w, h), _PI.BILINEAR)
+            else:
+                f = zoom / 100.0
+                sw, sh = max(1, int(w * f)), max(1, int(h * f))
+                small = fr.resize((sw, sh), _PI.BILINEAR)
+                fr2 = _PI.new("RGBA", (w, h), dark)
+                fr2.paste(small, (int(round((w - sw) * px / 100.0)),
+                                         int(round((h - sh) * py / 100.0))), small)
+            if sc < 1.0:
+                fr2 = fr2.resize((max(1, int(w * sc)), max(1, int(h * sc))), _PI.BILINEAR)
+            if blur > 0:
+                try:
+                    # Паритет со статикой (Qt): сигма Pillow шире — делим на 3
+                    # (замер: Qt r20 ~= PIL r7 по резкости).
+                    pr = max(1, int(round(blur * sc / 3.0)))
+                    fr2 = fr2.filter(_PF.GaussianBlur(pr))
+                except Exception:
+                    pass
+            flat = _PI.new("RGB", fr2.size, (12, 12, 12))
+            try:
+                flat.paste(fr2, mask=fr2.split()[3])
+            except Exception:
+                flat.paste(fr2)
+            outs.append(flat)
+            try:
+                durs.append(max(20, min(10000, int(dur))))
+            except Exception:
+                durs.append(100)
+        outs[0].save(dest, save_all=True, append_images=outs[1:],
+                     duration=durs, loop=loop, disposal=2)
+        return dest if os.path.exists(dest) else src
+    except Exception:
+        return src
+
+
+_OC_ALIGNMENTS = ("center", "top", "bottom", "left", "right",
+                  "topLeft", "topRight", "bottomLeft", "bottomRight")
+
+
+def _oc_clamp_align(value):
+    """Положение картинки (штатные выравнивания WT)."""
+    try:
+        v = str(value or "")
+    except Exception:
+        return "center"
+    return v if v in _OC_ALIGNMENTS else "center"
+
+
+def _oc_clamp_zoom(value):
+    """Масштаб картинки 50–200%, дефолт 100 (без изменений)."""
+    try:
+        v = int(value)
+    except Exception:
+        return 100
+    return max(50, min(200, v))
+
+
+def _oc_clamp_pos(value):
+    """Позиция картинки 0–100 (0 — левый/верхний край, 50 — центр)."""
+    try:
+        v = int(value)
+    except Exception:
+        return 50
+    return max(0, min(100, v))
+
+
+_ALIGN_TO_POS = {"center": (50, 50), "top": (50, 0), "bottom": (50, 100),
+                 "left": (0, 50), "right": (100, 50),
+                 "topLeft": (0, 0), "topRight": (100, 0),
+                 "bottomLeft": (0, 100), "bottomRight": (100, 100)}
+
+
+def _oc_framed_copy(src, zoom, posx=50, posy=50):
+    """Кадрирование картинки: >100 — кроп окна + апскейл до размера исходника,
+    <100 — весь кадр поверх тёмной подложки того же размера.
+    Окно кропа ездит позицией 0–100. 100/50/50 → сам исходник."""
+    zoom = _oc_clamp_zoom(zoom)
+    px = _oc_clamp_pos(posx)
+    py = _oc_clamp_pos(posy)
+    if (zoom == 100 and px == 50 and py == 50) or not src or not os.path.exists(src):
+        return src
+    try:
+        folder = _oc_images_dir()
+        os.makedirs(folder, exist_ok=True)
+        base = os.path.splitext(os.path.basename(src))[0] or "bg"
+        dest = os.path.join(folder, "oc_bg_frame%dp_%dx%d_%s.png" % (zoom, px, py, base))
+        try:
+            if os.path.exists(dest) and os.path.getmtime(dest) >= os.path.getmtime(src):
+                return dest
+        except Exception:
+            pass
+        # Копии прошлого формата (oc_bg_zoom*) — удалить.
+        try:
+            for fn in os.listdir(folder):
+                if fn.startswith("oc_bg_zoom") and ("_%s." % base) in fn:
+                    try:
+                        os.remove(os.path.join(folder, fn))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        img = QImage(src)
+        if img.isNull():
+            return src
+        w, h = img.width(), img.height()
+        if zoom >= 100:
+            f = 100.0 / zoom
+            cw, ch = max(1, int(w * f)), max(1, int(h * f))
+            x = int(round((w - cw) * px / 100.0))
+            y = int(round((h - ch) * py / 100.0))
+            res = img.copy(x, y, cw, ch).scaled(w, h, Qt.IgnoreAspectRatio,
+                                               Qt.SmoothTransformation)
+        else:
+            f = zoom / 100.0
+            sw, sh = max(1, int(w * f)), max(1, int(h * f))
+            small = img.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            res = QImage(w, h, QImage.Format_ARGB32)
+            res.fill(QColor(12, 12, 12))
+            pp = QPainter(res)
+            try:
+                pp.drawImage(int(round((w - sw) * px / 100.0)),
+                             int(round((h - sh) * py / 100.0)), small)
+            finally:
+                try:
+                    pp.end()
+                except Exception:
+                    pass
+        if res.save(dest):
+            return dest
+        return src
+    except Exception:
+        return src
+
+
+def _oc_blurred_copy(src, radius):
+    """Заблюренная копия картинки (настоящий блюр через QGraphicsBlurEffect,
+    радиус в пикселях, как в графических редакторах).
+    radius 0 → сам исходник, без лишних файлов."""
+    radius = _oc_clamp_blur(radius)
+    if radius <= 0 or not src or not os.path.exists(src):
+        return src
+    try:
+        folder = _oc_images_dir()
+        os.makedirs(folder, exist_ok=True)
+        base = os.path.splitext(os.path.basename(src))[0] or "bg"
+        dest = os.path.join(folder, "oc_bg_blurv3_%dpx_%s.png" % (radius, base))
+        try:
+            if os.path.exists(dest) and os.path.getmtime(dest) >= os.path.getmtime(src):
+                return dest
+        except Exception:
+            pass
+        img = QImage(src)
+        if img.isNull():
+            return src
+        # Крупные исходники жмём — для фона такое разрешение избыточно,
+        # а блюр по нему считается очень долго.
+        try:
+            if max(img.width(), img.height()) > 1600:
+                img = img.scaled(1600, 1600, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        except Exception:
+            pass
+        # Копии от прошлых алгоритмов (oc_bg_blur{N}px_, oc_bg_blurv2_) — удалить.
+        # Файлы текущего формата (oc_bg_blurv3_) с другим радиусом не трогаем.
+        try:
+            for fn in os.listdir(folder):
+                if fn.startswith("oc_bg_blur") and not fn.startswith("oc_bg_blurv3_") \
+                        and fn != os.path.basename(dest) and ("_%s." % base) in fn:
+                    try:
+                        os.remove(os.path.join(folder, fn))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        scene = QGraphicsScene()
+        item = QGraphicsPixmapItem(QPixmap.fromImage(img))
+        fx = QGraphicsBlurEffect()
+        fx.setBlurRadius(radius)
+        fx.setBlurHints(QGraphicsBlurEffect.QualityHint)
+        item.setGraphicsEffect(fx)
+        scene.addItem(item)
+        # Холст ровно под размер картинки (терминал тянет uniformToFill —
+        # любой другой размер/аспект сдвинет картинку и даст полосы).
+        # Сначала резкая подложка = продолжение краёв, поверх — блюр:
+        # края не темнеют и не прозрачат.
+        out = QImage(img.size(), QImage.Format_ARGB32)
+        p = QPainter(out)
+        try:
+            p.drawImage(0, 0, img)
+            scene.render(p)
+        finally:
+            try:
+                p.end()
+            except Exception:
+                pass
+        # Файл только что создан — антивирус может держать его долю секунды:
+        # проверяем читаемость, при нужде пишем ещё раз, иначе исходник.
+        for _attempt in (1, 2):
+            try:
+                if out.save(dest) and not QImage(dest).isNull():
+                    return dest
+            except Exception:
+                pass
+        return src
+    except Exception:
+        return src
+
+
+def _oc_drop_blur_variants(src_path):
+    """Удаляет производные копии картинки — блюр, кадрирование, старый зум."""
+    try:
+        folder = _oc_images_dir()
+        base = os.path.splitext(os.path.basename(src_path or ""))[0]
+        if not base or not os.path.isdir(folder):
+            return
+        for fn in os.listdir(folder):
+            if fn.startswith(("oc_bg_blur", "oc_bg_zoom", "oc_bg_frame", "oc_bg_gif")) \
+                    and ("_%s." % base) in fn:
+                try:
+                    os.remove(os.path.join(folder, fn))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _oc_drop_source_file(path):
+    """Удаляет исходник картинки, если это наш файл в папке картинок.
+    Производные не трогает — для них _oc_drop_blur_variants."""
+    try:
+        if not path or not os.path.exists(path):
+            return
+        name = os.path.basename(path)
+        if not name.startswith("oc_bg_"):
+            return
+        if name.startswith(("oc_bg_blur", "oc_bg_zoom", "oc_bg_frame", "oc_bg_gif")):
+            return
+        folder = os.path.normcase(_oc_images_dir() + os.sep)
+        if os.path.normcase(path).startswith(folder):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def _oc_prune_derivatives(src_path, keep=""):
+    """Оставляет только актуальную производную копию (keep), остальные
+    копии текущей картинки удаляет — мусор не копим."""
+    try:
+        folder = _oc_images_dir()
+        base = os.path.splitext(os.path.basename(src_path or ""))[0]
+        if not base or not os.path.isdir(folder):
+            return
+        try:
+            keep = os.path.normcase(os.path.abspath(keep)) if keep else ""
+        except Exception:
+            keep = ""
+        for fn in os.listdir(folder):
+            if fn.startswith(("oc_bg_blur", "oc_bg_zoom", "oc_bg_frame", "oc_bg_gif")) \
+                    and ("_%s." % base) in fn:
+                try:
+                    p = os.path.join(folder, fn)
+                    if os.path.normcase(os.path.abspath(p)) != keep:
+                        os.remove(p)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _oc_theme_bg_path(image, blur, zoom=100, posx=50, posy=50):
+    """Путь для WT-профиля: сначала кадрирование, потом блюр; исходник без изменений.
+    Анимированную гифку при наличии Pillow обрабатываем с сохранением
+    анимации, без него — отдаём исходник (терминал крутит сам)."""
+    if _oc_is_animated(image):
+        try:
+            v = _oc_process_gif(image, blur, zoom, posx, posy)
+            if v and os.path.exists(v):
+                return v
+        except Exception:
+            pass
+        return image
+    cur = image
+    if cur and os.path.exists(cur):
+        try:
+            z = _oc_framed_copy(cur, zoom, posx, posy)
+            if z and os.path.exists(z):
+                cur = z
+        except Exception:
+            pass
+    if _oc_clamp_blur(blur) > 0 and cur and os.path.exists(cur):
+        try:
+            v = _oc_blurred_copy(cur, blur)
+            if v and os.path.exists(v):
+                return v
+        except Exception:
+            pass
+    return cur
+
+
+def _oc_preview_frame(src, zoom, posx, posy, w, h):
+    """Кадр фона сразу под размер предпросмотра: те же дроби кропа и позиции,
+    что в _oc_framed_copy, но всё в памяти и без записи на диск — дёшево,
+    чтобы слайдер шёл плавно. Возвращает (кадр, масштаб_блюра)."""
+    try:
+        if not isinstance(src, str) or not src:
+            return QImage(), 0.0
+        img = QImage(src)
+    except Exception:
+        return QImage(), 0.0
+    if img.isNull():
+        return QImage(), 0.0
+    try:
+        zoom = _oc_clamp_zoom(zoom)
+        px = _oc_clamp_pos(posx)
+        py = _oc_clamp_pos(posy)
+        sw, sh = img.width(), img.height()
+        if zoom >= 100:
+            f = 100.0 / zoom
+            cw, ch = max(1, int(sw * f)), max(1, int(sh * f))
+            x = int(round((sw - cw) * px / 100.0))
+            y = int(round((sh - ch) * py / 100.0))
+            crop = img.copy(x, y, cw, ch)
+        else:
+            f = zoom / 100.0
+            tw, th = max(1, int(sw * f)), max(1, int(sh * f))
+            small = img.scaled(tw, th, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            crop = QImage(sw, sh, QImage.Format_ARGB32)
+            crop.fill(QColor(12, 12, 12))
+            pp = QPainter(crop)
+            try:
+                pp.drawImage(int(round((sw - tw) * px / 100.0)),
+                             int(round((sh - th) * py / 100.0)), small)
+            finally:
+                try:
+                    pp.end()
+                except Exception:
+                    pass
+        cover = crop.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x = max(0, (cover.width() - w) // 2)
+        y = max(0, (cover.height() - h) // 2)
+        k = max(w / max(1, sw), h / max(1, sh))
+        return cover.copy(x, y, w, h), k
+    except Exception:
+        return QImage(), 0.0
+
+
+def _oc_blur_image(img, radius):
+    """Блюр готового кадра в памяти (для предпросмотра)."""
+    try:
+        radius = _oc_clamp_blur(radius)
+        if radius <= 0 or img.isNull():
+            return img
+        scene = QGraphicsScene()
+        item = QGraphicsPixmapItem(QPixmap.fromImage(img))
+        fx = QGraphicsBlurEffect()
+        fx.setBlurRadius(radius)
+        fx.setBlurHints(QGraphicsBlurEffect.QualityHint)
+        item.setGraphicsEffect(fx)
+        scene.addItem(item)
+        out = QImage(img.size(), QImage.Format_ARGB32)
+        p = QPainter(out)
+        try:
+            p.drawImage(0, 0, img)
+            scene.render(p)
+        finally:
+            try:
+                p.end()
+            except Exception:
+                pass
+        return out
+    except Exception:
+        return img
+
+
+def _oc_anim_frames(src, w, h):
+    """Кадры гифки для живого предпросмотра: QImage + длительности + k блюра.
+    Бюджет ~48МБ: лишние кадры прореживаем, крупные жмём. Пусто — нет анимации."""
+    try:
+        if not _oc_pil_available():
+            return [], [], 0.0
+        frames, _loop = _oc_gif_frames(src)
+        if len(frames) < 2:
+            return [], [], 0.0
+        try:
+            sw, sh = frames[0][0].size
+        except Exception:
+            return [], [], 0.0
+        k = max(w / max(1, sw), h / max(1, sh))
+        # бюджет памяти: ужимаем кадры и прореживаем
+        qs, ds = [], []
+        step, items = 1, list(enumerate(frames))
+        while True:
+            est = 0
+            for _i, (_fr, _d) in items[::step]:
+                est += _fr.width * _fr.height * 4
+            if est <= 48 * 1024 * 1024 or step >= 8:
+                break
+            step *= 2
+        for i, (fr, dur) in items[::step]:
+            try:
+                from PySide6.QtGui import QImage as _QI
+                data = fr.tobytes("raw", "RGB")
+                q = _QI(data, fr.width, fr.height, _QI.Format_RGB888).copy()
+            except Exception:
+                continue
+            try:
+                dur = max(40, min(1000, int(dur)))
+            except Exception:
+                dur = 100
+            qs.append(q)
+            ds.append(dur * step)
+        if len(qs) < 2:
+            return [], [], 0.0
+        return qs, ds, k
+    except Exception:
+        return [], [], 0.0
+
+
+def _oc_round_pixmap(pix, radius=12):
+    """Скругление углов кадра маской (рамка лейбла углы не режет)."""
+    try:
+        if pix.isNull():
+            return pix
+        out = QPixmap(pix.size())
+        out.fill(Qt.transparent)
+        p = QPainter(out)
+        try:
+            p.setRenderHint(QPainter.Antialiasing)
+            path = QPainterPath()
+            path.addRoundedRect(0, 0, pix.width(), pix.height(), radius, radius)
+            p.setClipPath(path)
+            p.drawPixmap(0, 0, pix)
+        finally:
+            try:
+                p.end()
+            except Exception:
+                pass
+        return out
+    except Exception:
+        return pix
+
+
+def _oc_draw_fit_row(p, segments, x, y, max_x, base_px):
+    """Строка мокапа с автоподгоном: уменьшаем кегль, пока влезает в max_x."""
+    px = base_px
+    font = QFont("Consolas", px)
+    while px > 7:
+        font = QFont("Consolas", px)
+        try:
+            fm = QFontMetrics(font)
+            total = sum(fm.horizontalAdvance(t) for t, _ in segments)
+        except Exception:
+            total = sum(len(t) * px * 0.6 for t, _ in segments)
+        if x + total <= max_x:
+            break
+        px -= 1
+    p.setFont(font)
+    try:
+        fm = QFontMetrics(p.font())
+    except Exception:
+        fm = None
+    for text, col in segments:
+        p.setPen(col)
+        p.drawText(x, y, text)
+        try:
+            x += fm.horizontalAdvance(text) if fm else len(text) * px * 0.6
+        except Exception:
+            pass
+
+
+def _oc_compose_mock(frame, opacity, w, h):
+    """Кадр + схематичный стартовый экран opencode поверх. Общий финал
+    для статики и анимации: сюда приходит готовый фон w,h."""
+    try:
+        w = max(1, int(w))
+        h = max(1, int(h))
+    except Exception:
+        return QPixmap()
+    canvas = QImage(w, h, QImage.Format_ARGB32)
+    canvas.fill(QColor(12, 12, 12))
+    s = w / 468.0
+    S = lambda v: int(round(v * s))
+    p = QPainter(canvas)
+    try:
+        if frame is not None and not frame.isNull():
+            p.setOpacity(_oc_clamp_opacity(opacity) / 100.0)
+            p.drawImage(0, 0, frame)
+            p.setOpacity(1.0)
+        # Логотип
+        logo_font = QFont("Consolas", S(26), QFont.Bold)
+        try:
+            logo_font.setLetterSpacing(QFont.PercentageSpacing, 115)
+        except Exception:
+            pass
+        p.setFont(logo_font)
+        p.setPen(QColor(205, 205, 215))
+        p.drawText(0, S(44), w, S(40), Qt.AlignHCenter, "opencode")
+        # Строка ввода
+        p.fillRect(S(60), S(108), S(3), S(34), QColor(74, 158, 221))
+        _oc_draw_fit_row(p, [('Ask anything... "Fix a TODO in the codebase"',
+                              QColor(150, 150, 160))],
+                         S(74), S(131), w - S(30), S(10))
+        # Строка модели
+        _oc_draw_fit_row(p, (("Build", QColor(90, 160, 230)),
+                             (" \u00b7 ", QColor(140, 140, 150)),
+                             ("Muse Spark 1.3 Free", QColor(210, 210, 220)),
+                             (" ", QColor(140, 140, 150)),
+                             ("OpenCode Zen", QColor(150, 150, 160)),
+                             (" \u00b7 ", QColor(140, 140, 150)),
+                             ("xhigh", QColor(230, 130, 60))),
+                         S(74), S(162), w - S(30), S(10))
+        # Подсказки справа — отдельной строкой: в одну с моделью не влезают.
+        # Кегль подбираем, чтобы строка гарантированно поместилась.
+        hints = (("tab", QColor(210, 210, 220)), (" agents   ", QColor(140, 140, 150)),
+                 ("ctrl+p", QColor(210, 210, 220)), (" commands", QColor(140, 140, 150)))
+        hpx = S(10)
+        while hpx > 7:
+            try:
+                hfm = QFontMetrics(QFont("Consolas", hpx))
+                htotal = sum(hfm.horizontalAdvance(t) for t, _ in hints)
+            except Exception:
+                htotal = sum(len(t) * hpx * 0.6 for t, _ in hints)
+            if htotal <= w - S(120):
+                break
+            hpx -= 1
+        p.setFont(QFont("Consolas", hpx))
+        try:
+            fm = QFontMetrics(p.font())
+        except Exception:
+            fm = None
+        try:
+            total = sum(fm.horizontalAdvance(t) for t, _ in hints) if fm else htotal
+        except Exception:
+            total = htotal
+        xx = w - S(60) - total
+        for text, col in hints:
+            p.setPen(col)
+            p.drawText(xx, S(190), text)
+            try:
+                xx += fm.horizontalAdvance(text) if fm else len(text) * hpx * 0.6
+            except Exception:
+                pass
+        # Совет снизу
+        _oc_draw_fit_row(p, (("\u25cf ", QColor(230, 130, 60)),
+                             ("Tip ", QColor(230, 130, 60)),
+                             ("Press tab to cycle between Build and Plan agents",
+                              QColor(140, 140, 150))),
+                         S(120), S(224), w - S(30), S(10))
+    except Exception:
+        pass
+    try:
+        p.end()
+    except Exception:
+        pass
+    return _oc_round_pixmap(QPixmap.fromImage(canvas))
+
+
+def _oc_render_preview(src, blur, opacity, zoom=100, posx=50, posy=50, w=468, h=280):
+    """Кадр предпросмотра: лёгкий фон в памяти + мокап. Сдвиг/блюр уже
+    в кадре, тяжёлые копии на диске здесь не трогаем — слайдер не лагает."""
+    try:
+        # Лёгкий путь: кадр сразу под размер предпросмотра в памяти.
+        frame, k = _oc_preview_frame(src, zoom, posx, posy, w, h)
+        if not frame.isNull():
+            try:
+                rb = _oc_clamp_blur(blur)
+                rprev = min(48, max(0, int(round(rb * k)))) if rb > 0 else 0
+                if rprev > 0:
+                    frame = _oc_blur_image(frame, rprev)
+            except Exception:
+                pass
+            return _oc_compose_mock(frame, opacity, w, h)
+    except Exception:
+        pass
+    try:
+        return _oc_compose_mock(None, opacity, w, h)
+    except Exception:
+        return QPixmap()
+
+
+def _oc_app_icon():
+    """Иконка приложения для WT-профиля: icon.ico, запасной icon.png."""
+    try:
+        cands = []
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            cands.append(os.path.join(here, "icon.ico"))
+            cands.append(os.path.join(here, "icon.png"))
+        except Exception:
+            pass
+        try:
+            exedir = os.path.dirname(sys.executable)
+            cands.append(os.path.join(exedir, "icon.ico"))
+            cands.append(os.path.join(exedir, "icon.png"))
+        except Exception:
+            pass
+        cands += ["icon.ico", "icon.png"]
+        for p in cands:
+            try:
+                if p and os.path.exists(p):
+                    return os.path.abspath(p)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ""
+
+
+def _oc_wt_profile(guid, image_path="", opacity=35, icon_path=""):
+    """Наш объект профиля: наследует дефолты, добавляет картинку и иконку.
+    Позиция всегда по центру — сдвиг уже запечён в саму копию картинки.
+    Основной профиль не трогаем."""
+    prof = {
+        "guid": guid,
+        "hidden": False,
+        "name": _OC_WT_PROFILE,
+        "commandline": "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    }
+    if icon_path and os.path.exists(icon_path):
+        prof["icon"] = icon_path
+    if image_path and os.path.exists(image_path):
+        prof["backgroundImage"] = image_path
+        prof["backgroundImageOpacity"] = _oc_clamp_opacity(opacity) / 100.0
+        prof["backgroundImageAlignment"] = "center"
+        prof["backgroundImageStretchMode"] = "uniformToFill"
+    return prof
+
+
+def _oc_profile_guid():
+    """GUID нашего WT-профиля: детерминированный (uuid5), хранить не надо —
+    одинаковый на всех запусках, дубли исключены."""
+    from uuid import uuid5, NAMESPACE_DNS
+    return "{%s}" % uuid5(NAMESPACE_DNS, "claude-code-manager-oc-profile")
+
+
+def _oc_wt_upsert(image_path="", opacity=35, icon_path=None):
+    """Создаёт/обновляет наш профиль в WT-settings. Возвращает (ok, reason).
+    Чужой профиль с тем же именем (другой guid) не трогаем.
+    Иконка вкладки подставляется сама, если явно не передана."""
+    path = _oc_wt_find_settings()
+    if not path:
+        return False, "no-settings"
+    data = _oc_wt_load(path)
+    if not data:
+        return False, "unreadable"
+    try:
+        profiles = data.get("profiles")
+        if not isinstance(profiles, dict):
+            return False, "no-profiles"
+        lst = profiles.get("list")
+        if not isinstance(lst, list):
+            return False, "no-list"
+    except Exception:
+        return False, "bad-shape"
+    for rec in lst:
+        if isinstance(rec, dict) and rec.get("name") == _OC_WT_PROFILE:
+            if rec.get("guid") != _oc_profile_guid():
+                return False, "foreign"
+            break
+    new_prof = _oc_wt_profile(_oc_profile_guid(), image_path, opacity,
+                               _oc_app_icon() if icon_path is None else icon_path)
+    replaced = False
+    for i, rec in enumerate(lst):
+        if isinstance(rec, dict) and rec.get("name") == _OC_WT_PROFILE \
+                and rec.get("guid") == _oc_profile_guid():
+            lst[i] = new_prof
+            replaced = True
+            break
+    if not replaced:
+        lst.append(new_prof)
+    if not _oc_wt_save(path, data):
+        return False, "write-fail"
+    return True, ("updated" if replaced else "created")
+
+
+def _oc_wt_remove():
+    """Вырезает только наш профиль (имя + наш guid). Возвращает True всегда,
+    когда нечего удалять или всё чисто."""
+    path = _oc_wt_find_settings()
+    if not path:
+        return True
+    data = _oc_wt_load(path)
+    try:
+        lst = data.get("profiles", {}).get("list", [])
+    except Exception:
+        return False
+    if not isinstance(lst, list):
+        return False
+    guid = _oc_profile_guid()
+    kept = [r for r in lst if not (
+        isinstance(r, dict) and r.get("name") == _OC_WT_PROFILE
+        and r.get("guid") == guid)]
+    if len(kept) == len(lst):
+        return True
+    try:
+        data["profiles"]["list"] = kept
+    except Exception:
+        return False
+    return _oc_wt_save(path, data)
+
+
+def _oc_wt_tabrow_state():
+    """Состояние useAcrylicInTabRow (акрил панели вкладок):
+    'no-settings' | 'missing' | True | False."""
+    path = _oc_wt_find_settings()
+    if not path:
+        return "no-settings"
+    data = _oc_wt_load(path)
+    if not data:
+        return "no-settings"
+    if "useAcrylicInTabRow" not in data:
+        return "missing"
+    return bool(data.get("useAcrylicInTabRow"))
+
+
+def _oc_wt_tabrow_set(value):
+    """True — включить акрил панели вкладок, None — убрать ключ."""
+    path = _oc_wt_find_settings()
+    if not path:
+        return False
+    data = _oc_wt_load(path)
+    if not data:
+        return False
+    if value is None:
+        if "useAcrylicInTabRow" not in data:
+            return True
+        try:
+            del data["useAcrylicInTabRow"]
+        except Exception:
+            pass
+    else:
+        data["useAcrylicInTabRow"] = True
+    return bool(_oc_wt_save(path, data))
+
+
+def _oc_wt_has_ours():
+    """Есть ли наш профиль в WT-settings (не удалил ли его пользователь вручную)."""
+    try:
+        path = _oc_wt_find_settings()
+        if not path:
+            return False
+        data = _oc_wt_load(path)
+        lst = (data.get("profiles") or {}).get("list") or []
+        guid = _oc_profile_guid()
+        return any(isinstance(r, dict) and r.get("name") == _OC_WT_PROFILE
+                   and r.get("guid") == guid for r in lst)
+    except Exception:
+        return False
+
+
+def _oc_wt_ensure_icon_profile():
+    """Профиль с иконкой приложения для запусков из CCM (без картинки).
+    True — профиль наш и на месте; чужой с тем же именем не трогаем.
+    Иконку освежаем, картинку/яркость существующего профиля не трогаем."""
+    try:
+        path = _oc_wt_find_settings()
+        if not path:
+            return False
+        data = _oc_wt_load(path)
+        if not data:
+            return False
+        want = _oc_app_icon()
+        guid = _oc_profile_guid()
+        ours = None
+        for rec in (data.get("profiles") or {}).get("list") or []:
+            if isinstance(rec, dict) and rec.get("name") == _OC_WT_PROFILE:
+                if rec.get("guid") != guid:
+                    return False  # чужой — не трогаем
+                ours = rec
+                break
+        if ours is not None and want and ours.get("icon") == want:
+            return True
+        img = ""
+        op = 35
+        if isinstance(ours, dict):
+            try:
+                bi = ours.get("backgroundImage") or ""
+                if bi and os.path.exists(bi):
+                    img = bi
+                op = _oc_clamp_opacity(round(float(ours.get("backgroundImageOpacity", 0.35)) * 100))
+            except Exception:
+                pass
+        ok, _reason = _oc_wt_upsert(img, op, want)
+        return bool(ok)
+    except Exception:
+        return False
 
 
 def _oc_sounds_dir():
@@ -17231,10 +19742,11 @@ def _oc_tui_path():
 
 
 def _oc_load_tui():
+    # Через _load_jsonc: у чужих tui.json бывают комментарии — plain json.load
+    # на них падает, и дальнейшая запись затёрла бы весь файл. Для обычных
+    # файлов поведение один в один (сначала пробуем как есть).
     try:
-        with open(_oc_tui_path(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        return _load_jsonc(_oc_tui_path())
     except Exception:
         return {}
 
@@ -17249,13 +19761,59 @@ def _oc_save_tui(data):
         return False
 
 
-def _oc_write_notify_tui(sounds):
-    """Включает звуки: пишет attention-блок в tui.json, остальное (схема,
-    чужие секции, громкость) не трогает."""
+def _oc_tui_theme_get():
+    """Текущая тема из глобального tui.json (None — ключа нет).
+    По документации opencode тема выбирается ТОЛЬКО здесь (ключ theme
+    в opencode.json deprecated и игнорируется)."""
+    try:
+        data = _oc_load_tui()
+        if not isinstance(data, dict):
+            return None
+        v = data.get("theme", None)
+        return v if isinstance(v, str) and v else None
+    except Exception:
+        return None
+
+
+def _oc_tui_theme_set(value):
+    """Ставит тему в глобальный tui.json (value=None — убрать ключ).
+    Остальное не трогаем. Возвращает True при успехе."""
+    try:
+        data = _oc_load_tui()
+        if not isinstance(data, dict):
+            data = {}
+        if value is None:
+            data.pop("theme", None)
+        else:
+            data["theme"] = value
+        return _oc_save_tui(data)
+    except Exception:
+        return False
+
+
+def _oc_temp_path(p):
+    """Путь-ископаемое эпохи TEMP-гейнов: только наш старый маркер
+    ccm_oc_sounds. Широкую проверку «весь системный TEMP» не делаем:
+    она давала бы ложные срабатывания (портативные окружения, тесты),
+    а мёртвые пути и так отсекаются проверкой существования."""
+    try:
+        s = str(p or "")
+        if not s:
+            return False
+        return "ccm_oc_sounds" in s
+    except Exception:
+        return False
+
+
+def _oc_make_attention(sounds):
+    """Строит attention-блок c нашими звуками (без записи).
+    Чужие ключи блока (volume, sound_pack и т.п.) бережно сохраняем."""
     data = _oc_load_tui()
-    att = data.get("attention")
+    att = data.get("attention") if isinstance(data, dict) else None
     if not isinstance(att, dict):
         att = {}
+    else:
+        att = dict(att)
     prev_vol = att.get("volume", 0.4)
     try:
         prev_vol = float(prev_vol)
@@ -17265,22 +19823,59 @@ def _oc_write_notify_tui(sounds):
     att["notifications"] = True
     att["sound"] = True
     att["volume"] = prev_vol
-    snd = att.get("sounds")
-    if not isinstance(snd, dict):
-        snd = {}
-    for key, _label in OC_NOTIFY_KEYS:
-        if sounds.get(key):
-            snd[key] = sounds[key]
-    # default/subagent_done в диалоге не показываем, но в tui.json держим:
+    # Per-launch конфиг — только наши слоты с живыми путями. Наследовать
+    # чужие записи из глобала больше нельзя: старые пути (особенно TEMP-гейны
+    # древней версии) жили вечно и переживали каждую пересборку — файл
+    # выглядел «неперезаписываемым». Неизвестные будущие слоты бережём,
+    # только если путь живой и не из TEMP.
+    snd = {}
+    try:
+        for key, _label in OC_NOTIFY_KEYS:
+            try:
+                p = (sounds or {}).get(key, "") or ""
+            except Exception:
+                p = ""
+            if p and os.path.exists(p):
+                snd[key] = p
+    except Exception:
+        pass
+    # default/subagent_done в диалоге не показываем, но держим:
     # opencode использует их как фолбэк (default — для всех событий без
     # своего звука). Без них терминал играет что-то своё, а не настроенное.
     # Маппим на звук «Готово» — как было в исходном конфиге пользователя.
-    done_path = sounds.get("done", "") or ""
+    # Всегда наши свежие пути: никаких наследованных (мёртвых или TEMP).
+    try:
+        done_path = snd.get("done", "") or ""
+    except Exception:
+        done_path = ""
     if done_path:
-        snd.setdefault("default", done_path)
-        snd.setdefault("subagent_done", done_path)
+        for fb_key in ("default", "subagent_done"):
+            snd[fb_key] = done_path
+    try:
+        old_snd = att.get("sounds")
+        if isinstance(old_snd, dict):
+            for k, v in old_snd.items():
+                try:
+                    if k in snd:
+                        continue
+                    s = str(v or "")
+                    if s and os.path.exists(s) and not _oc_temp_path(s):
+                        snd[k] = v
+                except Exception:
+                    continue
+    except Exception:
+        pass
     att["sounds"] = snd
-    data["attention"] = att
+    return att
+
+
+def _oc_write_notify_tui(sounds):
+    """Включает звуки: пишет attention-блок в tui.json, остальное (схема,
+    чужие секции, громкость) не трогает."""
+    data = _oc_load_tui()
+    if not isinstance(data, dict):
+        data = {}
+    data["attention"] = _oc_make_attention(sounds)
     return _oc_save_tui(data)
 
 
@@ -17302,6 +19897,134 @@ def _oc_remove_notify_tui():
                 pass
             return True
         return _oc_save_tui(data)
+    except Exception:
+        return False
+
+
+def _oc_path_is_ours(path):
+    """Путь ведёт в наши папки (звуки приложения)?"""
+    try:
+        s = str(path or "")
+        return bool(s) and ("ClaudeManager" in s or "ccm_oc_sounds" in s)
+    except Exception:
+        return False
+
+
+def _oc_attention_is_ours(att):
+    """Блок похож на наш (пути ведут в наши папки)?"""
+    try:
+        snd = (att or {}).get("sounds") or {}
+        for v in snd.values():
+            if _oc_path_is_ours(v):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _oc_snapshot_global_attention(settings):
+    """Один раз запоминает исходный attention-блок глобального tui.json
+    (что было до нас), чтобы вернуть при выключении фичи."""
+    try:
+        if not isinstance(settings, dict) or "oc_prev_attention" in settings:
+            return
+        data = _oc_load_tui()
+        att = data.get("attention") if isinstance(data, dict) else None
+        # Чистим наши собственные ископаемые из глобала (TEMP-гейны древних
+        # версий): иначе они вечно мигрируют по снапшотам и переживают каждую
+        # пересборку. Чужие записи не трогаем.
+        try:
+            if isinstance(att, dict):
+                snd = att.get("sounds")
+                if isinstance(snd, dict):
+                    cleaned = {k: v for k, v in snd.items() if not _oc_temp_path(v)}
+                    if len(cleaned) != len(snd):
+                        att = dict(att)
+                        if cleaned:
+                            att["sounds"] = cleaned
+                        else:
+                            att.pop("sounds", None)
+                        data["attention"] = att
+                        _oc_save_tui(data)
+        except Exception:
+            pass
+        try:
+            settings["oc_prev_attention"] = json.loads(json.dumps(att)) \
+                if isinstance(att, dict) else None
+        except Exception:
+            settings["oc_prev_attention"] = None
+        save_settings(settings)
+    except Exception:
+        pass
+
+
+def _oc_set_global_sounds_off():
+    """Гасит звуки в глобальном tui.json (ручные запуски тихие).
+    Остальное в блоке не трогаем."""
+    try:
+        data = _oc_load_tui()
+        if not isinstance(data, dict):
+            data = {}
+        att = data.get("attention")
+        if not isinstance(att, dict):
+            att = {}
+        else:
+            att = dict(att)
+        att["sound"] = False
+        data["attention"] = att
+        return _oc_save_tui(data)
+    except Exception:
+        return False
+
+
+def _oc_restore_global_attention(settings):
+    """Возвращает исходный attention в глобальный tui.json.
+    Чужое (в т.ч. добавленное вручную при включённой фиче) сохраняем,
+    наш собственный след — убираем как раньше (чистый блок/файл)."""
+    try:
+        prev = None
+        had = False
+        try:
+            if isinstance(settings, dict) and "oc_prev_attention" in settings:
+                had = True
+                prev = settings.pop("oc_prev_attention")
+            save_settings(settings)
+        except Exception:
+            pass
+        data = _oc_load_tui()
+        if not isinstance(data, dict):
+            data = {}
+        cur = data.get("attention")
+        cur = dict(cur) if isinstance(cur, dict) else {}
+        base = {}
+        prev_foreign = isinstance(prev, dict) and not _oc_attention_is_ours(prev)
+        if had and prev_foreign:
+            base = dict(prev)
+        keep_snd = {}
+        try:
+            cur_snd = cur.get("sounds")
+            if isinstance(cur_snd, dict):
+                for k, v in cur_snd.items():
+                    if not _oc_path_is_ours(v):
+                        keep_snd.setdefault(k, v)
+            if prev_foreign:
+                prev_snd = prev.get("sounds")
+                if isinstance(prev_snd, dict):
+                    for k, v in prev_snd.items():
+                        if not _oc_path_is_ours(v):
+                            keep_snd[k] = v
+        except Exception:
+            pass
+        if keep_snd:
+            base["sounds"] = keep_snd
+        else:
+            base.pop("sounds", None)
+        if base:
+            data["attention"] = base
+            _oc_save_tui(data)
+        else:
+            _oc_remove_notify_tui()
+        return True
     except Exception:
         return False
 
@@ -17554,9 +20277,9 @@ def _oc_render_gain(src_path, dest_path, pct):
 
 
 def _oc_gain_dir():
-    """Папка гейн-копий (временная, не в приложении): пересоздаются сами,
-    если система её почистила."""
-    return os.path.join(tempfile.gettempdir(), "ccm_oc_sounds")
+    """Папка гейн-копий: стабильная, в настройках приложения. В TEMP нельзя —
+    система его чистит, и tui.json оставался с мёртвыми путями (тишина)."""
+    return os.path.join(_oc_sounds_dir(), "gain")
 
 
 def _oc_cleanup_gain(key, keep=""):
@@ -17577,8 +20300,9 @@ def _oc_cleanup_gain(key, keep=""):
 
 
 def _oc_resolve_sound(key, sounds, volumes):
-    """Путь для tui.json: при громкости 100 — сам файл, иначе гейн-копия
-    во временной папке (в приложении файлы не плодятся)."""
+    """Путь для tui.json: при громкости 50 — сам файл (unity на шкале ×2),
+    иначе гейн-копия в стабильной папке. Нет файла — пусто (ключ пропускаем,
+    opencode возьмёт свой фолбэк, а не мёртвый путь)."""
     try:
         src = sounds.get(key, "") or ""
     except Exception:
@@ -17588,21 +20312,2034 @@ def _oc_resolve_sound(key, sounds, volumes):
     except Exception:
         pct = 100
     pct = max(0, min(100, pct))
-    if not src or not os.path.exists(src) or pct == 50:
-        if src and os.path.exists(src):
-            _oc_cleanup_gain(key)
+    if not src or not os.path.exists(src):
+        _oc_cleanup_gain(key)
+        return ""
+    if pct == 50:
+        # Unity-гейн: оригинал как есть, копии чистим.
+        _oc_cleanup_gain(key)
         return src
     try:
         os.makedirs(_oc_gain_dir(), exist_ok=True)
     except Exception:
         pass
-    dest = os.path.join(_oc_gain_dir(), "oc_%s_v%d.wav" % (key, pct))
+    # Имя включает отпечаток исходника: смена файла при той же громкости
+    # обязана дать свежий рендер, а не вчерашний кэш с тем же именем.
+    # Префикс oc_<key>_v сохранён — чистка старых копий работает как раньше.
+    try:
+        stem = os.path.splitext(os.path.basename(src) or "")[0]
+        stem = re.sub(r"[^A-Za-z0-9_-]", "_", stem)[:16].strip("_") or "snd"
+    except Exception:
+        stem = "snd"
+    try:
+        st = os.stat(src)
+        blob = "%s|%d|%d" % (os.path.normcase(os.path.abspath(src)),
+                             st.st_size, getattr(st, "st_mtime_ns", int(st.st_mtime * 1000000000)))
+    except Exception:
+        blob = os.path.normcase(os.path.abspath(src))
+    try:
+        import hashlib as _hl
+        fp = _hl.md5(blob.encode("utf-8", "replace")).hexdigest()[:8]
+    except Exception:
+        fp = "x"
+    dest = os.path.join(_oc_gain_dir(), "oc_%s_v%d_%s_%s.wav" % (key, pct, stem, fp))
     if not os.path.exists(dest):
         if not _oc_render_gain(src, dest, pct):
             _oc_cleanup_gain(key)
             return src
     _oc_cleanup_gain(key, keep=dest)
     return dest
+
+
+def _oc_tui_sounds_from(settings):
+    """Пути звуков из настроек приложения (как строки диалога, без окна)."""
+    try:
+        base = dict(_oc_notify_defaults())
+    except Exception:
+        base = {}
+    try:
+        stored = (settings or {}).get("oc_notify_sounds", {}) or {}
+        for key, _label in OC_NOTIFY_KEYS:
+            if stored.get(key) and os.path.exists(stored[key]):
+                base[key] = stored[key]
+    except Exception:
+        pass
+    vols = {}
+    try:
+        stored_v = (settings or {}).get("oc_notify_volumes", {}) or {}
+        for key, _label in OC_NOTIFY_KEYS:
+            try:
+                vols[key] = max(0, min(100, int(stored_v.get(key, 75))))
+            except Exception:
+                vols[key] = 75
+    except Exception:
+        pass
+    out = {}
+    for key, _label in OC_NOTIFY_KEYS:
+        try:
+            p = _oc_resolve_sound(key, base, vols)
+        except Exception:
+            p = ""
+        if p:
+            out[key] = p
+    return out
+
+
+def _oc_ccm_tui_path():
+    """Per-launch конфиг opencode: только для запусков из приложения."""
+    try:
+        return os.path.join(SETTINGS_DIR, "tui.ccm.json")
+    except Exception:
+        return ""
+
+
+def _oc_build_ccm_tui(settings):
+    """Слепок глобального tui.json + наши attention и тема.
+    Ручные запуски его не видят; запуск из приложения — всегда свежий."""
+    try:
+        path = _oc_ccm_tui_path()
+        if not path:
+            return ""
+        data = _oc_load_tui()
+        data = dict(data) if isinstance(data, dict) else {}
+        try:
+            if bool((settings or {}).get("oc_notify_enabled", False)):
+                data["attention"] = _oc_make_attention(_oc_tui_sounds_from(settings))
+        except Exception:
+            pass
+        try:
+            if bool((settings or {}).get("oc_theme_enabled", False)):
+                data["theme"] = _OC_THEME_FILE.replace(".json", "")
+        except Exception:
+            pass
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            pass
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return path if os.path.exists(path) else ""
+    except Exception:
+        return ""
+
+
+# ============================================================
+# PUSH-УВЕДОМЛЕНИЯ opencode (Windows-тосты)
+# ------------------------------------------------------------
+# Всё хозяйство — в папке plugin\\: настройки (ccm-notify.json) и рантайм
+# (ccm-push.js для v1, ccm-notify.ps1, иконка). В общие настройки
+# ничего не пишем.
+# Плагин ccm-push.js подписывается на события opencode (session.idle,
+# session.error, permission.asked, question.asked) и дёргает ccm-notify.ps1 —
+# WinRT-тост «Claude Code Manager» + «Opencode - <событие>».
+# Для opencode v2 — тот же тост через plugin/ccm-notify/index.js
+# (Plugin.define + ctx.event.subscribe; session.execution.succeeded/failed
+# маппятся на session.idle/session.error; question.v2.asked и form.created
+# маппятся на question.asked; дочерние idle молчат — всё как в v1).
+# Тумблер: выкл — плагина нет в scoped-конфиге и файлы снесены, вкл —
+# пересоздаются при запуске (как в v1).
+# V2 грузит плагины только директориями («must be a directory»), поэтому
+# scoped-конфиг пишет ключ plugins с путём папки. Висячие локальные пути
+# из plugin-списков выкидываем при мерже (иначе «failed»-строки).
+# Звук играет сам opencode (тост бесшумный). Клик ничего не делает —
+# плашка просто закрывается. Плагин подключается только
+# per-launch (ключ plugin в scoped opencode.json), глобал не трогаем.
+# ============================================================
+
+_OC_PUSH_TITLE = "Claude Code Manager"
+_OC_PUSH_AUMID = "On1Felix.ClaudeCodeManager"
+_OC_PUSH_LNK_NAME = "Claude Code Manager.lnk"
+_OC_PUSH_CONFIG_NAME = "ccm-notify.json"
+
+_OC_PUSH_JS_TEMPLATE = """// Claude Code Manager — push-уведомления opencode.
+// События сессии -> Windows-тост через ccm-notify.ps1. Любая ошибка здесь
+// молча глотается: уведомление никогда не должно ломать сессию.
+export const CcmPush = async ({ $ }) => {
+  const PS1 = __CCM_PS1__;
+  const CFG = __CCM_SETTINGS__;
+  const APP = "Claude Code Manager";
+  const TEXTS = {
+    ru: {
+      "session.idle": "Готово",
+      "session.error": "Ошибка",
+      "permission.asked": "Подтвердите действие",
+      "question.asked": "Ответьте на вопрос",
+    },
+    en: {
+      "session.idle": "Done",
+      "session.error": "Error",
+      "permission.asked": "Confirm the action",
+      "question.asked": "Answer the question",
+    },
+  };
+  const readCfgText = async () => {
+    // Bun (штатно под opencode).
+    try {
+      if (typeof Bun !== "undefined" && Bun.file) {
+        const f = Bun.file(CFG);
+        if (await f.exists()) return await f.text();
+      }
+    } catch { /* fall through */ }
+    // Node-фолбэк: Bun может быть недоступен в песочнице плагинов.
+    try {
+      const mod = await import("node:fs/promises").catch(() => null)
+        || await import("fs/promises").catch(() => null);
+      if (mod && mod.readFile) return await mod.readFile(CFG, "utf8");
+    } catch { /* fall through */ }
+    return "";
+  };
+  const parseCfg = (text) => {
+    try {
+      return JSON.parse(text);
+    } catch { /* пробуем как JSONC */ }
+    try {
+      // settings.json у нас с полно-строчными // комментариями.
+      const stripped = String(text || "").split("\\n")
+        .filter((l) => !l.trimStart().startsWith("//")).join("\\n");
+      return JSON.parse(stripped);
+    } catch {
+      return null;
+    }
+  };
+  const langOf = async () => {
+    // Язык читаем из настроек в момент события — переключение языка
+    // в приложении применяется сразу, перезапуск не нужен.
+    try {
+      const d = parseCfg(await readCfgText());
+      const l = (d && d.app_language) || "";
+      if (l === "en" || l === "ru") return l;
+    } catch {
+      /* fall through to default */
+    }
+    return "en";
+  };
+  const runHidden = async (psArgs) => {
+    // Строго без окна: вспышка консоли крадёт фокус и дёргает терминал.
+    try {
+      if (typeof Bun !== "undefined" && Bun.spawn) {
+        const proc = Bun.spawn(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                                "-WindowStyle", "Hidden", "-File", psArgs.ps1,
+                                "-Title", psArgs.app, "-Message", psArgs.msg], {
+          stdin: "ignore", stdout: "ignore", stderr: "ignore",
+          windowsHide: true,
+        });
+        try {
+          if (Bun.sleep) {
+            await Promise.race([proc.exited, Bun.sleep(15000)]);
+          } else {
+            await proc.exited;
+          }
+        } catch {
+          try { await proc.exited; } catch { /* ignore */ }
+        }
+        return;
+      }
+    } catch { /* fall through to legacy */ }
+    try {
+      await $`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File ${psArgs.ps1} -Title ${psArgs.app} -Message ${psArgs.msg}`.nothrow().quiet();
+    } catch {
+      /* never break a session */
+    }
+  };
+  const IDLE_DELAY_MS = 150;
+  const QUIET_MS = 6000;
+  const DEDUP_MS = 4000;
+  const pending = new Map();
+  const silenced = new Map();
+  const lastShown = new Map();
+  const sweepMaps = () => {
+    try {
+      const now = Date.now();
+      if (pending.size + silenced.size + lastShown.size > 100) {
+        for (const [k, v] of silenced) {
+          if (now - v > QUIET_MS + 60000) silenced.delete(k);
+        }
+        for (const [k, v] of lastShown) {
+          if (now - v > DEDUP_MS + 60000) lastShown.delete(k);
+        }
+      }
+    } catch { /* ignore */ }
+  };
+  const showNow = async (type, sid) => {
+    try {
+      sweepMaps();
+      const k = (sid || "-") + ":" + type;
+      const now = Date.now();
+      const last = lastShown.get(k) || 0;
+      if (now - last < DEDUP_MS) return;
+      lastShown.set(k, now);
+      const lang = await langOf();
+      const dict = TEXTS[lang] || TEXTS.ru;
+      const msg = dict[type] || (lang === "en" ? "Attention" : "Внимание");
+      await runHidden({ ps1: PS1, app: APP, msg });
+    } catch {
+      /* never break a session */
+    }
+  };
+  const dropPending = (sid) => {
+    try {
+      if (pending.has(sid)) {
+        try { clearTimeout(pending.get(sid)); } catch { /* ignore */ }
+        pending.delete(sid);
+      }
+    } catch { /* ignore */ }
+  };
+  return {
+    event: async ({ event }) => {
+      try {
+        const t = event && event.type;
+        const props = (event && event.properties) || {};
+        const sid = props.sessionID || props.sessionId || "-";
+        if (t === "session.idle") {
+          if (props.parentID || props.parentId) return;
+          try {
+            const sil = silenced.get(sid) || 0;
+            if (Date.now() - sil < QUIET_MS) return;
+          } catch { /* ignore */ }
+          dropPending(sid);
+          pending.set(sid, setTimeout(async () => {
+            try { pending.delete(sid); } catch { /* ignore */ }
+            try {
+              const sil2 = silenced.get(sid) || 0;
+              if (Date.now() - sil2 < QUIET_MS) return;
+              await showNow(t, sid);
+            } catch {
+              /* never break a session */
+            }
+          }, IDLE_DELAY_MS));
+        } else if (t === "session.error") {
+          dropPending(sid);
+          try { silenced.set(sid, Date.now()); } catch { /* ignore */ }
+          await showNow(t, sid);
+        } else if (t === "permission.asked" || t === "question.asked") {
+          dropPending(sid);
+          await showNow(t, sid);
+        }
+      } catch {
+        /* never break a session */
+      }
+    },
+  };
+};
+"""
+
+_OC_PUSH_PS1 = """param(
+  [string]$Title = "Claude Code Manager",
+  [string]$Message = ""
+)
+try {
+  # ВАЖНО: New-Object Windows.Data.Xml.Dom.XmlDocument на части машин
+  # не резолвится (нет сборки в контексте) — поэтому XML берём готовым
+  # шаблоном через GetTemplateContent, а не конструируем вручную.
+  # Одна строка — только сам ответ. Стиль Title: крупно, жирно, ярко.
+  # Рядом иконка приложения. Клик ничего не делает — плашка просто закрывается.
+  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+  $icon = Join-Path $PSScriptRoot "ccm-icon.png"
+  if (Test-Path $icon) {
+    $tpl = [Windows.UI.Notifications.ToastTemplateType]::ToastImageAndText01
+  } else {
+    $tpl = [Windows.UI.Notifications.ToastTemplateType]::ToastText01
+  }
+  $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($tpl)
+  $texts = $xml.GetElementsByTagName("text")
+  if ($texts.Length -ge 1 -and [string]$Message -ne "") {
+    $texts.Item(0).AppendChild($xml.CreateTextNode([string]$Message)) | Out-Null
+    try {
+      $texts.Item(0).SetAttribute("hint-style", "Title")
+    } catch { }
+  }
+  if (Test-Path $icon) {
+    try {
+      $uri = (New-Object System.Uri((Resolve-Path $icon).Path)).AbsoluteUri
+      $xml.GetElementsByTagName("image").Item(0).SetAttribute("src", $uri)
+    } catch { }
+  }
+  try {
+    $audio = $xml.CreateElement("audio")
+    $audio.SetAttribute("silent", "true")
+    $xml.DocumentElement.AppendChild($audio) | Out-Null
+  } catch { }
+  $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
+  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("__CCM_AUMID__").Show($toast)
+} catch { }
+"""
+
+_OC_PUSH_REGISTER_PS1 = """param(
+  [string]$Lnk = "",
+  [string]$Target = "",
+  [string]$Icon = "",
+  [string]$AppId = ""
+)
+try {
+  if ($Lnk -eq "" -or $Target -eq "") { exit 0 }
+  $dir = Split-Path $Lnk -Parent
+  if ($dir -ne "" -and -not (Test-Path $dir)) {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+  }
+  $sh = New-Object -ComObject WScript.Shell
+  $sc = $sh.CreateShortcut($Lnk)
+  $sc.TargetPath = $Target
+  try { $sc.WorkingDirectory = Split-Path $Target -Parent } catch { }
+  if ($Icon -ne "" -and (Test-Path $Icon)) { $sc.IconLocation = $Icon + ",0" }
+  $sc.Save()
+  $regOk = $false
+  try {
+    $code = @'
+using System;
+using System.Runtime.InteropServices;
+[ComImport]
+[Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IPropertyStore {
+  uint GetCount();
+  void GetAt(uint iProp, out PROPERTYKEY pkey);
+  void GetValue(ref PROPERTYKEY key, out PROPVARIANT pv);
+  void SetValue(ref PROPERTYKEY key, ref PROPVARIANT pv);
+  void Commit();
+}
+[StructLayout(LayoutKind.Sequential)]
+public struct PROPERTYKEY {
+  public Guid fmtid;
+  public uint pid;
+}
+[StructLayout(LayoutKind.Explicit, Size = 16)]
+public struct PROPVARIANT {
+  [FieldOffset(0)] public ushort vt;
+  [FieldOffset(2)] public ushort wReserved1;
+  [FieldOffset(4)] public ushort wReserved2;
+  [FieldOffset(6)] public ushort wReserved3;
+  [FieldOffset(8)] public IntPtr data;
+}
+public class ShortcutAumid {
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+  private static extern int SHGetPropertyStoreFromParsingName(string pszPath, IntPtr pbc, int flags, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out object ppv);
+  public static void Set(string lnkPath, string appId) {
+    Guid iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+    object raw;
+    // GPS_READWRITE (2): без него store read-only и SetValue/Commit падают.
+    // (GPS_HANDLERONLY=1, GPS_READWRITE=2 — не перепутать.)
+    int hr = SHGetPropertyStoreFromParsingName(lnkPath, IntPtr.Zero, 2, ref iid, out raw);
+    if (hr != 0 || raw == null) throw new Exception("store hr=" + hr);
+    IPropertyStore store = (IPropertyStore)raw;
+    PROPERTYKEY key = new PROPERTYKEY();
+    key.fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+    key.pid = 5;
+    PROPVARIANT v = new PROPVARIANT();
+    v.vt = 31;
+    v.data = Marshal.StringToCoTaskMemUni(appId);
+    try {
+      store.SetValue(ref key, ref v);
+      store.Commit();
+    } finally {
+      Marshal.FreeCoTaskMem(v.data);
+      Marshal.ReleaseComObject(store);
+    }
+  }
+}
+'@
+    Add-Type -TypeDefinition $code -Language CSharp -ErrorAction Stop
+    [ShortcutAumid]::Set($Lnk, $AppId)
+    $regOk = $true
+  } catch { }
+  if (-not $regOk) { exit 1 }
+} catch { }
+"""
+
+
+def _oc_jsonc_decode_string(text, i):
+    """Читает "..." с позиции открывающей кавычки. Возвращает (значение,
+    индекс после закрывающей). Невалидные \\x (одиночные бэкслэши Windows-
+    путей) сохраняем как есть — иначе сравнение путей даст дубль."""
+    try:
+        n = len(text)
+        j = i + 1
+        buf = []
+        _map = {'"': '"', "\\": "\\", "/": "/",
+                "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+        while j < n:
+            c = text[j]
+            if c == "\\" and j + 1 < n:
+                nx = text[j + 1]
+                if nx in _map:
+                    buf.append(_map[nx])
+                    j += 2
+                    continue
+                if nx == "u" and j + 5 < n:
+                    try:
+                        buf.append(chr(int(text[j + 2:j + 6], 16)))
+                        j += 6
+                        continue
+                    except Exception:
+                        pass
+                buf.append("\\")
+                buf.append(nx)
+                j += 2
+                continue
+            if c == '"':
+                return "".join(buf), j + 1
+            buf.append(c)
+            j += 1
+    except Exception:
+        pass
+    return None, len(text)
+
+
+def _oc_jsonc_find_key_array(text, key):
+    """Позиции (key_start, arr_start, arr_end) для "key": [...] или None.
+    Строки, экранирования и //-комментарии учитываем; блочные /* */ тоже
+    пропускаем. Значение-не-массив — как будто ключа нет (не дублируем)."""
+    try:
+        n = len(text)
+
+        def skip_ws_comments(i):
+            while i < n:
+                ch = text[i]
+                if ch in " \t\r\n":
+                    i += 1
+                    continue
+                if ch == "/" and i + 1 < n and text[i + 1] == "/":
+                    j = text.find("\n", i)
+                    i = n if j < 0 else j + 1
+                    continue
+                if ch == "/" and i + 1 < n and text[i + 1] == "*":
+                    j = text.find("*/", i + 2)
+                    i = n if j < 0 else j + 2
+                    continue
+                return i
+            return i
+
+        def read_string(i):
+            # i на открывающей кавычке; общий декодер (невалидные \x целы).
+            return _oc_jsonc_decode_string(text, i)
+
+        i = 0
+        while i < n:
+            i = skip_ws_comments(i)
+            if i >= n:
+                break
+            if text[i] != '"':
+                i += 1
+                continue
+            val, nxt = read_string(i)
+            if val != key:
+                i = nxt
+                continue
+            k = skip_ws_comments(nxt)
+            if k >= n or text[k] != ":":
+                i = nxt
+                continue
+            k = skip_ws_comments(k + 1)
+            if k >= n or text[k] != "[":
+                return None
+            depth = 0
+            m = k
+            in_s = False
+            es = False
+            while m < n:
+                cc = text[m]
+                if in_s:
+                    if es:
+                        es = False
+                    elif cc == "\\":
+                        es = True
+                    elif cc == '"':
+                        in_s = False
+                    m += 1
+                    continue
+                if cc == "/" and m + 1 < n and text[m + 1] == "/":
+                    jj = text.find("\n", m)
+                    m = n if jj < 0 else jj + 1
+                    continue
+                if cc == "/" and m + 1 < n and text[m + 1] == "*":
+                    jj = text.find("*/", m + 2)
+                    m = n if jj < 0 else jj + 2
+                    continue
+                if cc == '"':
+                    in_s = True
+                elif cc == "[":
+                    depth += 1
+                elif cc == "]":
+                    depth -= 1
+                    if depth == 0:
+                        return (i, k, m + 1)
+                m += 1
+            return None
+        return None
+    except Exception:
+        return None
+
+
+def _oc_jsonc_array_strings(span):
+    """Строковые элементы массива (комментарии пропускаем)."""
+    out = []
+    try:
+        i, n = 0, len(span)
+        while i < n:
+            ch = span[i]
+            if ch == "/" and i + 1 < n and span[i + 1] == "/":
+                j = span.find("\n", i)
+                i = n if j < 0 else j + 1
+                continue
+            if ch == "/" and i + 1 < n and span[i + 1] == "*":
+                j = span.find("*/", i + 2)
+                i = n if j < 0 else j + 2
+                continue
+            if ch == '"':
+                val, nxt = _oc_jsonc_decode_string(span, i)
+                if val is None:
+                    break
+                out.append(val)
+                i = nxt
+                continue
+            i += 1
+    except Exception:
+        pass
+    return out
+
+
+def _oc_push_ref_norm(s):
+    """Нормаль для сравнения путей: слеши, регистр, точки."""
+    try:
+        return os.path.normcase(os.path.normpath(str(s or "").replace("/", os.sep)))
+    except Exception:
+        return str(s or "")
+
+
+def _oc_push_global_ref():
+    """Наша запись для глобала: путь к директории плагина обычными слешами."""
+    try:
+        d = _oc_push_dir()
+        if not d:
+            return ""
+        return os.path.join(d, "ccm-notify").replace("\\", "/")
+    except Exception:
+        return ""
+
+
+def _oc_global_config_path():
+    """Путь живого глобала (jsonc приоритетнее), иначе путь для создания."""
+    try:
+        base = os.path.join(os.path.expanduser("~"), ".config", "opencode")
+        for fn in ("opencode.json", "opencode.jsonc"):
+            p = os.path.join(base, fn)
+            if os.path.exists(p):
+                return p
+        return os.path.join(base, "opencode.jsonc")
+    except Exception:
+        return ""
+
+
+def _oc_push_ensure_global_ref(on, path=None):
+    """Тумблер в живом глобале: ON — наша plugins-ссылка есть, OFF — её нет.
+    Чужие записи, комментарии и форматирование не трогаем; пишем только при
+    изменении (лишних резолвов сервиса не будет). Невалидный файл не трогаем."""
+    try:
+        p = path or _oc_global_config_path()
+        if not p:
+            return False
+        ours = _oc_push_global_ref()
+        if not ours:
+            return False
+        norm_ours = _oc_push_ref_norm(ours)
+        if not os.path.exists(p):
+            if not on:
+                return True
+            try:
+                parent = os.path.dirname(p)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write('{\n  "$schema": "https://opencode.ai/config.json",\n'
+                            '  "plugins": [\n    "%s"\n  ]\n}\n' % ours)
+                return True
+            except Exception:
+                return False
+        try:
+            with open(p, "r", encoding="utf-8-sig") as f:
+                text = f.read()
+        except Exception:
+            return False
+        found = _oc_jsonc_find_key_array(text, "plugins")
+        if found is None:
+            try:
+                if re.search(r'"plugins"\s*:', text):
+                    return False
+            except Exception:
+                pass
+            if not on:
+                return True
+            e = text.rfind("}")
+            if e < 0 or text[e + 1:].strip():
+                return False
+            k = e - 1
+            while k >= 0 and text[k] in " \t\r\n":
+                k -= 1
+            comma = "" if (k >= 0 and text[k] in "{,") else ","
+            new_text = (text[:e] + "%s\n  \"plugins\": [\n    \"%s\"\n  ]\n"
+                        % (comma, ours) + text[e:])
+        else:
+            ks, a0, a1 = found
+            entries = _oc_jsonc_array_strings(text[a0:a1])
+            has = any(_oc_push_ref_norm(e) == norm_ours for e in entries)
+            if on and has:
+                return True
+            if on:
+                new_entries = entries + [ours]
+            else:
+                new_entries = [e for e in entries
+                               if _oc_push_ref_norm(e) != norm_ours]
+                if len(new_entries) == len(entries):
+                    return True
+            if not new_entries:
+                s, epos = ks, a1
+                j = epos
+                while j < len(text) and text[j] in " \t\r\n":
+                    j += 1
+                if j < len(text) and text[j] == ",":
+                    epos = j + 1
+                else:
+                    k = s - 1
+                    while k >= 0 and text[k] in " \t\r\n":
+                        k -= 1
+                    if k >= 0 and text[k] == ",":
+                        s = k
+                new_text = text[:s] + text[epos:]
+                try:
+                    new_text = re.sub(r"\n[ \t]*\n", "\n", new_text)
+                except Exception:
+                    pass
+            else:
+                def _esc(s):
+                    return s.replace("\\", "\\\\").replace('"', '\\"')
+                arr = "[\n" + ",\n".join('    "%s"' % _esc(e) for e in new_entries) + "\n  ]"
+                new_text = text[:a0] + arr + text[a1:]
+        if new_text == text:
+            return True
+        try:
+            json.loads(_strip_jsonc_comments(new_text))
+        except Exception:
+            return False
+        try:
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(new_text)
+            os.replace(tmp, p)
+        except Exception:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _oc_push_dir():
+    """Папка push-хозяйства: настройки (ccm-notify.json) и рантайм
+    (ccm-push.js для v1, ccm-notify/, тосты, иконка)."""
+    try:
+        return os.path.join(SETTINGS_DIR, "plugin")
+    except Exception:
+        return ""
+
+
+def _oc_push_config_path():
+    """Файл настроек плагина: plugin\\ccm-notify.json. В общие настройки
+    ничего не пишем."""
+    try:
+        d = _oc_push_dir()
+        if not d:
+            return ""
+        return os.path.join(d, _OC_PUSH_CONFIG_NAME)
+    except Exception:
+        return ""
+
+
+def _oc_push_config_load():
+    """Настройки плагина: enabled по умолчанию True (как звуки для новых).
+    Одноразово подхватываем legacy oc_notify_push из общих/звуковых настроек,
+    а также значение из конфига прошлого поколения (ccm-push.json)."""
+    try:
+        p = _oc_push_config_path()
+        if p and os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "enabled" in data:
+                    return {"enabled": bool(data.get("enabled", True))}
+            except Exception:
+                pass
+        try:
+            old = os.path.join(os.path.dirname(p), "ccm-push.json") if p else ""
+            if old and os.path.exists(old):
+                with open(old, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "enabled" in data:
+                    return {"enabled": bool(data.get("enabled", True))}
+        except Exception:
+            pass
+        legacy = None
+        try:
+            legacy = _oc_legacy_push_flag()
+        except Exception:
+            legacy = None
+        if legacy is not None:
+            return {"enabled": bool(legacy)}
+    except Exception:
+        pass
+    return {"enabled": True}
+
+
+def _oc_legacy_push_flag():
+    """Старый oc_notify_push из общих настроек или сайдкара звуков.
+    None — не было (чистый дефолт True)."""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = _parse_settings_text(f.read())
+            if isinstance(data, dict) and "oc_notify_push" in data:
+                return bool(data.get("oc_notify_push", True))
+    except Exception:
+        pass
+    try:
+        sp = os.path.join(_oc_sounds_dir(), "oc_sounds.json")
+        if os.path.exists(sp):
+            with open(sp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "oc_notify_push" in data:
+                return bool(data.get("oc_notify_push", True))
+    except Exception:
+        pass
+    return None
+
+
+def _oc_push_config_save(enabled):
+    """Пишет enabled в plugin\\ccm-notify.json (атомарно)."""
+    try:
+        p = _oc_push_config_path()
+        if not p:
+            return False
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+        except Exception:
+            pass
+        payload = {"enabled": bool(enabled)}
+        try:
+            cur = ""
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    cur = f.read()
+            import json as _js
+            text = _js.dumps(payload, ensure_ascii=False, indent=2)
+            if cur == text:
+                return True
+        except Exception:
+            try:
+                import json as _js2
+                text = _js2.dumps(payload, ensure_ascii=False, indent=2)
+            except Exception:
+                return False
+        try:
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, p)
+            return os.path.exists(p)
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def _oc_push_enabled():
+    """Пуши включены? Источник — plugin\\ccm-notify.json, дефолт True."""
+    try:
+        return bool(_oc_push_config_load().get("enabled", True))
+    except Exception:
+        return True
+
+
+_OC_PUSH_LAST_TOUCH = 0.0
+
+
+def _oc_push_touch_entrypoint():
+    """Принудительное обновление плагина: атомарно переписываем entrypoint
+    тем же содержимым (mtime едет) — вотчер сервиса перерезолвит конфиг
+    и подхватит плагин даже в залипшей failed-сессии. Только если включены."""
+    try:
+        if not _oc_push_enabled():
+            return False
+        d = _oc_push_dir()
+        if not d:
+            return False
+        idx = os.path.join(d, "ccm-notify", "index.js")
+        if not os.path.exists(idx):
+            return False
+        with open(idx, "r", encoding="utf-8") as f:
+            cur = f.read()
+        try:
+            tmp = idx + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(cur)
+            os.replace(tmp, idx)
+        except Exception:
+            try:
+                os.utime(idx, None)
+            except Exception:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _oc_push_last_load_epoch(log_path=None):
+    """Epoch-seconds последней загрузки ccm-notify сервисом (или None).
+    Читает только хвост лога, сам лог не трогает. Требуем msg="loading
+    plugin" — иначе в хвост могут попасть команды-зонды с текстом паттерна."""
+    try:
+        p = log_path or os.path.join(os.path.expanduser("~"), ".local",
+                                     "share", "opencode", "log", "opencode.log")
+        if not os.path.exists(p):
+            return None
+        best = None
+        with open(p, "rb") as f:
+            try:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 1048576))
+            except Exception:
+                pass
+            tail = f.read().decode("utf-8", "replace")
+        for line in tail.splitlines():
+            if "ccm-notify" not in line or "spawning process" in line:
+                continue
+            if 'msg="loading plugin"' not in line:
+                continue
+            m = re.search(r"timestamp=(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})", line)
+            if not m:
+                continue
+            try:
+                ep = calendar.timegm(tuple(int(x) for x in m.groups()) + (0, 0, 0))
+            except Exception:
+                continue
+            if best is None or ep > best:
+                best = ep
+        return best
+    except Exception:
+        return None
+
+
+def _oc_push_newest_session_epoch(db_path=None):
+    """Epoch-seconds рождения самой свежей сессии (или None).
+    Только чтение базы (mode=ro), сервис не трогаем."""
+    try:
+        import pathlib as _pl
+        import sqlite3 as _sq
+        p = db_path or os.path.join(os.path.expanduser("~"), ".local",
+                                    "share", "opencode", "opencode.db")
+        if not p or not os.path.exists(p):
+            return None
+        con = _sq.connect(_pl.Path(p).as_uri() + "?mode=ro", uri=True, timeout=5)
+        try:
+            row = con.execute("select max(time_created) from session").fetchone()
+        finally:
+            try:
+                con.close()
+            except Exception:
+                pass
+        if row and row[0]:
+            return int(row[0]) // 1000
+        return None
+    except Exception:
+        return None
+
+
+def _oc_push_ensure_loaded(log_path=None, db_path=None, grace_s=45,
+                           touch_cooldown_s=300):
+    """Сторож пушей: новая сессия без загрузки плагина — чиним сами.
+    Нет файлов — восстанавливаем деплоем; файлы целы, а загрузки за сессией
+    не последовало — дёргаем entrypoint (вотчер перерезолвит и в старые,
+    и в новые сессии). Возвращает True, если что-то чинили. Молча."""
+    global _OC_PUSH_LAST_TOUCH
+    try:
+        # Без установленного CLI сторож молчит полностью: ни деплоя
+        # файлов, ни дёргания глобала — приложение ничего не пишет.
+        if not _oc_have_cli():
+            return False
+    except Exception:
+        return False
+    try:
+        if not _oc_push_enabled():
+            return False
+        try:
+            d = _oc_push_dir()
+        except Exception:
+            d = ""
+        idx = os.path.join(d, "ccm-notify", "index.js") if d else ""
+        pkg = os.path.join(d, "ccm-notify", "package.json") if d else ""
+        if not idx or not (os.path.exists(idx) and os.path.exists(pkg)):
+            try:
+                _oc_push_files()
+            except Exception:
+                pass
+            if idx and os.path.exists(idx):
+                # Файлы только что восстановлены — вотчи на них мертвы:
+                # дёргаем глобал, чтобы сервис переподписался и загрузил.
+                try:
+                    _oc_push_touch_global()
+                except Exception:
+                    pass
+                return True
+            return False
+        try:
+            newest = _oc_push_newest_session_epoch(db_path)
+        except Exception:
+            newest = None
+        if not newest:
+            return False
+        try:
+            now_g = time.gmtime()
+            day0 = calendar.timegm((now_g.tm_year, now_g.tm_mon, now_g.tm_mday,
+                                    0, 0, 0, 0, 0, 0))
+        except Exception:
+            return False
+        if newest < day0:
+            return False
+        try:
+            now = time.time()
+        except Exception:
+            return False
+        if now - newest < grace_s:
+            return False
+        try:
+            last_load = _oc_push_last_load_epoch(log_path)
+        except Exception:
+            last_load = None
+        if last_load and last_load >= newest:
+            return False
+        try:
+            if now - _OC_PUSH_LAST_TOUCH < touch_cooldown_s:
+                return False
+        except Exception:
+            pass
+        _OC_PUSH_LAST_TOUCH = now
+        return bool(_oc_push_touch_entrypoint())
+    except Exception:
+        return False
+
+
+def _oc_push_touch_global():
+    """Дёргаем живой глобал (только mtime, содержимое то же): вотчер сервиса
+    перечитывает конфиг и переподписывается на пути плагинов. Нужно после
+    восстановления файлов — вотчи на удалённой папке умирают вместе с ней
+    и сами не воскресают. Только если включены."""
+    try:
+        if not _oc_push_enabled():
+            return False
+        p = _oc_global_config_path()
+        if not p or not os.path.exists(p):
+            return False
+        os.utime(p, None)
+        return True
+    except Exception:
+        return False
+
+
+def _oc_push_icon_bytes(size=128):
+    """Байты иконки тоста: исходник ужатый Lanczos до тост-размера.
+    Windows сам даунскейлит 900px грубо — отсюда рваные края в плашке,
+    хотя в центре уведомлений (там .ico с мипмапами) всё гладко."""
+    try:
+        cands = []
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            cands.append(os.path.join(here, "icon.png"))
+        except Exception:
+            pass
+        try:
+            exedir = os.path.dirname(sys.executable)
+            cands.append(os.path.join(exedir, "icon.png"))
+        except Exception:
+            pass
+        cands += ["icon.png"]
+        src = ""
+        for p in cands:
+            try:
+                if p and os.path.exists(p):
+                    src = os.path.abspath(p)
+                    break
+            except Exception:
+                pass
+        if not src:
+            return b""
+        try:
+            from PIL import Image as _PI
+        except Exception:
+            with open(src, "rb") as f:
+                return f.read()
+        try:
+            img = _PI.open(src)
+        except Exception:
+            return b""
+        try:
+            if img.mode not in ("RGBA", "LA"):
+                img = img.convert("RGBA")
+            w, h = img.size
+            if w <= 0 or h <= 0:
+                return b""
+            side = max(1, min(w, h))
+            left = (w - side) // 2
+            top = (h - side) // 2
+            if side != w or side != h:
+                img = img.crop((left, top, left + side, top + side))
+            try:
+                resample = _PI.Resampling.LANCZOS
+            except Exception:
+                resample = getattr(_PI, "LANCZOS", 1)
+            img = img.resize((size, size), resample)
+        except Exception:
+            return b""
+        try:
+            import io as _bio
+            buf = _bio.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            data = buf.getvalue()
+            return data if data else b""
+        except Exception:
+            return b""
+    except Exception:
+        return b""
+
+
+def _oc_push_target():
+    """Цель ярлыка тостов: exe приложения, иначе сам .pyw, иначе пусто."""
+    try:
+        cands = []
+        try:
+            exedir = os.path.dirname(sys.executable)
+            cands.append(os.path.join(exedir, "ClaudeCodeManager.exe"))
+        except Exception:
+            pass
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            cands.append(os.path.join(here, "ClaudeCodeManager.exe"))
+            if str(__file__).lower().endswith(".pyw"):
+                cands.append(os.path.abspath(__file__))
+        except Exception:
+            pass
+        for p in cands:
+            try:
+                if p and os.path.exists(p):
+                    return os.path.abspath(p)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ""
+
+
+_PUSH_SHORTCUT_LOCK = threading.Lock()
+
+
+def _oc_push_shortcut():
+    """Ярлык в меню Пуск с нашим AppUserModelID — без регистрации Windows
+    молча режет тосты незарегистрированных приложений. Возвращает путь
+    к ярлыку или "". Долгая операция — вызывать фоном. Реентерабельна
+    через лок. Неудача запоминается маркером на сутки."""
+    if not _PUSH_SHORTCUT_LOCK.acquire(blocking=False):
+        return ""
+    try:
+        return _oc_push_shortcut_locked()
+    finally:
+        try:
+            _PUSH_SHORTCUT_LOCK.release()
+        except Exception:
+            pass
+
+
+def _oc_push_shortcut_locked():
+    try:
+        try:
+            progs = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")),
+                                 "Microsoft", "Windows", "Start Menu", "Programs")
+        except Exception:
+            return ""
+        lnk = os.path.join(progs, _OC_PUSH_LNK_NAME)
+        if os.path.exists(lnk):
+            return lnk
+        d = _oc_push_dir()
+        if not d:
+            return ""
+        marker = os.path.join(d, ".noshortcut")
+        try:
+            if os.path.exists(marker) and (time.time() - os.path.getmtime(marker)) < 86400:
+                return ""
+        except Exception:
+            pass
+        target = _oc_push_target()
+        if not target:
+            return ""
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            return ""
+        reg = os.path.join(d, "ccm-shortcut.ps1")
+        try:
+            cur = ""
+            if os.path.exists(reg):
+                with open(reg, "r", encoding="utf-8") as f:
+                    cur = f.read()
+            if cur != _OC_PUSH_REGISTER_PS1:
+                with open(reg, "w", encoding="utf-8") as f:
+                    f.write(_OC_PUSH_REGISTER_PS1)
+        except Exception:
+            return ""
+        icon = ""
+        try:
+            cand = _oc_app_icon() or ""
+            if cand.lower().endswith((".ico", ".exe", ".dll")) and os.path.exists(cand):
+                icon = cand
+        except Exception:
+            icon = ""
+        ok = False
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            args = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-WindowStyle", "Hidden", "-File", reg,
+                    "-Lnk", lnk, "-Target", target, "-AppId", _OC_PUSH_AUMID]
+            if icon:
+                args += ["-Icon", icon]
+            r = subprocess.run(args, capture_output=True, timeout=120, creationflags=flags)
+            ok = (r.returncode == 0) and os.path.exists(lnk)
+        except Exception:
+            ok = False
+        try:
+            if ok:
+                if os.path.exists(marker):
+                    os.remove(marker)
+            else:
+                with open(marker, "w", encoding="utf-8") as f:
+                    f.write("1")
+        except Exception:
+            pass
+        return lnk if ok else ""
+    except Exception:
+        return ""
+
+
+_OC_PUSH_V2_TEMPLATE = """// CCM Notify — push notifications for opencode v2.
+// Same logic as the v1 plugin: session lifecycle events become silent
+// Windows toasts. Only the transport changed for v2:
+// Plugin.define entrypoint, directory layout, renamed events
+// (session.execution.succeeded/failed carry the session id in
+// event.data.sessionID; the question flow arrives as question.v2.asked
+// or form.created; the permission flow as permission.v2.asked).
+// Nothing here may throw: notifications must never break a session.
+import { Plugin } from "@opencode/plugin";
+
+const TEXTS = {
+  ru: {
+    "session.idle": "Готово",
+    "session.error": "Ошибка",
+    "permission.asked": "Подтвердите действие",
+    "question.asked": "Ответьте на вопрос",
+  },
+  en: {
+    "session.idle": "Done",
+    "session.error": "Error",
+    "permission.asked": "Confirm the action",
+    "question.asked": "Answer the question",
+  },
+};
+const PS1 = __CCM_PS1__;
+const CFG = __CCM_SETTINGS__;
+const APP = "Claude Code Manager";
+const readCfgText = async () => {
+  // Bun (штатно под opencode).
+  try {
+    if (typeof Bun !== "undefined" && Bun.file) {
+      const f = Bun.file(CFG);
+      if (await f.exists()) return await f.text();
+    }
+  } catch { /* fall through */ }
+  // Node-фолбэк: Bun может быть недоступен в песочнице плагинов.
+  try {
+    const mod = await import("node:fs/promises").catch(() => null)
+      || await import("fs/promises").catch(() => null);
+    if (mod && mod.readFile) return await mod.readFile(CFG, "utf8");
+  } catch { /* fall through */ }
+  return "";
+};
+const parseCfg = (text) => {
+  try {
+    return JSON.parse(text);
+  } catch { /* пробуем как JSONC */ }
+  try {
+    // settings.json у нас с полно-строчными // комментариями.
+    const stripped = String(text || "").split("\\n")
+      .filter((l) => !l.trimStart().startsWith("//")).join("\\n");
+    return JSON.parse(stripped);
+  } catch {
+    return null;
+  }
+};
+const langOf = async () => {
+  // Язык читаем из настроек в момент события — переключение языка
+  // в приложении применяется сразу, перезапуск не нужен.
+  try {
+    const d = parseCfg(await readCfgText());
+    const l = (d && d.app_language) || "";
+    if (l === "en" || l === "ru") return l;
+  } catch {
+    /* fall through to default */
+  }
+  return "en";
+};
+const PUSH_JSON = (typeof __CCM_PUSH_JSON__ !== "undefined" ? __CCM_PUSH_JSON__ : "");
+const pushOn = async () => {
+  // Runtime gate of the toggle: off in the app = silence without deleting files.
+  // Deleting used to break service resolution and poison live sessions (sticky failed).
+  // Missing file or broken json = on; silence only on explicit enabled:false.
+  try {
+    if (!PUSH_JSON) return true;
+    let text = "";
+    if (typeof Bun !== "undefined" && Bun.file) {
+      try {
+        const f = Bun.file(PUSH_JSON);
+        if (await f.exists()) text = await f.text();
+        else return true;
+      } catch {
+        return true;
+      }
+    } else {
+      try {
+        const mod = await import("node:fs/promises").catch(() => null)
+          || await import("fs/promises").catch(() => null);
+        if (!mod || !mod.readFile) return true;
+        try {
+          text = await mod.readFile(PUSH_JSON, "utf8");
+        } catch {
+          return true;
+        }
+      } catch {
+        return true;
+      }
+    }
+    if (!text) return true;
+    try {
+      const d = JSON.parse(text);
+      if (d && typeof d.enabled !== "undefined") return !!d.enabled;
+    } catch { /* broken json = allow */ }
+    return true;
+  } catch {
+    return true;
+  }
+};
+const runHidden = async (psArgs) => {
+  // Строго без окна: вспышка консоли крадёт фокус и дёргает терминал.
+  // Ветка Bun — как в v1; ветки `$` в v2 нет, поэтому фолбэк —
+  // обычный node:child_process с тем же ожиданием до 15 секунд.
+  try {
+    if (typeof Bun !== "undefined" && Bun.spawn) {
+      const proc = Bun.spawn(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                              "-WindowStyle", "Hidden", "-File", psArgs.ps1,
+                              "-Title", psArgs.app, "-Message", psArgs.msg], {
+        stdin: "ignore", stdout: "ignore", stderr: "ignore",
+        windowsHide: true,
+      });
+      try {
+        if (Bun.sleep) {
+          await Promise.race([proc.exited, Bun.sleep(15000)]);
+        } else {
+          await proc.exited;
+        }
+      } catch {
+        try { await proc.exited; } catch { /* ignore */ }
+      }
+      return;
+    }
+  } catch { /* fall through to node */ }
+  try {
+    const mod = await import("node:child_process").catch(() => null);
+    if (!mod || !mod.spawn) return;
+    const child = mod.spawn("powershell",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+       "-WindowStyle", "Hidden", "-File", psArgs.ps1,
+       "-Title", psArgs.app, "-Message", psArgs.msg],
+      { windowsHide: true, stdio: "ignore" });
+    await Promise.race([
+      new Promise((resolve) => {
+        try {
+          child.on("exit", resolve);
+          child.on("error", resolve);
+        } catch { resolve(); }
+      }),
+      new Promise((resolve) => {
+        try { setTimeout(resolve, 15000); } catch { resolve(); }
+      }),
+    ]);
+  } catch {
+    /* never break a session */
+  }
+};
+const IDLE_DELAY_MS = 150;
+const QUIET_MS = 6000;
+const DEDUP_MS = 4000;
+const pending = new Map();
+const silenced = new Map();
+const lastShown = new Map();
+const sweepMaps = () => {
+  try {
+    const now = Date.now();
+    if (pending.size + silenced.size + lastShown.size > 100) {
+      for (const [k, v] of silenced) {
+        if (now - v > QUIET_MS + 60000) silenced.delete(k);
+      }
+      for (const [k, v] of lastShown) {
+        if (now - v > DEDUP_MS + 60000) lastShown.delete(k);
+      }
+    }
+  } catch { /* ignore */ }
+};
+const showNow = async (type, sid) => {
+  try {
+    try { if (!(await pushOn())) return; } catch { /* gate failure = allow */ }
+    sweepMaps();
+    const k = (sid || "-") + ":" + type;
+    const now = Date.now();
+    const last = lastShown.get(k) || 0;
+    if (now - last < DEDUP_MS) return;
+    lastShown.set(k, now);
+    const lang = await langOf();
+    const dict = TEXTS[lang] || TEXTS.ru;
+    const msg = dict[type] || (lang === "en" ? "Attention" : "Внимание");
+    await runHidden({ ps1: PS1, app: APP, msg });
+  } catch {
+    /* never break a session */
+  }
+};
+const dropPending = (sid) => {
+  try {
+    if (pending.has(sid)) {
+      try { clearTimeout(pending.get(sid)); } catch { /* ignore */ }
+      pending.delete(sid);
+    }
+  } catch { /* ignore */ }
+};
+export default Plugin.define({
+  id: "ccm-notify",
+  setup(ctx) {
+    // Только v2-транспорту нужная страховка (в v1 её нет и быть не может):
+    // если загрузчик пересоздаст подписку без выгрузки старой, шумит
+    // только новейшая копия. При одной копии проверка всегда проходит.
+    const myGen = (globalThis.__ccmNotifyGen =
+      (globalThis.__ccmNotifyGen || 0) + 1);
+    const controller = new AbortController();
+    const timers = new Set();
+    const later = (ms, fn) => {
+      const t = setTimeout(async () => {
+        try { timers.delete(t); } catch { /* ignore */ }
+        try { await fn(); } catch { /* ignore */ }
+      }, ms);
+      try { timers.add(t); } catch { /* ignore */ }
+      return t;
+    };
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          try {
+            try {
+              if (globalThis.__ccmNotifyGen !== myGen) break;
+            } catch { /* ignore */ }
+            let t = event && event.type;
+            if (t === "session.execution.succeeded") t = "session.idle";
+            else if (t === "session.execution.failed") t = "session.error";
+            else if (t === "question.v2.asked" || t === "form.created") t = "question.asked";
+            else if (t === "permission.v2.asked") t = "permission.asked";
+            const props = (event && event.properties) || {};
+            const data = (event && event.data) || {};
+            const sid = data.sessionID || props.sessionID || props.sessionId || "-";
+            if (t === "session.idle") {
+              if (props.parentID || props.parentId
+                  || data.parentID || data.parentId) continue;
+              try {
+                const sil = silenced.get(sid) || 0;
+                if (Date.now() - sil < QUIET_MS) continue;
+              } catch { /* ignore */ }
+              dropPending(sid);
+              pending.set(sid, later(IDLE_DELAY_MS, async () => {
+                try { pending.delete(sid); } catch { /* ignore */ }
+                try {
+                  const sil2 = silenced.get(sid) || 0;
+                  if (Date.now() - sil2 < QUIET_MS) return;
+                  await showNow(t, sid);
+                } catch {
+                  /* never break a session */
+                }
+              }));
+            } else if (t === "session.error") {
+              dropPending(sid);
+              try { silenced.set(sid, Date.now()); } catch { /* ignore */ }
+              await showNow(t, sid);
+            } else if (t === "permission.asked" || t === "question.asked") {
+              dropPending(sid);
+              await showNow(t, sid);
+            }
+          } catch {
+            /* never break a session */
+          }
+        }
+      } catch { /* subscription ended */ }
+    })();
+    return () => {
+      try { controller.abort(); } catch { /* ignore */ }
+      try {
+        for (const t of timers) {
+          try { clearTimeout(t); } catch { /* ignore */ }
+        }
+        timers.clear();
+      } catch { /* ignore */ }
+    };
+  },
+});
+
+"""
+
+
+def _oc_installed_major():
+    """Мажорная версия установленного opencode (1/2) — выбор API плагина
+    и формата scoped-конфига. Не определили — считаем v1 (как раньше)."""
+    try:
+        ver = get_installed_oc_version() or ""
+        major = (ver.strip().split(".")[0] if ver else "")
+        if major.isdigit():
+            return int(major)
+    except Exception:
+        pass
+    return 1
+
+
+_CCM_NOTIFY_PKG_JSON = '{"name": "ccm-notify", "version": "2.0.0", "type": "module"}'
+
+
+def _oc_push_files(v2=False):
+    """Возвращает (путь плагина под версию, ps1), гарантируя свежие файлы.
+    v1: одиночный ccm-push.js. v2: ДИРЕКТОРИЯ plugin/ccm-notify/
+    (package.json + index.js) — одиночные .js-файлы загрузчик v2 отвергает
+    («configured plugin path must be a directory»). Возвращаем путь, который
+    и кладём в scoped-конфиг (файл для v1, директория для v2).
+    Заодно полностью сносит прошлое поколение (ccm-push): его файлы
+    удаляются, а состояние тумблера мигрирует в новый конфиг.
+    Пусто при неудаче."""
+    try:
+        d = _oc_push_dir()
+        if not d:
+            return "", ""
+        os.makedirs(d, exist_ok=True)
+        js = os.path.join(d, "ccm-push.js")
+        js2dir = os.path.join(d, "ccm-notify")
+        js2idx = os.path.join(js2dir, "index.js")
+        js2pkg = os.path.join(js2dir, "package.json")
+        ps = os.path.join(d, "ccm-notify.ps1")
+        try:
+            js_text = _OC_PUSH_JS_TEMPLATE.replace("__CCM_PS1__", json.dumps(ps))
+            js_text = js_text.replace("__CCM_SETTINGS__", json.dumps(SETTINGS_FILE))
+            js2_text = _OC_PUSH_V2_TEMPLATE.replace("__CCM_PS1__", json.dumps(ps))
+            js2_text = js2_text.replace("__CCM_SETTINGS__", json.dumps(SETTINGS_FILE))
+            js2_text = js2_text.replace(
+                "__CCM_PUSH_JSON__",
+                json.dumps(os.path.join(d, _OC_PUSH_CONFIG_NAME).replace("\\", "/")))
+            ps_text = _OC_PUSH_PS1.replace("__CCM_AUMID__", _OC_PUSH_AUMID)
+        except Exception:
+            return "", ""
+        try:
+            os.makedirs(js2dir, exist_ok=True)
+        except Exception:
+            return "", ""
+        for path, text in ((js, js_text), (js2idx, js2_text),
+                           (js2pkg, _CCM_NOTIFY_PKG_JSON), (ps, ps_text)):
+            try:
+                cur = ""
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        cur = f.read()
+                if cur != text:
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(text)
+            except Exception:
+                return "", ""
+        # Прошлое поколение (ccm-push) сносим полностью: одиночный
+        # ccm-push-v2.js, директория ccm-push/, старый тост ccm-toast.ps1
+        # и старый конфиг ccm-push.json. Без старого ps1 висящие в памяти
+        # копии прошлого поколения гаснут сами (их вызовы молча падают),
+        # а новых failed-строк не будет — конфиги ссылаются на новый путь.
+        # Состояние тумблера перед сносом мигрирует в новый конфиг.
+        try:
+            old_cfg = os.path.join(d, "ccm-push.json")
+            new_cfg = os.path.join(d, _OC_PUSH_CONFIG_NAME)
+            if os.path.exists(old_cfg) and not os.path.exists(new_cfg):
+                try:
+                    with open(old_cfg, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and "enabled" in data:
+                        _oc_push_config_save(bool(data.get("enabled", True)))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        for fn in ("ccm-push-v2.js", "ccm-toast.ps1", "ccm-push.json"):
+            try:
+                p = os.path.join(d, fn)
+                if os.path.exists(p) and not os.path.isdir(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        try:
+            import shutil as _sh3
+            p = os.path.join(d, "ccm-push")
+            if os.path.isdir(p):
+                _sh3.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
+        # Конфиг тумблера могли удалить вручную — восстанавливаем дефолт
+        # (вкл), но существующий НЕ трогаем (состояние пользователя свято).
+        try:
+            cfgp = os.path.join(d, _OC_PUSH_CONFIG_NAME)
+            if not os.path.exists(cfgp):
+                _oc_push_config_save(True)
+        except Exception:
+            pass
+        try:
+            icon_dst = os.path.join(d, "ccm-icon.png")
+            icon_bytes = _oc_push_icon_bytes()
+            if icon_bytes:
+                cur = b""
+                if os.path.exists(icon_dst):
+                    try:
+                        with open(icon_dst, "rb") as f:
+                            cur = f.read()
+                    except Exception:
+                        cur = b""
+                if cur != icon_bytes:
+                    with open(icon_dst, "wb") as f:
+                        f.write(icon_bytes)
+        except Exception:
+            pass
+        if (os.path.exists(js) and os.path.isdir(js2dir)
+                and os.path.exists(os.path.join(js2dir, "index.js"))
+                and os.path.exists(ps)):
+            # Регистрация ярлыка — фоном (компиляция C# долгая, запуск не ждёт).
+            try:
+                threading.Thread(target=_oc_push_shortcut, daemon=True).start()
+            except Exception:
+                pass
+            return (js2dir if v2 else js), ps
+        return "", ""
+    except Exception:
+        return "", ""
+
+
+def _oc_push_remove_plugin_file():
+    """Сносит рантайм пушей: v2-плагин (plugin/ccm-notify/), тост
+    ccm-notify.ps1, иконку и v1-файл ccm-push.js. Папка plugin\\ остаётся
+    (чистим содержимое, не её саму), конфиг ccm-notify.json остаётся тоже:
+    он хранит состояние тумблера и нужен рантайм-гейту, чтобы живые сессии
+    гасли мгновенно, а не висели сиротами с тостами при ВЫКЛ."""
+    try:
+        d = _oc_push_dir()
+        if not d:
+            return False
+        for fn in ("ccm-notify.ps1", "ccm-icon.png", "ccm-push.js"):
+            p = os.path.join(d, fn)
+            if os.path.exists(p):
+                try:
+                    if os.path.isdir(p):
+                        import shutil as _sh
+                        _sh.rmtree(p, ignore_errors=True)
+                    else:
+                        os.remove(p)
+                except Exception:
+                    pass
+        try:
+            p = os.path.join(d, "ccm-notify")
+            if os.path.isdir(p):
+                import shutil as _sh2
+                _sh2.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _oc_push_scrub_launch():
+    """Вычищает наши plugin-ссылки из per-launch конфига (best effort).
+    Нужна при выключении: файлы снесены, и висячие ссылки давали бы
+    «failed»-строки при следующем резолве сервиса. Молча, безопасно."""
+    try:
+        p = os.path.join(SETTINGS_DIR, "opencode-launch.json")
+    except Exception:
+        return False
+    try:
+        if not p or not os.path.exists(p):
+            return False
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return False
+        changed = False
+        for key in ("plugin", "plugins"):
+            try:
+                lst = data.get(key)
+                if isinstance(lst, list):
+                    kept = [e for e in lst
+                            if "ccm-push" not in str(e)
+                            and "ccm-notify" not in str(e)]
+                    if len(kept) != len(lst):
+                        if kept:
+                            data[key] = kept
+                        else:
+                            data.pop(key, None)
+                        changed = True
+            except Exception:
+                pass
+        if not changed:
+            return True
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, p)
+        return True
+    except Exception:
+        return False
+
+
+def _oc_global_opencode_config():
+    """Глобальный opencode.json/jsonc пользователя (best effort).
+    Возвращает {} если файла нет, None — если есть, но не читается
+    (тогда рисковать потерей конфига нельзя)."""
+    try:
+        base = os.path.join(os.path.expanduser("~"), ".config", "opencode")
+        for fn in ("opencode.json", "opencode.jsonc"):
+            p = os.path.join(base, fn)
+            if not os.path.exists(p):
+                continue
+            try:
+                # utf-8-sig: переживаем BOM (редакторы/PowerShell его любят).
+                with open(p, "r", encoding="utf-8-sig") as f:
+                    raw = f.read()
+            except Exception:
+                return None
+            data = None
+            try:
+                data = json.loads(raw)
+            except Exception:
+                try:
+                    data = json.loads(_strip_jsonc_comments(raw))
+                except Exception:
+                    data = None
+            if isinstance(data, dict):
+                return data
+            return None
+    except Exception:
+        pass
+    return {}
+
+
+def _oc_sanitize_plugin_list(entries, basedir, file_uri=False):
+    """Чистит plugin-список для scoped-копии: выкидывает локальные пути
+    к несуществующим файлам/папкам. Относительные резолвим от basedir
+    (папка конфига-источника) и переписываем абсолютными — иначе
+    в scoped-копии они резолвятся от чужой папки и плодят битые
+    записи (так было с notify.js: одна висячая ссылка давала две
+    «failed»-строки). file_uri=True — форма file:// (ключ plugin под v1),
+    False — обычный путь (ключ plugins под v2: file://-URI v2-загрузчик
+    молча игнорирует, проверено). Пакетные спеки и словари не трогаем."""
+    try:
+        from urllib.parse import quote as _quote
+    except Exception:
+        _quote = None
+    try:
+        out = []
+        for e in (entries or []):
+            try:
+                if isinstance(e, dict):
+                    out.append(e)
+                    continue
+                s = str(e or "")
+                if not s:
+                    continue
+                low = s.lower()
+                is_path = (low.startswith("file:") or s.startswith("./")
+                           or s.startswith("../") or s.startswith("/")
+                           or s.startswith("\\") or s.startswith("~")
+                           or (len(s) > 2 and s[1] == ":"
+                               and s[2] in ("\\", "/")))
+                if not is_path:
+                    out.append(e)  # пакетный спек — не проверяем
+                    continue
+                if low.startswith("file:"):
+                    try:
+                        from urllib.parse import unquote as _unq
+                        rest = s[len("file://"):] if low.startswith("file://") else s[len("file:"):]
+                        p = _unq(rest)
+                    except Exception:
+                        continue
+                    if p.startswith("/") and len(p) > 2 and p[2] == ":":
+                        p = p[1:]
+                    p = p.replace("/", os.sep)
+                else:
+                    p = os.path.expanduser(s)
+                    if not os.path.isabs(p) and basedir:
+                        p = os.path.normpath(os.path.join(basedir, p))
+                if not os.path.exists(p):
+                    continue  # битая ссылка — выкидываем молча
+                ap = os.path.abspath(p).replace("\\", "/")
+                if file_uri:
+                    try:
+                        rest = ap if ap.startswith("/") else "/" + ap
+                        out.append("file://" + (_quote(rest, safe="/:@")
+                                                if _quote else rest))
+                    except Exception:
+                        out.append(e)
+                else:
+                    out.append(ap)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        try:
+            return list(entries or [])
+        except Exception:
+            return []
+
+
+def _oc_scoped_config_with_push(cfg_path, settings):
+    """Scoped opencode.json для запуска: провайдер + глобал + наш plugin (v1)
+    или plugins (v2). Пуши выкл — возвращаем исходный путь как есть (как в v1).
+    Любая неудача — тоже исходный путь (запуск не ломаем никогда)."""
+    try:
+        base_cfg = cfg_path or ""
+    except Exception:
+        base_cfg = ""
+    try:
+        if not _oc_push_enabled():
+            return base_cfg
+        try:
+            v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            v2 = False
+        js, _ps = _oc_push_files(v2=v2)
+        if not js or not os.path.exists(js):
+            return base_cfg
+        try:
+            # V2: обычный путь к директории (file://-URI загрузчик v2
+            # молча игнорирует, проверено). V1: file://-URI как раньше.
+            _p = os.path.abspath(js).replace("\\", "/")
+            if v2:
+                entry = _p
+            else:
+                from urllib.parse import quote as _quote
+                rest = _p if _p.startswith("/") else "/" + _p
+                entry = "file://" + _quote(rest, safe="/:@")
+        except Exception:
+            return base_cfg
+        data = {}
+        if base_cfg and os.path.exists(base_cfg):
+            # Поток провайдера: та же семантика замены, что сегодня, —
+            # глобал не подмешиваем, только дописываем plugin в копию.
+            try:
+                with open(base_cfg, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = dict(loaded)
+            except Exception:
+                return base_cfg
+        else:
+            # Дефолтный запуск: сегодня OPENCODE_CONFIG нет и действует
+            # глобал — подмешиваем его, чтобы ничего не потерять.
+            glob = _oc_global_opencode_config()
+            if glob is None:
+                return base_cfg
+            data = dict(glob)
+        try:
+            plugins = data.get("plugin")
+            plugins = list(plugins) if isinstance(plugins, list) else []
+        except Exception:
+            plugins = []
+        try:
+            plugins_v2 = data.get("plugins")
+            plugins_v2 = list(plugins_v2) if isinstance(plugins_v2, list) else []
+        except Exception:
+            plugins_v2 = []
+        # Висячие локальные пути (файл/папка удалены) — выкидываем, иначе
+        # каждая такая ссылка даёт «failed»-строку в списке плагинов.
+        try:
+            _gdir = os.path.join(os.path.expanduser("~"), ".config", "opencode")
+        except Exception:
+            _gdir = ""
+        try:
+            _srcdir = (os.path.dirname(os.path.abspath(base_cfg))
+                       if base_cfg and os.path.exists(base_cfg) else _gdir)
+        except Exception:
+            _srcdir = ""
+        try:
+            plugins = _oc_sanitize_plugin_list(plugins, _srcdir, file_uri=True)
+            plugins_v2 = _oc_sanitize_plugin_list(plugins_v2, _srcdir)
+        except Exception:
+            pass
+        try:
+            plugins = [p for p in plugins
+                       if "ccm-push" not in str(p) and "ccm-notify" not in str(p)]
+            plugins_v2 = [p for p in plugins_v2
+                          if "ccm-push" not in str(p) and "ccm-notify" not in str(p)]
+        except Exception:
+            pass
+        if v2:
+            # V2: ключ plugins обычным путём к директории (V1-ключ со
+            # старыми записями не трогаем — чужие плагины пользователя
+            # остаются как были).
+            plugins_v2.append(entry)
+            data["plugins"] = plugins_v2
+        else:
+            plugins.append(entry)
+            data["plugin"] = plugins
+        try:
+            data.setdefault("$schema", "https://opencode.ai/config.json")
+        except Exception:
+            pass
+        try:
+            os.makedirs(SETTINGS_DIR, exist_ok=True)
+            out = os.path.join(SETTINGS_DIR, "opencode-launch.json")
+            tmp = out + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, out)
+        except Exception:
+            return base_cfg
+        return out if os.path.exists(out) else base_cfg
+    except Exception:
+        try:
+            return cfg_path or ""
+        except Exception:
+            return ""
+
+
+def _oc_build_ccm_cli_content(settings):
+    """Inline-JSON для OPENCODE_CLI_CONFIG_CONTENT (opencode v2): те же
+    attention и тема, что в per-launch tui.ccm.json. Пусто — не нужно."""
+    try:
+        sounds_on = bool((settings or {}).get("oc_notify_enabled", False))
+        theme_on = bool((settings or {}).get("oc_theme_enabled", False))
+        if not (sounds_on or theme_on):
+            return ""
+        data = {}
+        if sounds_on:
+            try:
+                data["attention"] = _oc_make_attention(_oc_tui_sounds_from(settings))
+            except Exception:
+                pass
+        if theme_on:
+            try:
+                data["theme"] = {"name": _OC_THEME_FILE.replace(".json", "")}
+            except Exception:
+                pass
+        if not data:
+            return ""
+        return json.dumps(data, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
+def _oc_launch_env(base_env, settings):
+    """Окружение для запуска opencode из приложения: плюс OPENCODE_TUI_CONFIG
+    с нашим конфигом (звуки/тема только здесь). Не получилось — запуск идёт
+    как раньше, без наших довесков (запуск не ломаем никогда)."""
+    try:
+        env = dict(base_env or os.environ)
+    except Exception:
+        env = dict(os.environ)
+    try:
+        # Утёкшую переменную не наследуем вслепую (например, из вкладки,
+        # открытой приложением): дальше ставим только свежий свой.
+        env.pop("OPENCODE_TUI_CONFIG", None)
+        sounds_on = bool((settings or {}).get("oc_notify_enabled", False))
+        theme_on = bool((settings or {}).get("oc_theme_enabled", False))
+        if sounds_on or theme_on:
+            path = _oc_build_ccm_tui(settings)
+            if path and os.path.exists(path):
+                env["OPENCODE_TUI_CONFIG"] = path
+    except Exception:
+        pass
+    return env
+
+
+def _oc_migrate_scoped_config(settings):
+    """Разовая чистка при старте приложения: глобал без наших звуков/темы
+    (ручные запуски чистые), per-launch конфиг свежий. Молча, безопасно."""
+    try:
+        if not isinstance(settings, dict):
+            return
+        if settings.get("oc_notify_enabled", False):
+            try:
+                _oc_snapshot_global_attention(settings)
+            except Exception:
+                pass
+            try:
+                _oc_set_global_sounds_off()
+            except Exception:
+                pass
+        if settings.get("oc_theme_enabled", False):
+            try:
+                if "oc_theme_prev" in settings:
+                    cur = _oc_tui_theme_get()
+                    if cur == _OC_THEME_FILE.replace(".json", ""):
+                        prev = settings.get("oc_theme_prev", "") or ""
+                        _oc_tui_theme_set(prev if prev else None)
+            except Exception:
+                pass
+            # Файл темы: как включение тумблера (если удалили — вернётся).
+            try:
+                _oc_write_theme_file()
+            except Exception:
+                pass
+            # WT-профиль с картинкой: как включение тумблера (чужой не трогаем).
+            try:
+                image = (settings or {}).get("oc_theme_image", "") or ""
+                if image and os.path.exists(image):
+                    op = _oc_clamp_opacity((settings or {}).get("oc_theme_image_opacity", 35))
+                    bg = _oc_theme_bg_path(
+                        image,
+                        _oc_clamp_blur((settings or {}).get("oc_theme_image_blur", 0)),
+                        _oc_clamp_zoom((settings or {}).get("oc_theme_image_zoom", 100)),
+                        _oc_clamp_pos((settings or {}).get("oc_theme_image_posx", 50)),
+                        _oc_clamp_pos((settings or {}).get("oc_theme_image_posy", 50)))
+                    _oc_wt_upsert(bg, op)
+                    _oc_prune_derivatives(image, bg)
+            except Exception:
+                pass
+            # Акрил вкладок: как тумблер темы (чужое значение не трогаем).
+            try:
+                state = _oc_wt_tabrow_state()
+                if state == "missing":
+                    if _oc_wt_tabrow_set(True):
+                        settings["oc_theme_tabrow_ours"] = True
+                        save_settings(settings)
+                elif state is True and settings.get("oc_theme_tabrow_ours", False):
+                    pass
+                else:
+                    if settings.get("oc_theme_tabrow_ours", False):
+                        settings["oc_theme_tabrow_ours"] = False
+                        save_settings(settings)
+            except Exception:
+                pass
+        # Акрил вкладок живёт своей жизнью (включается из диалога темы,
+        # выключается там же) — миграция его не трогает.
+        try:
+            _oc_build_ccm_tui(settings)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 class OcNotifyDialog(QDialog):
@@ -17631,11 +22368,13 @@ class OcNotifyDialog(QDialog):
         try:
             stored = (self._settings or {}).get("oc_notify_sounds", {}) or {}
             for key, _label in OC_NOTIFY_KEYS:
-                if stored.get(key):
+                # Мёртвые пути (файл удалили/переместили) не подхватываем —
+                # строка упадёт на вшитый дефолт вместо тишины.
+                if stored.get(key) and os.path.exists(stored[key]):
                     self._sounds[key] = stored[key]
         except Exception:
             pass
-        # Громкость каждого звука (0-100, дефолт 100) — живёт в настройках
+        # Громкость каждого звука (0-100, дефолт 75) — живёт в настройках
         # приложения и переживает выключение.
         self._volumes = {}
         try:
@@ -17717,6 +22456,24 @@ class OcNotifyDialog(QDialog):
         self.toggle.toggled.connect(self._on_toggle)
         tog_row.addWidget(self.toggle)
         layout.addLayout(tog_row)
+
+        # Push-уведомления: состояние живёт в plugin\ccm-notify.json
+        # (не в общих настройках), по умолчанию включено.
+        push_row = QHBoxLayout()
+        push_row.setContentsMargins(0, 0, 0, 0)
+        push_lbl = QLabel(tr("Push-уведомления"))
+        push_lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        push_lbl.setStyleSheet("color: #d6d6de; background: transparent; border: none;")
+        push_row.addWidget(push_lbl)
+        push_row.addStretch(1)
+        try:
+            _push_on = bool(_oc_push_config_load().get("enabled", True))
+        except Exception:
+            _push_on = True
+        self.push_toggle = KeyToggle(on=_push_on)
+        self.push_toggle.toggled.connect(self._on_push_toggle)
+        push_row.addWidget(self.push_toggle)
+        layout.addLayout(push_row)
 
         # Настройки звуков (всё, что ниже тумблера, — гаснет при выкл):
         # рамка 2px, без скролла — все 4 ряда влезают.
@@ -17865,6 +22622,30 @@ class OcNotifyDialog(QDialog):
         except Exception:
             on = True
         reset.setEnabled(on and not self._is_standard(key))
+        self._refresh_pick(key)
+
+    def _is_standard_file(self, key):
+        """Файл стандартный (встроенный)? Громкость не смотрим: убавил
+        стандартный — кнопка «Выбрать» остаётся доступна, а custom-звук
+        меняется только через «Сбросить»."""
+        try:
+            cur = self._sounds.get(key, "")
+            return bool(cur) and os.path.normcase(os.path.abspath(cur)) == os.path.normcase(
+                os.path.abspath(_oc_notify_defaults()[key]))
+        except Exception:
+            return False
+
+    def _refresh_pick(self, key):
+        """«Выбрать» активна, только если файл стандартный: другой звук
+        сначала надо сбросить. Плюс общий мастер-тумблер."""
+        try:
+            on = bool(self._enabled)
+        except Exception:
+            on = True
+        try:
+            self._rows[key][2].setEnabled(on and self._is_standard_file(key))
+        except Exception:
+            pass
 
     def _refresh_row(self, key):
         status = self._rows[key][0]
@@ -17915,16 +22696,16 @@ class OcNotifyDialog(QDialog):
         self._refresh_row(key)
 
     def _tui_sounds(self):
-        """Пути для tui.json: с учётом громкости каждого звука."""
-        out = {}
-        for key, _label in OC_NOTIFY_KEYS:
-            p = _oc_resolve_sound(key, self._sounds, self._volumes)
-            if p:
-                out[key] = p
-        return out
+        """Пути звуков: с учётом громкости каждого звука."""
+        try:
+            return _oc_tui_sounds_from({"oc_notify_sounds": self._sounds,
+                                        "oc_notify_volumes": self._volumes})
+        except Exception:
+            return {}
 
     def _persist(self):
-        """Пишет выбор и громкости в settings.json + применяет в tui.json (если вкл)."""
+        """Пишет выбор и громкости в settings.json, готовит per-launch конфиг.
+        Глобальный tui.json от наших звуков чистим (ручные запуски тихие)."""
         try:
             self._settings["oc_notify_enabled"] = bool(self._enabled)
             self._settings["oc_notify_sounds"] = dict(self._sounds)
@@ -17934,9 +22715,11 @@ class OcNotifyDialog(QDialog):
             pass
         try:
             if self._enabled:
-                _oc_write_notify_tui(self._tui_sounds())
+                _oc_snapshot_global_attention(self._settings)
+                _oc_set_global_sounds_off()
             else:
-                _oc_remove_notify_tui()
+                _oc_restore_global_attention(self._settings)
+            _oc_build_ccm_tui(self._settings)
         except Exception:
             pass
 
@@ -17963,6 +22746,45 @@ class OcNotifyDialog(QDialog):
         self._persist()
         self._apply_enabled()
 
+    def _on_push_toggle(self, on):
+        # Push-тосты вкл/выкл — пишется в plugin\ccm-notify.json, общие настройки не трогаем.
+        # ВЫКЛ: флаг в json (живые сессии гаснут сами через рантайм-гейт),
+        # ссылка убирается из живого глобала, per-launch конфиг чистится —
+        # и только потом сносим файлы (папка остаётся). Порядок важен:
+        # удаление раньше отвязки роняло резолв сервиса (липкий failed).
+        # ВКЛ: файлы пересоздаются СРАЗУ, ссылка возвращается в глобал
+        # (сервис подхватывает без рестарта), сторож долечивает сессии.
+        try:
+            _oc_push_config_save(bool(on))
+        except Exception:
+            pass
+        if not on:
+            try:
+                _oc_push_ensure_global_ref(False)
+            except Exception:
+                pass
+            try:
+                _oc_push_scrub_launch()
+            except Exception:
+                pass
+            try:
+                _oc_push_remove_plugin_file()
+            except Exception:
+                pass
+        else:
+            try:
+                _oc_push_files()
+            except Exception:
+                pass
+            try:
+                _oc_push_ensure_global_ref(True)
+            except Exception:
+                pass
+            try:
+                _oc_push_ensure_loaded()
+            except Exception:
+                pass
+
     def _choose(self, key):
         start = os.path.dirname(self._sounds.get(key, "") or "")
         if not start or not os.path.isdir(start):
@@ -17971,10 +22793,31 @@ class OcNotifyDialog(QDialog):
             self, tr("Выбрать звук"), start, _OC_AUDIO_FILTER)
         if not path:
             return
+        # Файл могли удалить/переместить между диалогом и копированием —
+        # молча не глотаем, показываем причину.
+        if not os.path.exists(path):
+            try:
+                QMessageBox.warning(self, tr("Ошибка"),
+                    tr("Файл не найден — возможно, он был перемещён."))
+            except Exception:
+                pass
+            return
         # Копируем в папку приложения: оригинал можно удалять — проблем не будет.
         try:
             path = _oc_import_sound(key, path)
-        except Exception:
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, tr("Ошибка"),
+                    tr("Не удалось добавить звук: {}").format(e))
+            except Exception:
+                pass
+            return
+        if not path or not os.path.exists(path):
+            try:
+                QMessageBox.warning(self, tr("Ошибка"),
+                    tr("Не удалось добавить звук: копия не создана."))
+            except Exception:
+                pass
             return
         self._sounds[key] = path
         self._persist()
@@ -18034,10 +22877,11 @@ class OcNotifyDialog(QDialog):
         self._repaint_all()
         QTimer.singleShot(0, self._repaint_all)
         QTimer.singleShot(150, self._repaint_all)
-        # Синхронизация при открытии: если вкл — tui.json приводим к выбору.
+        # Синхронизация при открытии: настройки применяем (глобал чистим
+        # от наших звуков, per-launch конфиг обновляем).
         if self._enabled:
             try:
-                _oc_write_notify_tui(self._tui_sounds())
+                self._persist()
             except Exception:
                 pass
 
@@ -18077,6 +22921,1077 @@ class OcNotifyDialog(QDialog):
 
     # Окно неперетаскиваемое (крестик после drag гас из-за implicit grab),
     # поэтому всегда центрируется при показе: ручных хендлеров мыши нет.
+
+
+class _OcBgPreviewDialog(QDialog):
+    """Большое окно настройки фона: картинка как в терминале + яркость,
+    блюр, масштаб и положение с живым обновлением кадра."""
+
+    WIDTH = 700
+    PIC_W = 640
+    PIC_H = 360
+
+    _SLIDER_STYLE = """
+        QSlider { background: transparent; }
+        QSlider::groove:horizontal { height: 4px; background: rgba(120,120,130,0.25);
+                                     border-radius: 2px; }
+        QSlider::handle:horizontal { width: 12px; height: 12px;
+                                     background: rgb(52,211,153);
+                                     border-radius: 6px; margin: -4px 0; }
+        QSlider::handle:horizontal:disabled { background: rgb(80,80,86); }
+    """
+    _VAL_STYLE = ("QLabel { color: rgb(140,140,148); background: transparent; border: none; }"
+                  "QLabel:disabled { color: rgb(95, 95, 102); background: transparent; border: none; }")
+    _LBL_STYLE = "color: #c6c6cf; background: transparent; border: none;"
+
+    def __init__(self, theme, parent=None):
+        super().__init__(parent)
+        self._theme = theme
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("ocBgPreviewContainer")
+        self._container = container
+        container.setStyleSheet("""
+            QFrame#ocBgPreviewContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(26, 18, 26, 22)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(28, 28)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(left_spacer)
+        title = QLabel(tr("Предпросмотр фона"))
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        title_row.addWidget(title, 1)
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.accept)
+        title_row.addWidget(self.btn_close)
+        layout.addLayout(title_row)
+
+        self.pic = QLabel()
+        self.pic.setFixedSize(self.PIC_W, self.PIC_H)
+        self.pic.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(self.pic, 0, Qt.AlignCenter)
+
+        self.opacity_slider, self.opacity_val = self._add_slider(
+            layout, tr("Яркость картинки"), 10, 80, theme._opacity, "%d%%",
+            self._on_opacity)
+        self.blur_slider, self.blur_val = self._add_slider(
+            layout, tr("Размытие"), 0, 30, theme._blur, "%dpx",
+            self._on_blur)
+        self.zoom_slider, self.zoom_val = self._add_slider(
+            layout, tr("Масштаб"), 50, 200, theme._zoom, "%d%%",
+            self._on_zoom)
+        self.posx_slider, self.posx_val = self._add_slider(
+            layout, tr("Лево — право"), 0, 100, theme._posx, "%d%%",
+            self._on_posx)
+        self.posy_slider, self.posy_val = self._add_slider(
+            layout, tr("Верх — низ"), 0, 100, theme._posy, "%d%%",
+            self._on_posy)
+        # Анимированная гифка: терминал крутит её сам, запекать копии
+        # нельзя (встанет первым кадром) — оставляем только яркость.
+        self._gif_locked = bool(_oc_is_animated(getattr(theme, "_image", ""))
+                                and not _oc_pil_available())
+        if self._gif_locked:
+            for _sl in (self.blur_slider, self.zoom_slider,
+                        self.posx_slider, self.posy_slider):
+                try:
+                    _sl.setEnabled(False)
+                except Exception:
+                    pass
+            gif_hint = QLabel(tr("Для блюра/масштаба гифки нужен Pillow"))
+            gif_hint.setWordWrap(True)
+            gif_hint.setAlignment(Qt.AlignCenter)
+            gif_hint.setFont(QFont("Segoe UI", 8))
+            gif_hint.setStyleSheet("color: rgb(224, 160, 90); background: transparent; border: none;")
+            layout.addWidget(gif_hint)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(self.WIDTH)
+        # Дебаунс перерисовки кадра: подписи едут сразу, картинка догоняет.
+        self._prev_timer = QTimer(self)
+        self._prev_timer.setSingleShot(True)
+        self._prev_timer.setInterval(120)
+        self._prev_timer.timeout.connect(self._refresh_pic)
+        # Живая анимация гифки (если есть): кадры + шаг по таймеру.
+        self._anim_frames = []
+        self._anim_durs = []
+        self._anim_k = 0.0
+        self._anim_idx = 0
+        self._anim_playing = False
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setSingleShot(True)
+        self._anim_timer.timeout.connect(self._anim_step)
+        self._refresh_pic()
+
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(220)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _add_slider(self, layout, label_text, lo, hi, value, fmt, handler):
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        lbl = QLabel(label_text)
+        lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        lbl.setStyleSheet(self._LBL_STYLE)
+        row.addWidget(lbl)
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(lo, hi)
+        slider.setValue(value)
+        slider.setCursor(Qt.PointingHandCursor)
+        slider.setStyleSheet(self._SLIDER_STYLE)
+        slider.valueChanged.connect(handler)
+        slider.sliderReleased.connect(self._theme._apply_image)
+        slider.sliderReleased.connect(self._refresh_pic)
+        slider.valueChanged.connect(lambda _v: self._theme._restart_img_timer())
+        row.addWidget(slider, 1)
+        val = QLabel(fmt % value)
+        val.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        val.setFixedWidth(40)
+        val.setStyleSheet(self._VAL_STYLE)
+        row.addWidget(val)
+        layout.addLayout(row)
+        return slider, val
+
+    def _refresh_pic(self):
+        try:
+            t = self._theme
+            if self._anim_playing and self._anim_frames:
+                self._anim_show(self._anim_idx)
+                return
+            pix = _oc_render_preview(t._image, t._blur, t._opacity,
+                                     t._zoom, t._posx, t._posy,
+                                     self.PIC_W, self.PIC_H)
+            if not pix.isNull():
+                self.pic.setPixmap(pix)
+        except Exception:
+            pass
+
+    def _anim_start(self):
+        """Запустить живую анимацию гифки (кадры грузим один раз)."""
+        try:
+            self._anim_stop()
+            t = self._theme
+            frames, durs, k = _oc_anim_frames(t._image, self.PIC_W, self.PIC_H)
+            if len(frames) < 2:
+                return
+            self._anim_frames = frames
+            self._anim_durs = durs
+            self._anim_k = k
+            self._anim_idx = 0
+            self._anim_playing = True
+            self._anim_show(0)
+            try:
+                self._anim_timer.start(max(40, int(durs[0])))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _anim_show(self, idx):
+        """Показать кадр анимации с текущими настройками слайдеров."""
+        try:
+            t = self._theme
+            fr = self._anim_frames[idx]
+            img = fr.scaled(self.PIC_W, self.PIC_H, Qt.KeepAspectRatioByExpanding,
+                            Qt.SmoothTransformation)
+            x = max(0, (img.width() - self.PIC_W) // 2)
+            y = max(0, (img.height() - self.PIC_H) // 2)
+            img = img.copy(x, y, self.PIC_W, self.PIC_H)
+            try:
+                rb = _oc_clamp_blur(t._blur)
+                rprev = min(48, max(0, int(round(rb * self._anim_k)))) if rb > 0 else 0
+                if rprev > 0:
+                    img = _oc_blur_image(img, rprev)
+            except Exception:
+                pass
+            # Позиция/масштаб уже в кадре терминала нет — здесь честный кроп:
+            # окно кропа ездит теми же дробями, что запекание в файл.
+            try:
+                zm = _oc_clamp_zoom(t._zoom)
+                px = _oc_clamp_pos(t._posx)
+                py = _oc_clamp_pos(t._posy)
+                if not (zm == 100 and px == 50 and py == 50):
+                    sw, sh = img.width(), img.height()
+                    if zm >= 100:
+                        f = 100.0 / zm
+                        cw, ch = max(1, int(sw * f)), max(1, int(sh * f))
+                        cx = int(round((sw - cw) * px / 100.0))
+                        cy = int(round((sh - ch) * py / 100.0))
+                        img = img.copy(cx, cy, cw, ch).scaled(
+                            sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                    else:
+                        f = zm / 100.0
+                        tw, th = max(1, int(sw * f)), max(1, int(sh * f))
+                        small = img.scaled(tw, th, Qt.IgnoreAspectRatio,
+                                           Qt.SmoothTransformation)
+                        base = QImage(sw, sh, QImage.Format_ARGB32)
+                        base.fill(QColor(12, 12, 12))
+                        pp = QPainter(base)
+                        try:
+                            pp.drawImage(int(round((sw - tw) * px / 100.0)),
+                                         int(round((sh - th) * py / 100.0)), small)
+                        finally:
+                            try:
+                                pp.end()
+                            except Exception:
+                                pass
+                        img = base
+            except Exception:
+                pass
+            pix = _oc_compose_mock(img, t._opacity, self.PIC_W, self.PIC_H)
+            if not pix.isNull():
+                self.pic.setPixmap(pix)
+        except Exception:
+            pass
+
+    def _anim_step(self):
+        try:
+            if not self._anim_playing or not self._anim_frames:
+                return
+            self._anim_idx = (self._anim_idx + 1) % len(self._anim_frames)
+            self._anim_show(self._anim_idx)
+            try:
+                self._anim_timer.start(max(40, int(self._anim_durs[self._anim_idx])))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _anim_stop(self):
+        try:
+            self._anim_playing = False
+            self._anim_timer.stop()
+        except Exception:
+            pass
+        self._anim_frames = []
+        self._anim_durs = []
+        self._anim_idx = 0
+
+    def hideEvent(self, event):
+        try:
+            self._anim_stop()
+        except Exception:
+            pass
+        super().hideEvent(event)
+
+    def _kick_preview(self):
+        # Передний фронт: первый тик обновляет сразу, остальные не чаще
+        # интервала — картинка едет за пальцем, а не догоняет после паузы.
+        try:
+            if not self._prev_timer.isActive():
+                self._refresh_pic()
+                self._prev_timer.start()
+        except Exception:
+            pass
+
+    def _on_opacity(self, value):
+        self._theme._on_opacity_changed(value)
+        try:
+            self.opacity_val.setText("%d%%" % self._theme._opacity)
+        except Exception:
+            pass
+        self._theme._restart_img_timer()
+        self._kick_preview()
+
+    def _on_blur(self, value):
+        self._theme._on_blur_changed(value)
+        try:
+            self.blur_val.setText("%dpx" % self._theme._blur)
+        except Exception:
+            pass
+        self._theme._restart_img_timer()
+        self._kick_preview()
+
+    def _on_zoom(self, value):
+        self._theme._on_zoom_changed(value)
+        try:
+            self.zoom_val.setText("%d%%" % self._theme._zoom)
+        except Exception:
+            pass
+        self._theme._restart_img_timer()
+        self._kick_preview()
+
+    def _on_posx(self, value):
+        self._theme._on_posx_changed(value)
+        try:
+            self.posx_val.setText("%d%%" % self._theme._posx)
+        except Exception:
+            pass
+        self._theme._restart_img_timer()
+        self._kick_preview()
+
+    def _on_posy(self, value):
+        self._theme._on_posy_changed(value)
+        try:
+            self.posy_val.setText("%d%%" % self._theme._posy)
+        except Exception:
+            pass
+        self._theme._restart_img_timer()
+        self._kick_preview()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_anim.start()
+        # Живая анимация гифки — при каждом показе заново.
+        try:
+            self._anim_start()
+        except Exception:
+            pass
+        # Окно ниже центра приложения (по центру перекрывает окно темы).
+        try:
+            if not getattr(self, "_moved_once", False):
+                self._moved_once = True
+                parent_win = self.parent().window() if self.parent() else None
+                if parent_win is not None and parent_win.isVisible():
+                    pg = parent_win.frameGeometry()
+                    x = pg.x() + max(0, (pg.width() - self.width()) // 2)
+                    y = pg.y() + int(pg.height() * 0.62) - self.height() // 2
+                    try:
+                        screen = QGuiApplication.primaryScreen().availableGeometry()
+                        x = max(screen.x(), min(x, screen.x() + screen.width() - self.width()))
+                        y = max(screen.y(), min(y, screen.y() + screen.height() - self.height()))
+                    except Exception:
+                        pass
+                    self.move(x, y)
+        except Exception:
+            pass
+
+    def accept(self):
+        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        fade.setDuration(200)
+        fade.setStartValue(self._opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(_OcBgPreviewDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        self.accept()
+
+
+class OcThemeDialog(QDialog):
+    """Окно прозрачной темы opencode (только вкладка Custom URL):
+    тумблер + картинка фона. Включение кладёт вшитую тему в папку тем
+    и создаёт отдельный WT-профиль «Claude Code Manager» (основной
+    профиль не трогаем). Выключение удаляет и то, и другое полностью."""
+
+    WIDTH = 560
+
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self._image = (settings or {}).get("oc_theme_image", "") or ""
+        if self._image and not os.path.exists(self._image):
+            self._image = ""
+        self._opacity = _oc_clamp_opacity((settings or {}).get("oc_theme_image_opacity", 35))
+        self._blur = _oc_clamp_blur((settings or {}).get("oc_theme_image_blur", 0))
+        self._zoom = _oc_clamp_zoom((settings or {}).get("oc_theme_image_zoom", 100))
+        # Позиция: новые ключи, иначе миграция со старого выравнивания.
+        try:
+            s = settings or {}
+            if "oc_theme_image_posx" in s or "oc_theme_image_posy" in s:
+                self._posx = _oc_clamp_pos(s.get("oc_theme_image_posx", 50))
+                self._posy = _oc_clamp_pos(s.get("oc_theme_image_posy", 50))
+            else:
+                old = _ALIGN_TO_POS.get(_oc_clamp_align(s.get("oc_theme_image_align", "center")),
+                                          (50, 50))
+                self._posx, self._posy = int(old[0]), int(old[1])
+        except Exception:
+            self._posx, self._posy = 50, 50
+        self._enabled = bool((settings or {}).get("oc_theme_enabled", False))
+        self._has_wt = bool(find_windows_terminal())
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("ocThemeContainer")
+        self._container = container
+        container.setStyleSheet("""
+            QFrame#ocThemeContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(26, 18, 26, 22)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(28, 28)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(left_spacer)
+        title = QLabel(tr("Прозрачная тема opencode"))
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        title_row.addWidget(title, 1)
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.accept)
+        title_row.addWidget(self.btn_close)
+        layout.addLayout(title_row)
+
+        hint = QLabel(tr("Включишь — тема opencode станет прозрачной. Добавишь картинку — она станет фоном терминала."))
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setStyleSheet("color: rgb(160, 160, 168); background: transparent; border: none;")
+        layout.addWidget(hint)
+
+        scope = QLabel(tr("Пока включено, тема действует во всех окнах opencode."))
+        scope.setWordWrap(True)
+        scope.setAlignment(Qt.AlignCenter)
+        scope.setFont(QFont("Segoe UI", 9))
+        scope.setStyleSheet("color: rgb(160, 160, 168); background: transparent; border: none;")
+        layout.addWidget(scope)
+
+        warn = QLabel(tr("После изменения перезапустите opencode CLI"))
+        warn.setAlignment(Qt.AlignCenter)
+        warn.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        warn.setStyleSheet("color: rgb(224, 90, 90); background: transparent; border: none;")
+        layout.addWidget(warn)
+
+        if not self._has_wt:
+            nowt = QLabel(tr("Нет wt — только тема, без картинки."))
+            nowt.setAlignment(Qt.AlignCenter)
+            nowt.setFont(QFont("Segoe UI", 9, QFont.Bold))
+            nowt.setStyleSheet("color: rgb(224, 160, 90); background: transparent; border: none;")
+            layout.addWidget(nowt)
+
+        tog_row = QHBoxLayout()
+        tog_row.setContentsMargins(0, 0, 0, 0)
+        tog_lbl = QLabel(tr("Тема"))
+        tog_lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        tog_lbl.setStyleSheet("color: #d6d6de; background: transparent; border: none;")
+        tog_row.addWidget(tog_lbl)
+        tog_row.addStretch(1)
+        self.toggle = KeyToggle(on=self._enabled)
+        self.toggle.toggled.connect(self._on_toggle)
+        tog_row.addWidget(self.toggle)
+        layout.addLayout(tog_row)
+
+        # Картинка фона (гаснет при выкл).
+        self.img_frame = QFrame()
+        self.img_frame.setObjectName("ocThemeImg")
+        self.img_frame.setStyleSheet("""
+            QFrame#ocThemeImg { background: transparent;
+                               border: 2px solid rgb(60, 60, 65);
+                               border-radius: 8px; }
+        """)
+        img_lay = QVBoxLayout(self.img_frame)
+        img_lay.setContentsMargins(8, 8, 12, 8)
+        img_lay.setSpacing(6)
+        img_lbl = QLabel(tr("Картинка для фона:"))
+        img_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        img_lbl.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
+        img_lay.addWidget(img_lbl)
+        img_row = QHBoxLayout()
+        img_row.setContentsMargins(0, 0, 0, 0)
+        img_row.setSpacing(6)
+        self.img_status = QLabel(self._img_label())
+        self.img_status.setFont(QFont("Segoe UI", 9))
+        self.img_status.setStyleSheet("color: rgb(140,140,148); background: transparent; border: none;")
+        self.img_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        img_row.addWidget(self.img_status, 1)
+        self.btn_pick = StyledButton(tr("Выбрать картинку"), compact=True)
+        self.btn_pick.set_hover_color(52, 211, 153)
+        self.btn_pick.setFixedHeight(30)
+        self.btn_pick.clicked.connect(self._choose)
+        img_row.addWidget(self.btn_pick)
+        self.btn_clear = StyledButton(tr("Убрать"), compact=True)
+        self.btn_clear.set_hover_color(224, 90, 90)
+        self.btn_clear.setFixedHeight(30)
+        self.btn_clear.clicked.connect(self._clear_image)
+        img_row.addWidget(self.btn_clear)
+        img_lay.addLayout(img_row)
+        # Дебаунс применения картинки (стрелки/колесо слайдеров не дают
+        # sliderReleased). Сами настройки картинки — в окне предпросмотра.
+        self._img_timer = QTimer(self)
+        self._img_timer.setSingleShot(True)
+        self._img_timer.setInterval(400)
+        self._img_timer.timeout.connect(self._apply_image)
+        # Размытие, масштаб и положение картинки — в окне предпросмотра.
+        # Предпросмотр результата с учётом всех настроек.
+        pv_row = QHBoxLayout()
+        # Предпросмотр результата с учётом всех настроек.
+        pv_row = QHBoxLayout()
+        pv_row.setContentsMargins(0, 0, 0, 0)
+        pv_row.addStretch(1)
+        self.btn_preview = StyledButton(tr("Предпросмотр"), compact=True)
+        self.btn_preview.set_hover_color(120, 180, 230)
+        self.btn_preview.setFixedHeight(30)
+        self.btn_preview.clicked.connect(self._preview)
+        pv_row.addWidget(self.btn_preview)
+        img_lay.addLayout(pv_row)
+        layout.addWidget(self.img_frame)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(self.WIDTH)
+        self._apply_enabled(animate=False)
+        # Разовый разбор мусора прошлых версий — без записи в терминал.
+        try:
+            if self._image and os.path.exists(self._image):
+                _oc_prune_derivatives(self._image, self._bg_path())
+        except Exception:
+            pass
+
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(220)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _img_label(self):
+        if self._image and os.path.exists(self._image):
+            return os.path.basename(self._image)
+        return tr("Без картинки")
+
+    def _refresh_image(self):
+        self.img_status.setText(self._img_label())
+        self.img_status.setToolTip(self._image)
+        has = bool(self._image and os.path.exists(self._image))
+        try:
+            # Как у звуков: пока стоит картинка — «Выбрать» тёмная,
+            # сначала надо «Убрать». Плюс общий мастер-тумблер.
+            self.btn_pick.setEnabled((not has) and self.img_frame.isEnabled())
+        except Exception:
+            pass
+        try:
+            self.btn_clear.setEnabled(has and self.img_frame.isEnabled())
+        except Exception:
+            pass
+        try:
+            self.btn_preview.setEnabled(has and self.img_frame.isEnabled())
+        except Exception:
+            pass
+
+    def _persist(self):
+        try:
+            self._settings["oc_theme_enabled"] = bool(self._enabled)
+            self._settings["oc_theme_image"] = self._image or ""
+            self._settings["oc_theme_image_opacity"] = int(getattr(self, "_opacity", 35))
+            self._settings["oc_theme_image_blur"] = int(getattr(self, "_blur", 0))
+            self._settings["oc_theme_image_zoom"] = int(getattr(self, "_zoom", 100))
+            self._settings["oc_theme_image_posx"] = int(getattr(self, "_posx", 50))
+            self._settings["oc_theme_image_posy"] = int(getattr(self, "_posy", 50))
+            self._settings["oc_theme_tabrow_ours"] = bool((self._settings or {}).get("oc_theme_tabrow_ours", False))
+            save_settings(self._settings)
+        except Exception:
+            pass
+        try:
+            _oc_build_ccm_tui(self._settings)
+        except Exception:
+            pass
+
+    def _bg_path(self):
+        """Путь для WT-профиля: кадрирование + блюр, исходник без изменений."""
+        try:
+            return _oc_theme_bg_path(self._image, self._blur, self._zoom,
+                                     self._posx, self._posy)
+        except Exception:
+            return self._image
+
+    def _ensure_tabrow(self):
+        """Акрил панели вкладок при включённой теме. Чужое значение не трогаем.
+        Учти: ключ корневой для всего WT — блюрит верх всех окон терминала."""
+        try:
+            state = _oc_wt_tabrow_state()
+            if state == "no-settings":
+                return
+            if state == "missing":
+                if _oc_wt_tabrow_set(True):
+                    self._settings["oc_theme_tabrow_ours"] = True
+            elif state is True and (self._settings or {}).get("oc_theme_tabrow_ours"):
+                pass
+            else:
+                self._settings["oc_theme_tabrow_ours"] = False
+        except Exception:
+            pass
+
+    def _restore_tabrow(self):
+        """Убираем акрил панели вкладок, только если включали его сами."""
+        try:
+            if (self._settings or {}).get("oc_theme_tabrow_ours"):
+                if _oc_wt_tabrow_set(None):
+                    self._settings["oc_theme_tabrow_ours"] = False
+        except Exception:
+            pass
+
+    def _on_opacity_changed(self, value):
+        self._opacity = _oc_clamp_opacity(value)
+
+    def _on_blur_changed(self, value):
+        self._blur = _oc_clamp_blur(value)
+
+    def _on_zoom_changed(self, value):
+        self._zoom = _oc_clamp_zoom(value)
+
+    def _on_posx_changed(self, value):
+        self._posx = _oc_clamp_pos(value)
+
+    def _on_posy_changed(self, value):
+        self._posy = _oc_clamp_pos(value)
+
+    def _restart_img_timer(self):
+        try:
+            self._img_timer.stop()
+            self._img_timer.start()
+        except Exception:
+            pass
+
+    def _apply_image(self):
+        try:
+            self._img_timer.stop()
+        except Exception:
+            pass
+        self._ensure_tabrow()
+        self._persist()
+        try:
+            if self._enabled and self._image and os.path.exists(self._image):
+                bg = self._bg_path()
+                _oc_wt_upsert(bg, self._opacity)
+                _oc_prune_derivatives(self._image, bg)
+        except Exception:
+            pass
+
+    def _preview(self):
+        if not (self._image and os.path.exists(self._image)):
+            return
+        try:
+            dlg = _OcBgPreviewDialog(self, self)
+            dlg.exec()
+        except Exception:
+            pass
+
+    def _apply_enabled(self, animate=True):
+        on = bool(self._enabled)
+        try:
+            self.toggle.set_on(on, animate=animate)
+        except Exception:
+            pass
+        for w in (self.img_frame,):
+            try:
+                w.setEnabled(on)
+            except Exception:
+                pass
+        self._refresh_image()
+        self._repaint_all()
+
+    def _on_toggle(self, on):
+        on = bool(on)
+        if on:
+            if not _oc_write_theme_file():
+                try:
+                    self.toggle.set_on(False, animate=True)
+                except Exception:
+                    pass
+                try:
+                    QMessageBox.warning(self, tr("Ошибка"),
+                                        tr("Не удалось записать файл темы."))
+                except Exception:
+                    pass
+                return
+            # Профиль терминала — только если есть картинка, иначе он
+            # бессмысленен (прозрачность терминалу не нужна).
+            if self._image and os.path.exists(self._image):
+                bg = self._bg_path()
+                ok, reason = _oc_wt_upsert(bg, self._opacity)
+                _oc_prune_derivatives(self._image, bg)
+                if not ok and reason == "foreign":
+                    try:
+                        QMessageBox.warning(self, tr("Профиль занят"),
+                                            tr("Профиль с таким именем уже есть и он не наш — терминал трогать не будем, тема всё равно включится."))
+                    except Exception:
+                        pass
+            else:
+                _oc_wt_remove()
+            # Акрил панели вкладок — пока тема включена (ключ общий для всего
+            # WT: блюрит верх всех окон, не только наших).
+            self._ensure_tabrow()
+            # Глобальную тему НЕ ставим (иначе её увидят ручные запуски):
+            # наша едет только в per-launch конфиге. Глобал, наоборот,
+            # чистим до исходной. Запоминаем, что там было.
+            try:
+                prev = _oc_tui_theme_get()
+                if prev == _OC_THEME_FILE.replace(".json", ""):
+                    prev = (self._settings or {}).get("oc_theme_prev", "") or ""
+                else:
+                    self._settings["oc_theme_prev"] = prev if prev else ""
+                    save_settings(self._settings)
+            except Exception:
+                prev = ""
+            _oc_tui_theme_set(prev if prev else None)
+            self._enabled = True
+        else:
+            _oc_remove_theme_file()
+            _oc_wt_remove()
+            self._restore_tabrow()
+            # Возвращаем исходную тему, но только если там всё ещё наша:
+            # вдруг пользователь сам сменил тему вручную — чужой выбор
+            # не затираем.
+            try:
+                if _oc_tui_theme_get() == _OC_THEME_FILE.replace(".json", ""):
+                    prev = (self._settings or {}).get("oc_theme_prev", "") or ""
+                    _oc_tui_theme_set(prev if prev else None)
+            except Exception:
+                pass
+            self._enabled = False
+        self._persist()
+        self._apply_enabled()
+
+    def _choose(self):
+        start = os.path.dirname(self._image or "")
+        if not start or not os.path.isdir(start):
+            start = os.path.expanduser("~")
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("Выбрать картинку"), start,
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*.*)")
+        if not path:
+            return
+        try:
+            path = _oc_import_image(path)
+        except Exception:
+            return
+        old = self._image or ""
+        self._image = path
+        try:
+            # Замена, а не добавление: старый исходник и его копии — удалить.
+            if old and old != path:
+                _oc_drop_blur_variants(old)
+                _oc_drop_source_file(old)
+        except Exception:
+            pass
+        self._persist()
+        self._refresh_image()
+        if self._enabled:
+            if self._image and os.path.exists(self._image):
+                bg = self._bg_path()
+                _oc_wt_upsert(bg, self._opacity)
+                _oc_prune_derivatives(self._image, bg)
+            else:
+                _oc_wt_remove()
+
+    def _clear_image(self):
+        cur = self._image or ""
+        self._image = ""
+        try:
+            _oc_drop_blur_variants(cur)
+        except Exception:
+            pass
+        try:
+            if cur and os.path.basename(cur).startswith("oc_bg_"):
+                folder = os.path.normcase(_oc_images_dir() + os.sep)
+                if os.path.normcase(cur).startswith(folder) and os.path.exists(cur):
+                    os.remove(cur)
+        except Exception:
+            pass
+        self._persist()
+        self._refresh_image()
+        if self._enabled:
+            # Картинки больше нет — профиль без неё бессмысленен, удаляем.
+            _oc_wt_remove()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_anim.start()
+        self._repaint_all()
+        QTimer.singleShot(0, self._repaint_all)
+        QTimer.singleShot(150, self._repaint_all)
+
+    def _repaint_all(self):
+        try:
+            self._container.update()
+            self.img_frame.update()
+            self.update()
+            self.repaint()
+            try:
+                self.img_frame.repaint()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def accept(self):
+        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        fade.setDuration(200)
+        fade.setStartValue(self._opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(OcThemeDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        self.accept()
+
+
+class OcSettingsDialog(QDialog):
+    """Маленькое окно настроек Custom URL: две строки — «Звуки» и «Тема».
+    Клик по строке открывает исходное окно соответствующей настройки."""
+
+    WIDTH = 420
+
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("ocSettingsContainer")
+        container.setStyleSheet("""
+            QFrame#ocSettingsContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(26, 18, 26, 22)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(28, 28)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(left_spacer)
+        title = QLabel(tr("Настройки"))
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #CCCCCC; background: transparent; border: none;")
+        title_row.addWidget(title, 1)
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.accept)
+        title_row.addWidget(self.btn_close)
+        layout.addLayout(title_row)
+
+        self._rows = {}
+        layout.addWidget(self._make_row("Speaker", tr("Звуки"), "oc_notify_enabled", self._open_sounds))
+        layout.addWidget(self._make_row("Image", tr("Тема"), "oc_theme_enabled", self._open_theme))
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedWidth(self.WIDTH)
+        self._refresh_states()
+
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(220)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _make_row(self, glyph, title, key, opener):
+        card = _OcClickFrame()
+        card.setObjectName("ocSettingsRow")
+        card.setCursor(Qt.PointingHandCursor)
+        card.setStyleSheet("""
+            QFrame#ocSettingsRow {
+                background-color: #18181f;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 10px;
+            }
+        """)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(12, 10, 12, 10)
+        row.setSpacing(10)
+        icon = QLabel(parent=card)
+        icon.setFixedSize(20, 20)
+        icon.setStyleSheet("background: transparent; border: none;")
+        icon.setPixmap(_paint_update_glyph(glyph, 20, (150, 150, 158)))
+        row.addWidget(icon)
+        name = QLabel(title, parent=card)
+        name.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        name.setStyleSheet("color: #d6d6de; background: transparent; border: none;")
+        row.addWidget(name)
+        row.addStretch(1)
+        status = QLabel(parent=card)
+        status.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        status.setStyleSheet("color: rgb(150, 150, 158); background: transparent; border: none;")
+        row.addWidget(status)
+        chev = QLabel("›", parent=card)
+        chev.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        chev.setStyleSheet("color: rgb(150, 150, 158); background: transparent; border: none;")
+        row.addWidget(chev)
+        try:
+            card.clicked.connect(opener)
+        except Exception:
+            pass
+        # Плавное загорание/затухание только рамки: тики 20мс гонят
+        # _hover_progress 0->1, цвет границы интерполируется
+        # серый (60,60,65) -> синий (120,180,230). Иконка, название,
+        # статус и стрелка при наведении не меняются.
+        border_gray = (60, 60, 65)
+        border_blue = (120, 180, 230)
+
+        def _apply_border(prog):
+            try:
+                r = int(border_gray[0] + (border_blue[0] - border_gray[0]) * prog)
+                g = int(border_gray[1] + (border_blue[1] - border_gray[1]) * prog)
+                b = int(border_gray[2] + (border_blue[2] - border_gray[2]) * prog)
+                card.setStyleSheet(
+                    "QFrame#ocSettingsRow { background-color: #18181f;"
+                    " border: 2px solid rgb(%d, %d, %d); border-radius: 10px; }" % (r, g, b))
+            except Exception:
+                pass
+
+        def _hover_tick():
+            try:
+                cur = card._hover_progress
+                tgt = card._hover_target
+                if abs(cur - tgt) > 0.01:
+                    cur = min(1.0, max(0.0, cur + (0.12 if tgt > cur else -0.12)))
+                    card._hover_progress = cur
+                    _apply_border(cur)
+                else:
+                    card._hover_progress = tgt
+                    _apply_border(tgt)
+                    try:
+                        card._hover_timer.stop()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        card._hover_progress = 0.0
+        card._hover_target = 0.0
+        card._hover_timer = QTimer(card)
+        card._hover_timer.timeout.connect(_hover_tick)
+
+        class _RowHover(QObject):
+            """Наведение: цель 1.0 (рамка плавно синеет), уход: цель 0.0."""
+
+            def eventFilter(self, obj, ev):
+                try:
+                    t = ev.type()
+                    if t == QEvent.Enter:
+                        card._hover_target = 1.0
+                        if not card._hover_timer.isActive():
+                            card._hover_timer.start(20)
+                    elif t == QEvent.Leave:
+                        card._hover_target = 0.0
+                        if not card._hover_timer.isActive():
+                            card._hover_timer.start(20)
+                except Exception:
+                    pass
+                return False
+
+        filt = _RowHover(card)
+        card.installEventFilter(filt)
+        card._hover_filter = filt
+        self._rows[key] = (card, icon, status)
+        self._refresh_row(key)
+        return card
+
+    def _refresh_row(self, key):
+        try:
+            _card, icon, status = self._rows[key]
+            on = bool((self._settings or {}).get(key, False))
+            status.setText(tr("Вкл") if on else tr("Выкл"))
+            status.setStyleSheet(
+                "color: %s; background: transparent; border: none;" % (
+                    "rgb(52, 211, 153)" if on else "rgb(150, 150, 158)"))
+            try:
+                icon.setPixmap(_paint_update_glyph(
+                    "Speaker" if key == "oc_notify_enabled" else "Image",
+                    20, (52, 211, 153) if on else (150, 150, 158)))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _refresh_states(self):
+        for key in list(getattr(self, "_rows", {}).keys()):
+            self._refresh_row(key)
+
+    def _open_sounds(self):
+        try:
+            OcNotifyDialog(self._settings, self).exec()
+        except Exception:
+            pass
+        self._refresh_states()
+
+    def _open_theme(self):
+        try:
+            OcThemeDialog(self._settings, self).exec()
+        except Exception:
+            pass
+        self._refresh_states()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_anim.start()
+        # Окно неперетаскиваемое — всегда строго по центру.
+        try:
+            parent_win = self.parent().window() if self.parent() else None
+            if parent_win is not None and parent_win.isVisible():
+                pg = parent_win.frameGeometry()
+                cx, cy = pg.center().x(), pg.center().y()
+            else:
+                screen = QGuiApplication.primaryScreen().availableGeometry()
+                cx, cy = screen.center().x(), screen.center().y()
+            self.move(cx - self.width() // 2, cy - self.height() // 2)
+        except Exception:
+            pass
+        self._refresh_states()
+
+    def accept(self):
+        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        fade.setDuration(200)
+        fade.setStartValue(self._opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(lambda: super(OcSettingsDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        self.accept()
 
 
 class OcModelDialog(QDialog):
@@ -18335,8 +24250,9 @@ class OcModelDialog(QDialog):
 
 class _OcModelsLoader(QThread):
     """Фоновая загрузка моделей вкладки Custom URL без блокировки UI:
-    HTTP {base_url}/models (список ID) + opencode models --verbose
-    (capabilities.reasoning для эндпоинта и для бесплатных моделей opencode).
+    HTTP {base_url}/models (список ID) + opencode models (v1 --verbose:
+    capabilities.reasoning для эндпоинта и для бесплатных моделей opencode;
+    v2 — плоский список, reasoning неизвестен).
     Методы owner не трогают GUI, поэтому их вызов из потока безопасен."""
 
     loaded = Signal(list, dict, list, dict)  # endpoint_ids, endpoint_reasoning, free_ids, free_reasoning
@@ -21164,16 +27080,23 @@ class _UrlCard(QFrame):
     """Карточка Base URL в менеджере (стиль менеджера ключей): клик —
     выбрать URL, крестик — удалить. Выбранная плавно «загорается» зелёным
     (флэш + интерполяция, как у KeyCard), у базовых (DEFAULT_URLS) крестика
-    нет — только пометка «Базовый»."""
+    нет — только пометка «Базовый».
+    accent=(r,g,b) — перекрасить подсветку (свои модели: серый 145,145,150).
+    badge_text — свой текст бейджа вместо «Базовый» (None — без бейджа)."""
 
     clicked = Signal()
 
     def __init__(self, url, selected=False, is_default=False,
-                 on_delete=None, parent=None):
+                 on_delete=None, parent=None, accent=None, badge_text=None):
         super().__init__(parent)
         self._url = url
         self._is_default = bool(is_default)
         self._on_delete = on_delete
+        try:
+            self._accent = tuple(accent) if accent else (52, 211, 153)
+        except Exception:
+            self._accent = (52, 211, 153)
+        self._badge_text = badge_text
         self.setObjectName("urlCard")
         self.setCursor(Qt.PointingHandCursor)
         # Рамку и свечение рисуем сами в paintEvent (как KeyCard) —
@@ -21200,6 +27123,12 @@ class _UrlCard(QFrame):
         self.badge.setFont(QFont("Segoe UI", 8, QFont.Bold))
         if self._is_default:
             self.badge.setText(tr("Базовый"))
+            self.badge.setStyleSheet(
+                "color: rgb(150,150,158); background: rgba(120,120,130,0.10); "
+                "border: 1px solid rgba(120,120,130,0.35); border-radius: 6px; "
+                "padding: 2px 8px;")
+        elif self._badge_text:
+            self.badge.setText(self._badge_text)
             self.badge.setStyleSheet(
                 "color: rgb(150,150,158); background: rgba(120,120,130,0.10); "
                 "border: 1px solid rgba(120,120,130,0.35); border-radius: 6px; "
@@ -21242,22 +27171,23 @@ class _UrlCard(QFrame):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(24, 24, 31))
         p.drawRoundedRect(rect, 10, 10)
-        # Зелёная подложка — только с выбором (в покое чистый серый).
+        # Подложка — только с выбором (в покое чистый серый).
+        ar, ag, ab = self._accent
         tint_a = int(26 * sel)
-        p.setBrush(QColor(52, 211, 153, min(255, tint_a)))
+        p.setBrush(QColor(ar, ag, ab, min(255, tint_a)))
         p.drawRoundedRect(rect, 10, 10)
-        # Рамка: серая в покое, зелёная и толще при выборе
+        # Рамка: серая в покое, в цвете акцента и толще при выборе
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(
-            QColor(int(60 + (52 - 60) * sel), int(60 + (211 - 60) * sel),
-                   int(65 + (153 - 65) * sel)),
+            QColor(int(60 + (ar - 60) * sel), int(60 + (ag - 60) * sel),
+                   int(65 + (ab - 65) * sel)),
             2.0 + 1.2 * sel
         ))
         p.drawRoundedRect(rect, 10, 10)
         # Индикатор выбора — точка слева вверху, как у ключей
         if sel > 0.02:
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(52, 211, 153, int(255 * min(1.0, sel))))
+            p.setBrush(QColor(ar, ag, ab, int(255 * min(1.0, sel))))
             p.drawEllipse(QPointF(11.5, 9.5), 3.2, 3.2)
         p.end()
 
@@ -22557,7 +28487,7 @@ class CustomTokenDialog(QDialog):
                 selection-background-color: rgb(50, 50, 55);
             }
         """)
-        self.base_urls = list(settings.get("custom_base_urls", ["https://cc.freemodel.dev"]))
+        self.base_urls = list(settings.get("custom_base_urls", DEFAULT_BASE_URLS))
         self.url_combo.addItems(self.base_urls)
         saved_url = settings.get("custom_base_url", self.base_urls[0])
         if saved_url in self.base_urls:
@@ -22634,6 +28564,19 @@ class CustomTokenDialog(QDialog):
         """)
         models = ["Fable 5.1", "Fable 5", "Opus 5.5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5.5", "Sonnet 5", "Sonnet 4.6", "Sonnet 4"]
         self.model_combo.addItems(models)
+        # Свои модели — тоже в список, иначе сохранённая своя сбросится ниже.
+        try:
+            _setup_customs = [m for m in (settings.get("custom_models", []) or [])
+                              if isinstance(m, str) and m.strip()]
+        except Exception:
+            _setup_customs = []
+        for _cm in _setup_customs:
+            try:
+                if _cm not in models:
+                    models.append(_cm)
+                    self.model_combo.addItem(_cm)
+            except Exception:
+                pass
         # Цвета для каждой модели (от зелёного к красному)
         _sd_model_colors = {
             "Sonnet 4":     QColor(120, 220, 120),
@@ -23968,7 +29911,7 @@ class DownloadUpdateDialog(QDialog):
     def __init__(self, update_info, parent=None):
         super().__init__(parent)
         self.update_info = update_info
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
         self.download_success = False
@@ -23981,12 +29924,17 @@ class DownloadUpdateDialog(QDialog):
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.container = DottedFrame()
+        self.container = QFrame()
+        self.container.setAttribute(Qt.WA_StyledBackground, True)
         self.container.setObjectName("downloadUpdateContainer")
         self.container.setStyleSheet("""
             QFrame#downloadUpdateContainer {
-                background-color: rgb(20, 20, 25);
-                border: 2px solid rgba(100, 180, 255, 0.6);
+                background-color: qradialgradient(cx:0.5, cy:0, radius:1.3,
+                    fx:0.5, fy:0,
+                    stop:0 rgba(95, 50, 31, 70),
+                    stop:0.45 rgba(21, 16, 15, 252),
+                    stop:1 rgba(10, 10, 13, 252));
+                border: 2px solid rgba(217, 119, 87, 0.55);
                 border-radius: 16px;
             }
         """)
@@ -24000,11 +29948,11 @@ class DownloadUpdateDialog(QDialog):
         self.icon_label.setAlignment(Qt.AlignCenter)
         self.icon_label.setStyleSheet("""
             QLabel {
-                color: #64B4FF;
+                color: #D97757;
                 font-size: 28px;
                 font-weight: bold;
-                background: rgba(100, 180, 255, 0.15);
-                border: 2px solid rgba(100, 180, 255, 0.4);
+                background: rgba(217, 119, 87, 0.15);
+                border: 2px solid rgba(217, 119, 87, 0.4);
                 border-radius: 25px;
                 min-width: 50px;
                 max-width: 50px;
@@ -24018,11 +29966,11 @@ class DownloadUpdateDialog(QDialog):
         ic.addStretch()
 
         # Заголовок
-        self.title_label = QLabel(tr("Скачивание обновления"))
+        self.title_label = QLabel(tr("Обновляем"))
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setStyleSheet("""
             QLabel {
-                color: #64B4FF;
+                color: #D97757;
                 font-size: 16px;
                 font-weight: bold;
                 background: transparent;
@@ -24030,13 +29978,25 @@ class DownloadUpdateDialog(QDialog):
             }
         """)
 
-        # Версия
-        self.version_label = QLabel(f"Claude Code Manager v{update_info['latest']}")
+        # Версия: откуда обновляемся → куда: «v6.0.0 → v6.0.1».
+        try:
+            _cur = str(update_info.get("current", "") or "").strip()
+        except Exception:
+            _cur = ""
+        try:
+            _lat = str(update_info.get("latest", "") or "?").strip() or "?"
+        except Exception:
+            _lat = "?"
+        if _cur:
+            ver_text = f"Claude Code Manager v{_cur} → v{_lat}"
+        else:
+            ver_text = f"Claude Code Manager v{_lat}"
+        self.version_label = QLabel(ver_text)
         self.version_label.setAlignment(Qt.AlignCenter)
         self.version_label.setStyleSheet("""
             QLabel {
                 color: #FFFFFF;
-                font-size: 14px;
+                font-size: 12px;
                 font-weight: bold;
                 background: transparent;
                 border: none;
@@ -24044,14 +30004,14 @@ class DownloadUpdateDialog(QDialog):
         """)
 
         # Прогресс бар
-        self.progress_bar = AnimatedProgressBar("#5B9BD5")  # Мягкий синий
+        self.progress_bar = AnimatedProgressBar("#D97757")  # терракота, как чейнджлог
 
         # Сообщение
         self.message_label = QLabel("")
         self.message_label.setAlignment(Qt.AlignCenter)
         self.message_label.setStyleSheet("""
             QLabel {
-                color: #AAAAAA;
+                color: #9A9AA6;
                 font-size: 11px;
                 background: transparent;
                 border: none;
@@ -24059,16 +30019,44 @@ class DownloadUpdateDialog(QDialog):
         """)
         self.message_label.hide()
 
+        # Иконка приложения перед названием.
+        self.app_icon_label = QLabel()
+        self.app_icon_label.setStyleSheet("background: transparent; border: none;")
+        try:
+            for _ip in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png"),
+                        os.path.join(os.path.dirname(sys.executable), "icon.png"),
+                        "icon.png"):
+                if _ip and os.path.exists(_ip):
+                    _px = QPixmap(_ip)
+                    if not _px.isNull():
+                        self.app_icon_label.setPixmap(
+                            _px.scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                        break
+        except Exception:
+            pass
+        ver_row = QHBoxLayout()
+        ver_row.setContentsMargins(0, 0, 0, 0)
+        ver_row.addStretch(1)
+        ver_row.addWidget(self.app_icon_label)
+        ver_row.addWidget(self.version_label)
+        # Пустышка шириной с иконку справа: текст центрируется сам,
+        # без учёта иконки слева.
+        _ver_pad = QWidget()
+        _ver_pad.setFixedSize(40, 40)
+        _ver_pad.setStyleSheet("background: transparent; border: none;")
+        ver_row.addWidget(_ver_pad)
+        ver_row.addStretch(1)
+
         cl.addLayout(ic)
         cl.addWidget(self.title_label)
-        cl.addWidget(self.version_label)
+        cl.addLayout(ver_row)
         cl.addWidget(self.progress_bar)
         cl.addWidget(self.message_label)
 
         self.container.setLayout(cl)
         main_layout.addWidget(self.container)
         self.setLayout(main_layout)
-        self.setFixedSize(360, 270)
+        self.setFixedSize(430, 235)
 
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
@@ -24474,7 +30462,7 @@ class DottedBackground(QWidget):
 
     BASE_COLOR = QColor(20, 20, 25)
     ICON_COLOR = QColor(38, 38, 46)  # чуть светлее фона
-    ICON_SIZE = 56
+    ICON_SIZE = 40
     GRID_STEP = 130
 
     def __init__(self, parent=None):
@@ -24513,7 +30501,7 @@ class DottedFrame(QFrame):
     """
 
     ICON_COLOR = QColor(38, 38, 46)
-    ICON_SIZE = 44
+    ICON_SIZE = 32
     GRID_STEP = 100
 
     def __init__(self, parent=None, clip_radius=14.0):
@@ -24876,9 +30864,9 @@ class _LinkIconButton(QPushButton):
     """Иконка-ссылка в низу сайдбара: в покое серая, при наведении плавно
     разгорается своим цветом (тот же таймер 20мс, что у остальных кнопок).
     Размеры по видам: github 24/21 (октокэт с полями — чуть крупнее),
-    telegram 24/18, app 36/30."""
+    telegram 24/18, app 36/28."""
     IDLE = (130, 130, 138)
-    GLYPH = {"github": 22, "telegram": 20, "app": 32}
+    GLYPH = {"github": 22, "telegram": 20, "app": 28}
     BUTTON = {"github": 24, "telegram": 24, "app": 36}
 
     def __init__(self, kind, url, hover_rgb, parent=None):
@@ -25120,6 +31108,40 @@ def _paint_update_glyph(name, size, color):
             for y, x in ((7.0, 15.5), (12.0, 8.5), (17.0, 13.5)):
                 p.drawLine(QPointF(4.0, y), QPointF(20.0, y))
                 _dot(x, y, 2.4)
+        elif name == "Gear":
+            p.drawEllipse(QRectF(5.5, 5.5, 13.0, 13.0))
+            p.drawEllipse(QRectF(9.8, 9.8, 4.4, 4.4))
+            p.drawLine(QPointF(12.0, 3.0), QPointF(12.0, 5.5))
+            p.drawLine(QPointF(12.0, 18.5), QPointF(12.0, 21.0))
+            p.drawLine(QPointF(3.0, 12.0), QPointF(5.5, 12.0))
+            p.drawLine(QPointF(18.5, 12.0), QPointF(21.0, 12.0))
+            p.drawLine(QPointF(5.6, 5.6), QPointF(7.4, 7.4))
+            p.drawLine(QPointF(16.6, 16.6), QPointF(18.4, 18.4))
+            p.drawLine(QPointF(18.4, 5.6), QPointF(16.6, 7.4))
+            p.drawLine(QPointF(7.4, 16.6), QPointF(5.6, 18.4))
+        elif name == "Speaker":
+            body = QPainterPath()
+            body.moveTo(5.0, 10.0)
+            body.lineTo(9.0, 10.0)
+            body.lineTo(13.5, 5.5)
+            body.lineTo(13.5, 18.5)
+            body.lineTo(9.0, 14.0)
+            body.lineTo(5.0, 14.0)
+            body.closeSubpath()
+            p.fillPath(body, c)
+            p.drawArc(QRectF(14.5, 9.0, 4.0, 6.0), -60 * 16, 120 * 16)
+            p.drawArc(QRectF(14.5, 6.5, 9.0, 11.0), -55 * 16, 110 * 16)
+            _dot(20.5, 12.0, 1.1)
+        elif name == "Image":
+            p.drawRoundedRect(QRectF(3.0, 5.5, 18.0, 13.0), 2.0, 2.0)
+            _dot(8.3, 10.0, 1.5)
+            path = QPainterPath()
+            path.moveTo(3.5, 18.0)
+            path.lineTo(9.5, 11.5)
+            path.lineTo(13.0, 15.0)
+            path.lineTo(16.0, 12.0)
+            path.lineTo(20.5, 17.0)
+            p.drawPath(path)
         else:  # Globe и неизвестные
             p.drawEllipse(QRectF(4.5, 4.5, 15.0, 15.0))
             p.drawEllipse(QRectF(8.0, 4.5, 8.0, 15.0))
@@ -25872,27 +31894,32 @@ class UpdatesDialog(QDialog):
 
         note = loc.get("note")
         if isinstance(note, dict):
-            # Блок-пояснение — как подсказка в Fix Claude: пунктирная
-            # рамка 1px + приглушённый текст, только в спокойном зелёном.
+            # Блок-пояснение — как подсказка в Fix Claude. По умолчанию
+            # спокойный зелёный; tone=red — красный (важные удаления).
+            _red = str(note.get("tone") or "").strip().lower() == "red"
+            if _red:
+                _nb = "stop:0 rgba(140, 50, 45, 40), stop:1 rgba(110, 40, 38, 40)"
+                _nc = "2px solid rgba(224, 90, 90, 0.4)"
+                _nt = "rgba(235, 150, 145, 0.95)"
+                _np = "rgb(225, 190, 185)"
+            else:
+                _nb = "stop:0 rgba(52, 110, 80, 40), stop:1 rgba(40, 90, 66, 40)"
+                _nc = "2px solid rgba(110, 180, 135, 0.4)"
+                _nt = "rgba(160, 205, 175, 0.95)"
+                _np = "rgb(190, 220, 198)"
             box = QFrame()
             box.setObjectName("updNote")
             box.setAttribute(Qt.WA_StyledBackground, True)
-            box.setStyleSheet("""
-                QFrame#updNote {
-                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 rgba(52, 110, 80, 40),
-                        stop:1 rgba(40, 90, 66, 40));
-                    border: 2px solid rgba(110, 180, 135, 0.4);
-                    border-radius: 12px;
-                }
-            """)
+            box.setStyleSheet(
+                "QFrame#updNote { background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+                + _nb + "); border: " + _nc + "; border-radius: 12px; }")
             nlay = QVBoxLayout(box)
             nlay.setContentsMargins(12, 10, 12, 10)
             nlay.setSpacing(5)
             nt = QLabel(str(note.get("title") or "").upper())
             nt.setFont(QFont("Segoe UI", 8, QFont.Bold))
             nt.setStyleSheet(
-                "color: rgba(160, 205, 175, 0.95);"
+                "color: " + _nt + ";"
                 " background: transparent; border: none;")
             nt.setWordWrap(True)
             nlay.addWidget(nt)
@@ -25900,7 +31927,7 @@ class UpdatesDialog(QDialog):
                 pl = QLabel(str(pt))
                 pl.setFont(QFont("Segoe UI", 9))
                 pl.setStyleSheet(
-                    "color: rgb(190, 220, 198); background: transparent; border: none;")
+                    "color: " + _np + "; background: transparent; border: none;")
                 pl.setWordWrap(True)
                 nlay.addWidget(pl)
             lay.addWidget(box)
@@ -25946,7 +31973,7 @@ class SidebarNav(QFrame):
         brand.setSpacing(10)
 
         self.brand_icon = QLabel()
-        self.brand_icon.setFixedSize(34, 34)
+        self.brand_icon.setFixedSize(40, 40)
         self.brand_icon.setStyleSheet("background: transparent; border: none;")
         self.brand_icon.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         brand.addWidget(self.brand_icon, 0, Qt.AlignVCenter)
@@ -26058,7 +32085,7 @@ class SidebarNav(QFrame):
         try:
             if pixmap is not None and not pixmap.isNull():
                 self.brand_icon.setPixmap(
-                    pixmap.scaled(34, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    pixmap.scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 )
         except Exception:
             pass
@@ -26079,6 +32106,71 @@ class SidebarNav(QFrame):
             self.updates_btn.refresh_tip()
         except Exception:
             pass
+class _SessionChip(_OcClickFrame):
+    """Чип сессии в шапке: рамка плавно светлеет при наведении (как ховер
+    кнопок: таймер 20мс, светло-серая), клик левой кнопкой — сигнал clicked.
+    Неактивная сессия: некликабельно, ховера нет, курсор обычный."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("session_chip")
+        self._clickable = False
+        self._hover_progress = 0.0
+        self._is_hovered = False
+        self._hover_timer = QTimer(self)
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.ArrowCursor)
+        self._apply_style()
+
+    def set_clickable(self, on):
+        self._clickable = bool(on)
+        if not self._clickable:
+            self._is_hovered = False
+        try:
+            self.setCursor(Qt.PointingHandCursor if self._clickable
+                           else Qt.ArrowCursor)
+        except Exception:
+            pass
+
+    def _apply_style(self):
+        # Ховер deliberately тусклый: от базы (60,60,65) лишь до (105,105,115),
+        # не до светлого — чтобы не бил в глаза рядом с заголовком.
+        k = self._hover_progress if self._clickable else 0.0
+        r = int(60 + (105 - 60) * k)
+        g = int(60 + (105 - 60) * k)
+        b = int(65 + (115 - 65) * k)
+        self.setStyleSheet(
+            "QFrame#session_chip { background-color: rgba(26, 26, 33, 200); "
+            "border: 2px solid rgb(%d, %d, %d); border-radius: 8px; }" % (r, g, b))
+
+    def _animate_hover(self):
+        want = 1.0 if (self._is_hovered and self._clickable) else 0.0
+        if abs(self._hover_progress - want) > 0.004:
+            step = 0.1 if want > self._hover_progress else -0.1
+            self._hover_progress = min(1.0, max(0.0, self._hover_progress + step))
+            self._apply_style()
+        elif self._hover_progress != want:
+            self._hover_progress = want
+            self._apply_style()
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        # Неактивный чип клики глотает молча (сигнала нет).
+        if not self._clickable:
+            QFrame.mouseReleaseEvent(self, event)
+            return
+        super().mouseReleaseEvent(event)
+
+
 class _HeaderStrip(QWidget):
     """Короткая толстая полоска после заголовка шапки: слева яркая,
     вправо гаснет в прозрачность. Цвет — акцент текущей вкладки."""
@@ -26134,6 +32226,37 @@ class PageHeader(QFrame):
 
         self.strip = _HeaderStrip(mode_accent(mode), self)
         row.addWidget(self.strip, 0, Qt.AlignVCenter)
+
+        # Виджет сессии opencode (serve --service): чип как кнопка
+        # «Настройки» — точка + статус/время. Сразу после полоски,
+        # в том же ряду — высоту окна не трогает.
+        self.session_chip = _SessionChip()
+        chip_layout = QHBoxLayout(self.session_chip)
+        chip_layout.setContentsMargins(8, 2, 10, 2)
+        chip_layout.setSpacing(6)
+
+        self.session_spinner = OcSpinner(self.session_chip, size=12)
+        try:
+            self.session_spinner.set_color(245, 180, 60)
+        except Exception:
+            pass
+        self.session_spinner.hide()
+        chip_layout.addWidget(self.session_spinner, 0, Qt.AlignVCenter)
+
+        self.session_indicator = StatusIndicator()
+        self.session_indicator.set_state("neutral")
+        self.session_indicator.setFixedSize(12, 12)
+        chip_layout.addWidget(self.session_indicator, 0, Qt.AlignVCenter)
+
+        self.session_label = QLabel(tr("Сессия не активна"))
+        self.session_label.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.session_label.setStyleSheet(
+            "color: %s; background: transparent; border: none;" % theme_value("text_secondary")
+        )
+        chip_layout.addWidget(self.session_label, 0, Qt.AlignVCenter)
+
+        row.addWidget(self.session_chip, 0, Qt.AlignVCenter)
+
         row.addStretch(1)
         layout.addLayout(row)
 
@@ -26154,6 +32277,56 @@ class PageHeader(QFrame):
         self.title_label.setText(MODE_TITLES.get(mode, "Anthropic"))
         ru, en = PAGE_SUBTITLES.get(mode, ("", ""))
         self.subtitle_label.setText(ltr(ru, en))
+        # Виджет сессии — только во вкладке Custom URL (сессия opencode).
+        try:
+            self.session_chip.setVisible(mode == "customurl")
+        except Exception:
+            pass
+
+    def set_session(self, active, text):
+        """Статус сессии: зелёная точка + текст / серая точка + текст.
+        Кликабелен чип только в активном состоянии."""
+        try:
+            self.session_indicator.set_state("on" if active else "neutral")
+        except Exception:
+            pass
+        try:
+            self.session_chip.set_clickable(bool(active))
+        except Exception:
+            pass
+        try:
+            self.session_label.setText(text)
+            color = "rgb(52, 211, 153)" if active else theme_value("text_secondary")
+            self.session_label.setStyleSheet(
+                "color: %s; background: transparent; border: none;" % color)
+        except Exception:
+            pass
+        # Обычный статус гасит режим «завершается» (спиннер прячем, точку
+        # возвращаем) — его включает только _update_oc_session_ui менеджера.
+        try:
+            self.session_spinner.hide()
+            self.session_indicator.setVisible(True)
+        except Exception:
+            pass
+
+    def set_stopping(self):
+        """Промежуточный статус: сервис убит, ждём подтверждения смерти —
+        жёлтый текст и спиннер вместо точки. Клик и ховер гаснут."""
+        try:
+            self.session_chip.set_clickable(False)
+        except Exception:
+            pass
+        try:
+            self.session_indicator.setVisible(False)
+            self.session_spinner.show()
+        except Exception:
+            pass
+        try:
+            self.session_label.setText(tr("Сессия завершается..."))
+            self.session_label.setStyleSheet(
+                "color: rgb(245, 180, 60); background: transparent; border: none;")
+        except Exception:
+            pass
 
 
 class ClaudeManager(QMainWindow):
@@ -26165,8 +32338,9 @@ class ClaudeManager(QMainWindow):
     codex_install_finished = Signal(object)  # context dict (install/update/uninstall)
     oc_version_checked = Signal(str, str)  # local_version, latest_version (opencode)
     oc_install_finished = Signal(object)  # context dict (install/update/uninstall opencode)
-    claude_ver_ready = Signal(str)  # версия claude из фонового потока для запуска
     oc_models_ready = Signal(dict)  # модели opencode из фонового потока для запуска
+    oc_launch_done = Signal(bool, str)  # результат фонового спавна терминала
+    oc_session_kill_done = Signal(bool)  # результат фонового убийства сервиса
 
     def __init__(self):
         super().__init__()
@@ -26195,17 +32369,30 @@ class ClaudeManager(QMainWindow):
                 break
 
         self.settings = load_settings()
+        # Интеграция opencode (профиль терминала, scoped-конфиг, push-файлы,
+        # ссылка в глобале, сторож) — только если CLI установлен. Без него
+        # приложение не пишет вообще ничего opencode-связанного, а осиротевший
+        # наблюдатель от прошлого краша глушим, чтобы не висел вечно.
+        try:
+            if self._is_oc_installed():
+                self._oc_deploy_integration()
+            else:
+                try:
+                    _oc_watch_kill_stale()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # На каждом старте открываем вкладку Anthropic / Claude / OpenAI / Custom URL
         # (что было выбрано в прошлый раз).
-        _mode = self.settings.get("app_mode", "anthropic")
+        _mode = self.settings.get("app_mode", "customurl")
         if _mode not in ("anthropic", "official", "openai", "customurl"):
-            _mode = "anthropic"
+            _mode = "customurl"
         self.settings["app_mode"] = _mode
         self.settings["use_custom_token"] = True
 
         # Подключаем сигналы к слотам
         self.update_available.connect(self._show_update_notification)
-        self.claude_ver_ready.connect(self._on_claude_ver_ready)
         self.oc_models_ready.connect(self._on_oc_models_ready)
         self._launch_busy = False
 
@@ -26260,6 +32447,11 @@ class ClaudeManager(QMainWindow):
         # Шапка страницы: название и подпись активного режима
         self.page_header = PageHeader(_mode)
         main_layout.addWidget(self.page_header)
+        # Клик по пилюле сессии — подтверждение завершения сервиса.
+        try:
+            self.page_header.session_chip.clicked.connect(self._on_oc_session_click)
+        except Exception:
+            pass
 
         # ── Бренд сайдбара: шиммер-заголовок приложения ──
         # Приём тот же, что и раньше, но заголовок живёт в сайдбаре, а не
@@ -26288,8 +32480,8 @@ class ClaudeManager(QMainWindow):
         # когда стартовый страж ещё не закончил мержить settings.json.
         self._claude_files_lock = threading.Lock()
 
-        # Стражи safe-режима (пин версии + запрет автообновления) запускаем
-        # только если пользователь не включил официальные обновления —
+        # Стражи запрета автообновления запускаем
+        # только если авто-обновление выключено —
         # иначе они тут же откатят DISABLE_UPDATES/autoUpdates обратно.
         if not self.settings.get("auto_update_enabled", False):
             # Тихо подстраховываемся: дописываем env.DISABLE_UPDATES=1 в
@@ -26309,7 +32501,7 @@ class ClaudeManager(QMainWindow):
 
         self.btn_install_claude = StyledButton(tr("Установить Claude Code"))
         self.btn_install_claude.setFixedHeight(34)
-        self.btn_install_claude.clicked.connect(self._install_claude_code)
+        self.btn_install_claude.clicked.connect(self._install_claude_code_official)
         install_row.addWidget(self.btn_install_claude)
 
         self.btn_uninstall_claude = StyledButton(tr("Удалить Claude Code"))
@@ -26319,13 +32511,12 @@ class ClaudeManager(QMainWindow):
         install_row.addWidget(self.btn_uninstall_claude)
 
         # Добавить в PATH — прописывает папку с claude в PATH пользователя,
-        # если она там ещё не значится. Актуально только для auto-update режима
-        # (install.ps1 кладёт бинарь в ~/.local/bin — эта папка обычно не в PATH).
-        # В безопасном режиме ставим через npm, %APPDATA%\npm уже в PATH.
+        # если она там ещё не значится. Установка идёт через npm
+        # (%APPDATA%\npm — обычно уже в PATH).
         self.btn_add_to_path = StyledButton(tr("Добавить в PATH"))
         self.btn_add_to_path.setFixedHeight(34)
         self.btn_add_to_path.set_hover_color(120, 180, 230)
-        self.btn_add_to_path.setEnabled(self.settings.get("auto_update_enabled", False))
+        self.btn_add_to_path.setEnabled(True)
         self.btn_add_to_path.clicked.connect(self._on_add_to_path_clicked)
         install_row.addWidget(self.btn_add_to_path)
 
@@ -26414,7 +32605,7 @@ class ClaudeManager(QMainWindow):
         # пилюля в правом верхнем углу окна (позицию держим в resizeEvent,
         # потому что окно теперь можно растягивать по ширине). Цвет пилюли
         # меняется плавно: EN — зелёный, RU — голубоватый.
-        self.language_toggle = LanguageToggle(LANG.lang if LANG else "ru", self)
+        self.language_toggle = LanguageToggle(LANG.lang if LANG else "en", self)
         self.language_toggle.move(self.width() - 78 - 8, 12)
         self.language_toggle.raise_()
         self.language_toggle.toggled.connect(self._on_language_toggled)
@@ -26465,8 +32656,8 @@ class ClaudeManager(QMainWindow):
 
         claude_header_inner.addStretch()
 
-        # Тумблер: официальные авто-обновления Claude Code через install.ps1
-        # вместо пина на REQUIRED_CLAUDE_VERSION. Живёт справа внутри chip.
+        # Тумблер: авто-обновление Claude Code через npm (@latest).
+        # Живёт справа внутри chip.
         autoupdate_lbl = QLabel(tr("Авто-обновление"))
         autoupdate_lbl.setFont(QFont("Segoe UI", 9))
         autoupdate_lbl.setStyleSheet("color: #c6c6cf; background: transparent; border: none;")
@@ -26536,12 +32727,13 @@ class ClaudeManager(QMainWindow):
 
         oc_header_inner.addStretch()
 
-        self.oc_btn_sounds = StyledButton(tr("Звуки"), compact=True)
-        self.oc_btn_sounds.set_hover_color(52, 211, 153)
-        self.oc_btn_sounds.setMinimumHeight(0)
-        self.oc_btn_sounds.setFixedHeight(28)
-        self.oc_btn_sounds.clicked.connect(self._oc_open_notify)
-        oc_header_inner.addWidget(self.oc_btn_sounds)
+        self.oc_btn_settings = _GlyphButton(tr("Настройки"), "Gear", compact=True)
+        self.oc_btn_settings.set_hover_color(120, 180, 230)
+        self.oc_btn_settings.setMinimumHeight(0)
+        self.oc_btn_settings.setFixedHeight(28)
+        self.oc_btn_settings.clicked.connect(self._oc_open_settings)
+        oc_header_inner.addWidget(self.oc_btn_settings)
+        self._refresh_oc_header()
 
         oc_header_chip.hide()
         claude_layout.addWidget(oc_header_chip)
@@ -26704,6 +32896,9 @@ class ClaudeManager(QMainWindow):
             self.fm_url_combo.setCurrentText(self.settings["custom_base_url"])
         self.fm_url_combo.set_picker(title=tr("Выбор Base URL"))
         self.fm_url_combo.currentTextChanged.connect(self._fm_url_changed)
+        # Только отображение: выбор — через «Управление», как в Custom URL.
+        # Disabled гасит клики (пикера нет) и затемняет поле.
+        self.fm_url_combo.setEnabled(False)
         url_row.addWidget(self.fm_url_combo, 1)
 
         self.fm_btn_manage = StyledButton(tr("Управление"))
@@ -26779,6 +32974,7 @@ class ClaudeManager(QMainWindow):
         self.fm_model_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
         self.fm_model_combo.setMaxVisibleItems(len(MODEL_ORDER))
         fm_models = ["Fable 5.1", "Fable 5", "Opus 5.5", "Opus 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 5.5", "Sonnet 5", "Sonnet 4.6"]
+        self._fm_base_models = list(fm_models)
         self.fm_model_combo.addItems(fm_models)
         # Цвета для каждой модели (от зелёного к красному — по «дороговизне»)
         model_colors = {
@@ -26795,6 +32991,19 @@ class ClaudeManager(QMainWindow):
             "Fable 5.1":    QColor(167, 139, 252),  # тот же фиолетовый — обновлённый флагман
         }
         self._fm_model_colors = model_colors
+        # Свои модели — тоже в цвета (серые), иначе выбранная своя
+        # не перекрасит текст/рамку комбо.
+        try:
+            _startup_customs = [m for m in (self.settings.get("custom_models", []) or [])
+                                if isinstance(m, str) and m.strip()]
+        except Exception:
+            _startup_customs = []
+        _gray = QColor(145, 145, 150)
+        for _cm in _startup_customs:
+            try:
+                self._fm_model_colors[_cm] = _gray
+            except Exception:
+                pass
         model_tooltips = {}
         for i in range(self.fm_model_combo.count()):
             txt = self.fm_model_combo.itemText(i)
@@ -26826,7 +33035,7 @@ class ClaudeManager(QMainWindow):
             "claude-fable-5-1": "Fable 5.1",
         }
         saved_m = remap.get(saved_m, saved_m)
-        if saved_m not in fm_models:
+        if saved_m not in fm_models and saved_m not in _startup_customs:
             saved_m = "Opus 4.8"
         self.fm_model_combo.setCurrentText(saved_m)
         # Начальный цвет текста и рамки под выбранную модель
@@ -26845,65 +33054,37 @@ class ClaudeManager(QMainWindow):
             self.fm_model_combo.modelEffortPicked.connect(self._on_model_effort_picked)
         except Exception:
             pass
+        # Свои модели из ModelDialog: сохранить + дотянуть items комбо
+        try:
+            self.fm_model_combo.custom_added.connect(self._on_custom_added)
+        except Exception:
+            pass
+        try:
+            self.fm_model_combo.custom_deleted.connect(self._on_custom_deleted)
+        except Exception:
+            pass
+        self._sync_custom_combo_items()
         model_row.addWidget(self.fm_model_combo, 1)
 
-        # 1M-контекст: маленький toggle-оверлей внутри правой части комбобокса модели
-        # (стилистика — карбоновая копия LanguageToggle). Активная сторона:
-        # 200K (синий) → дефолт; 1M (зелёный) → id получает суффикс [1M].
-        self.ctx_toggle = ContextToggle(
-            one_m=self.settings.get("use_1m_context", False),
-            parent=self.fm_model_combo
-        )
-        self.ctx_toggle.toggled.connect(self._on_1m_context_toggled)
-        self.ctx_toggle.raise_()
-
-        # Сероватая полоска-разделитель между текстом модели и тумблером —
-        # + служит «щитом» hover'а: пока курсор над ней или над тумблером,
-        # рамка combobox'а не подсвечивается.
-        self.ctx_separator = _CtxSeparator(parent=self.fm_model_combo)
-
-        # Прозрачный «щит» на всю правую полосу combobox'а — блокирует
-        # клики по фону и Enter в зазорах вокруг тумблера, чтобы рамка
-        # не подсвечивалась и picker не открывался.
-        self.ctx_shield = _CtxShield(parent=self.fm_model_combo)
-        self.ctx_shield.lower()  # под toggle/separator в стеке дочерних
-        self.ctx_separator.raise_()
-        self.ctx_toggle.raise_()
+        # Effort — вертикальная палочка-индикатор внутри правой части комбобокса
+        # модели: сегменты уровня + подпись. Display-only и прозрачна для мыши —
+        # клик открывает ModelDialog как обычно. Отдельного блока effort больше нет.
+        self.effort_stick = EffortStick(parent=self.fm_model_combo)
+        try:
+            _saved_effort = self.settings.get("reasoning_effort", "high")
+            if _saved_effort not in EFFORT_LEVELS:
+                _saved_effort = "high"
+        except Exception:
+            _saved_effort = "high"
+        self.effort_stick.setEffort(_saved_effort)
+        try:
+            self.effort_stick.setUltra(bool(self.settings.get("reasoning_ultracode", False)))
+        except Exception:
+            pass
+        self.effort_stick.raise_()
 
         self.fm_model_combo.installEventFilter(self)
-        self.ctx_toggle.installEventFilter(self)
-        self.ctx_separator.installEventFilter(self)
-        self.ctx_shield.installEventFilter(self)
-        QTimer.singleShot(0, self._reposition_ctx_toggle)
-
-        # Effort — тот же кликабельный комбобокс что и раньше, но при клике
-        # открывается компактный EffortDialog с ползунком (вмест   PickerDialog
-        # со списком карточек).
-        self.fm_effort_combo = EffortPickerComboBox()
-        self.fm_effort_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
-        # Минимальная ширина под самое длинное значение "ULTRACODE"
-        # (жирным + запас на стрелку drop-down), чтобы текст не резался.
-        self.fm_effort_combo.setMinimumWidth(120)
-        fm_efforts = list(EFFORT_LEVELS)  # low / medium / high / xhigh / max / ultracode
-        self.fm_effort_combo.addItems(fm_efforts)
-        saved_fm_effort = self.settings.get("reasoning_effort", "high")
-        if saved_fm_effort in fm_efforts:
-            self.fm_effort_combo.setCurrentText(saved_fm_effort)
-        else:
-            self.fm_effort_combo.setCurrentText("high")
-        self.fm_effort_combo.setMaxVisibleItems(len(fm_efforts))
-        fm_effort_colors = {k: QColor(*v) for k, v in EFFORT_COLORS.items()}
-        self._fm_effort_colors = fm_effort_colors
-        self.fm_effort_combo.set_picker(
-            colors=fm_effort_colors,
-            title=tr("Reasoning Effort")
-        )
-        # Начальный цвет текста и рамки под выбранный effort
-        if saved_fm_effort in fm_effort_colors:
-            self.fm_effort_combo.setTextColor(fm_effort_colors[saved_fm_effort])
-            self.fm_effort_combo.setAccentColor(fm_effort_colors[saved_fm_effort])
-        self.fm_effort_combo.currentTextChanged.connect(self._on_effort_changed)
-        model_row.addWidget(self.fm_effort_combo, 0)
+        QTimer.singleShot(0, self._reposition_effort_stick)
 
         freemodel_layout.addLayout(model_row)
 
@@ -26939,6 +33120,9 @@ class ClaudeManager(QMainWindow):
             self.oa_url_combo.setCurrentText(self.settings["openai_base_url"])
         self.oa_url_combo.set_picker(title=tr("Выбор Base URL"))
         self.oa_url_combo.currentTextChanged.connect(self._oa_url_changed)
+        # Только отображение: выбор — через «Управление», как в Custom URL.
+        # Disabled гасит клики (пикера нет) и затемняет поле.
+        self.oa_url_combo.setEnabled(False)
         oa_url_row.addWidget(self.oa_url_combo, 1)
 
         self.oa_btn_manage_urls = StyledButton(tr("Управление"))
@@ -27029,10 +33213,6 @@ class ClaudeManager(QMainWindow):
             pass
         oa_model_row.addWidget(self.oa_model_combo, 1)
 
-        self.oa_effort_combo = EffortPickerComboBox()
-        self.oa_effort_combo.setFont(QFont("Segoe UI", 9, QFont.Bold))
-        self.oa_effort_combo.setMinimumWidth(120)
-        self.oa_effort_combo.addItems(list(OPENAI_EFFORT_LEVELS))
         saved_oa_effort = self.settings.get("openai_effort", "low")
         if saved_oa_effort not in OPENAI_EFFORT_LEVELS:
             saved_oa_effort = "low"
@@ -27044,19 +33224,19 @@ class ClaudeManager(QMainWindow):
         if clamped_oa_effort != saved_oa_effort:
             self.settings["openai_effort"] = clamped_oa_effort
             saved_oa_effort = clamped_oa_effort
-        self.oa_effort_combo.setCurrentText(saved_oa_effort)
-        self.oa_effort_combo.setMaxVisibleItems(len(OPENAI_EFFORT_LEVELS))
-        oa_effort_colors = {k: QColor(*v) for k, v in OPENAI_EFFORT_COLORS.items()}
-        self._oa_effort_colors = oa_effort_colors
-        self.oa_effort_combo.set_picker(
-            colors=oa_effort_colors,
-            title=tr("Reasoning Effort"),
-            disabled=_openai_disabled_efforts(saved_oa_model),
+        # Effort — вертикальная палочка-индикатор внутри правой части строки
+        # модели (как во вкладке Custom URL): сегменты + подпись, display-only,
+        # прозрачна для мыши — клик открывает ModelDialog. Отдельного блока нет.
+        self.oa_effort_stick = EffortStick(
+            parent=self.oa_model_combo,
+            levels=OPENAI_EFFORT_LEVELS,
+            labels=OPENAI_EFFORT_LABELS,
+            colors=OPENAI_EFFORT_COLORS,
         )
-        if saved_oa_effort in oa_effort_colors:
-            self.oa_effort_combo.setTextColor(oa_effort_colors[saved_oa_effort])
-            self.oa_effort_combo.setAccentColor(oa_effort_colors[saved_oa_effort])
-        oa_model_row.addWidget(self.oa_effort_combo, 0)
+        self.oa_effort_stick.setEffort(saved_oa_effort)
+        self.oa_effort_stick.raise_()
+        self.oa_model_combo.installEventFilter(self)
+        QTimer.singleShot(0, self._reposition_oa_effort_stick)
 
         openai_layout.addLayout(oa_model_row)
 
@@ -27109,7 +33289,7 @@ class ClaudeManager(QMainWindow):
 
         # Кнопка запуска Claude Code
         self.btn_claude = PrimaryActionButton(
-            tr("Запустить Claude Code"), accent=mode_accent(self.settings.get("app_mode", "anthropic"))
+            tr("Запустить Claude Code"), accent=mode_accent(self.settings.get("app_mode", "customurl"))
         )
         self.btn_claude.clicked.connect(self.launch_claude)
         self.btn_claude.setEnabled(False)
@@ -27263,6 +33443,22 @@ class ClaudeManager(QMainWindow):
             threading.Thread(target=self._check_oc_version, daemon=True).start()
         # Периодическое обновление состояния oc-кнопок (детект внешних установок)
         self._update_oc_button_state()
+        # Сессия opencode (serve --service) в реальном времени: отдельный
+        # процесс-наблюдатель пишет состояние в файл, тик только читает
+        # его и перерисовывает время каждую секунду. Ноль спавнов в тике.
+        self._oc_session_start_ts = 0.0  # epoch старта сервиса, 0 = нет сессии
+        self._oc_session_stopping = False  # переходное «завершается»
+        self._oc_session_stopping_since = 0.0
+        self._oc_session_killed_ts = 0.0
+        self._oc_watch_proc = None  # Popen наблюдателя (гасим при выходе)
+        self._oc_watch_last_spawn = 0.0
+        self._oc_watch_respawns = 0
+        self._oc_watch_cli_check = 0.0
+        self.oc_session_kill_done.connect(self._on_oc_session_kill_done)
+        self.oc_launch_done.connect(self._on_oc_launch_done)
+        self._oc_session_timer = QTimer(self)
+        self._oc_session_timer.timeout.connect(self._tick_oc_session)
+        self._oc_session_timer.start(1000)
 
         # Стартовая проверка состояния кнопки Установить Claude
         self._update_install_button_state()
@@ -27343,12 +33539,13 @@ class ClaudeManager(QMainWindow):
         self.log(tr("Приложение автоматически подставит ключ и Base URL."), "warning")
         self.log("─" * 50, "info")
 
-    def log(self, message, level="info"):
+    def log(self, message, level="info", rich=False):
         """Терминальный вывод: цветная точка + сообщение.
         Сообщение автоматически прогоняется через tr() — если в TRANSLATIONS
         есть точное совпадение, выводим перевод; иначе строка остаётся как
         есть. Это позволяет существующим вызовам self.log("Русский текст")
-        локализоваться автоматически без правок каждой точки вызова."""
+        локализоваться автоматически без правок каждой точки вызова.
+        rich=True — message уже HTML (цветные куски), через tr() не гоняем."""
         timestamp = time.strftime("%H:%M:%S")
 
         if level == "success":
@@ -27361,7 +33558,7 @@ class ClaudeManager(QMainWindow):
             color = "#c6c6cf"
 
         try:
-            translated = tr(str(message))
+            translated = str(message) if rich else tr(str(message))
         except Exception:
             translated = message
 
@@ -27430,7 +33627,7 @@ class ClaudeManager(QMainWindow):
     def _workdir_key(self, mode=None):
         """Ключ настройки с рабочей директорией для режима.
         anthropic/official/openai/customurl — у каждого своя."""
-        mode = mode or self.settings.get("app_mode", "anthropic")
+        mode = mode or self.settings.get("app_mode", "customurl")
         if mode not in ("anthropic", "official", "openai", "customurl"):
             mode = "anthropic"
         return "working_directory_" + mode
@@ -27465,7 +33662,7 @@ class ClaudeManager(QMainWindow):
         if not hasattr(self, "btn_claude"):
             return
         try:
-            mode = self.settings.get("app_mode", "anthropic")
+            mode = self.settings.get("app_mode", "customurl")
         except Exception:
             mode = "anthropic"
         try:
@@ -27501,7 +33698,7 @@ class ClaudeManager(QMainWindow):
             if hasattr(self, "sidebar"):
                 self.sidebar.refresh_lang()
             if hasattr(self, "page_header"):
-                self.page_header.set_mode(self.settings.get("app_mode", "anthropic"))
+                self.page_header.set_mode(self.settings.get("app_mode", "customurl"))
             if hasattr(self, "update_label"):
                 self.update_label.setText(ltr("Доступно обновление", "Update available"))
         except Exception:
@@ -27554,7 +33751,7 @@ class ClaudeManager(QMainWindow):
             if hasattr(self, "btn_fix_claude"):
                 self.btn_fix_claude.setText(tr("Fix Claude"))
             if hasattr(self, "btn_claude"):
-                mode = self.settings.get("app_mode", "anthropic")
+                mode = self.settings.get("app_mode", "customurl")
                 label = {
                     "openai": tr("Запустить Codex CLI"),
                     "customurl": tr("Запустить opencode"),
@@ -27580,8 +33777,8 @@ class ClaudeManager(QMainWindow):
                 self.oa_url_combo._pick_title = tr("Выбор Base URL")
             if hasattr(self, "oc_btn_manage_urls"):
                 self.oc_btn_manage_urls.setText(tr("Управление"))
-            if hasattr(self, "oc_btn_sounds"):
-                self.oc_btn_sounds.setText(tr("Звуки"))
+            if hasattr(self, "oc_btn_settings"):
+                self.oc_btn_settings.setText(tr("Настройки"))
             if hasattr(self, "oc_btn_manage_keys"):
                 self.oc_btn_manage_keys.setText(tr("Управление"))
             if hasattr(self, "oc_key_input"):
@@ -27635,6 +33832,11 @@ class ClaudeManager(QMainWindow):
             if hasattr(self, "_update_oc_button_state"):
                 try:
                     self._update_oc_button_state()
+                except Exception:
+                    pass
+            if hasattr(self, "_update_oc_session_ui"):
+                try:
+                    self._update_oc_session_ui()
                 except Exception:
                     pass
         except Exception:
@@ -27701,7 +33903,7 @@ class ClaudeManager(QMainWindow):
         вводить в заблуждение — статус сервиса freemodel.dev не имеет отношения
         к чужому эндпоинту."""
         try:
-            mode = self.settings.get("app_mode", "anthropic")
+            mode = self.settings.get("app_mode", "customurl")
             if mode == "official":
                 # Официальный запуск — freemodel-эндпоинт не используется вовсе
                 visible = False
@@ -27728,25 +33930,32 @@ class ClaudeManager(QMainWindow):
             save_settings(self.settings)
             if prev_saved != new_model:
                 self.log(f"{tr('Модель изменена на')}: {new_model}", "info")
-            # Опус 4.6 и Sonnet 4.6 не поддерживают ultracode — если сейчас
-            # выставлен ultracode, тихо понижаем до max и обновляем combo effort.
+            # Опус 4.6 и Sonnet 4.6 не поддерживают ultracode — если фича
+            # включена, тихо гасим её (effort не трогаем).
             if (new_model in MODELS_WITHOUT_ULTRACODE
-                    and self.settings.get("reasoning_effort") == "ultracode"):
-                self.settings["reasoning_effort"] = "max"
-                save_settings(self.settings)
+                    and self.settings.get("reasoning_ultracode", False)):
+                try:
+                    self.settings["reasoning_ultracode"] = False
+                    save_settings(self.settings)
+                except Exception:
+                    pass
                 self.log(
-                    f"{new_model} {tr('не поддерживает ultracode — effort понижен до max')}",
+                    f"{new_model} {tr('не поддерживает ultracode — ultracode выключен')}",
                     "warning"
                 )
-                # Триггерим обновление combo effort, чтобы цвет/текст сменились
-                if hasattr(self, "fm_effort_combo"):
-                    self.fm_effort_combo.blockSignals(True)
-                    self.fm_effort_combo.setCurrentText("max")
-                    self.fm_effort_combo.blockSignals(False)
-                    if hasattr(self, "_fm_effort_colors") and "max" in self._fm_effort_colors:
-                        self.fm_effort_combo.setTextColor(self._fm_effort_colors["max"])
-                        self.fm_effort_combo.setAccentColor(self._fm_effort_colors["max"])
-                self._write_claude_effort_setting("max")
+                # Гасим подсветку палочки effort
+                if hasattr(self, "effort_stick"):
+                    try:
+                        self.effort_stick.setUltra(False)
+                    except Exception:
+                        pass
+                try:
+                    cur_eff = self.settings.get("reasoning_effort", "high")
+                    if cur_eff not in EFFORT_LEVELS:
+                        cur_eff = "high"
+                    self._write_claude_effort_setting(cur_eff, False)
+                except Exception:
+                    pass
         if hasattr(self, "fm_model_combo"):
             # Обновить цвет отображаемого текста и рамки под выбранную модель
             if hasattr(self, "_fm_model_colors") and new_model in self._fm_model_colors:
@@ -27756,123 +33965,231 @@ class ClaudeManager(QMainWindow):
         if new_model:
             self._fm_prev_model = new_model
 
-    def _on_model_effort_picked(self, model, effort):
-        """ModelDialog закрылся — применяем и модель, и effort. Модель уже
-        применена через currentTextChanged → _fm_model_changed (та сама
-        может понизить ultracode до max при 4.6-tier). Здесь применяем
-        только effort, чтобы затронуть fm_effort_combo и ~/.claude/settings.json."""
+    def _sync_custom_combo_items(self):
+        """Дотягивает свои модели в items комбо (dropdown не показывается —
+        showPopup открывает диалог, но setCurrentText требует items).
+        Цвета своих — серые. Текст возвращает на custom_model из settings."""
+        try:
+            combo = self.fm_model_combo
+        except Exception:
+            return
+        try:
+            base = list(getattr(self, "_fm_base_models", []) or [])
+            customs = [m for m in (self.settings.get("custom_models", []) or [])
+                       if isinstance(m, str) and m.strip()]
+        except Exception:
+            return
+        try:
+            want = self.settings.get("custom_model", "") or ""
+        except Exception:
+            want = ""
+        try:
+            cur = combo.currentText()
+        except Exception:
+            cur = ""
+        try:
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(base + [m for m in customs if m not in base])
+            gray = QColor(145, 145, 150)
+            for m in customs:
+                try:
+                    self._fm_model_colors[m] = gray
+                except Exception:
+                    pass
+                try:
+                    idx = combo.findText(m)
+                    if idx >= 0:
+                        combo.setItemData(idx, gray, Qt.ForegroundRole)
+                except Exception:
+                    pass
+            target = ""
+            try:
+                if want and combo.findText(want) >= 0:
+                    target = want
+                elif cur and combo.findText(cur) >= 0:
+                    target = cur
+                elif combo.findText("Opus 4.8") >= 0:
+                    target = "Opus 4.8"
+            except Exception:
+                target = ""
+            if target:
+                try:
+                    combo.setCurrentText(target)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            combo.blockSignals(False)
+        except Exception:
+            pass
+
+    def _on_custom_added(self, model_id):
+        """Своя модель добавлена из ModelDialog — сохраняем и дотягиваем комбо."""
+        try:
+            customs = self.settings.get("custom_models", []) or []
+            if model_id and model_id not in customs:
+                customs.append(model_id)
+                self.settings["custom_models"] = customs
+                save_settings(self.settings)
+        except Exception:
+            pass
+        self._sync_custom_combo_items()
+
+    def _on_custom_deleted(self, model_id):
+        """Своя модель удалена из ModelDialog — сохраняем и дотягиваем комбо."""
+        try:
+            customs = self.settings.get("custom_models", []) or []
+            if model_id in customs:
+                customs.remove(model_id)
+                self.settings["custom_models"] = customs
+                save_settings(self.settings)
+        except Exception:
+            pass
+        self._sync_custom_combo_items()
+        try:
+            self.log(f"{tr('Модель удалена')}: {model_id}", "info")
+        except Exception:
+            pass
+
+    def _on_model_effort_picked(self, model, effort, ultra):
+        """ModelDialog закрылся — применяем модель, effort и ultracode. Модель уже
+        применена через currentTextChanged → _fm_model_changed. В консоль пишем
+        честно: effort-строку — только если сменился effort, цветную ultra-строку —
+        только если сменился флаг."""
         if effort not in EFFORT_LEVELS:
             return
-        # Защитный downgrade: если модель не поддерживает ultracode, а слайдер
-        # почему-то отдал ultracode — сбиваем на max. В нормальном сценарии
-        # ModelDialog уже сам синхронизирует это при движении модели.
-        if effort == "ultracode" and model in MODELS_WITHOUT_ULTRACODE:
-            effort = "max"
-        # Если текущее значение уже равно этому — ничего не делаем, чтобы не
-        # спамить лог "Reasoning effort изменён на".
-        if self.settings.get("reasoning_effort") == effort:
+        ultra = bool(ultra)
+        try:
+            effort_changed = self.settings.get("reasoning_effort") != effort
+        except Exception:
+            effort_changed = True
+        try:
+            ultra_changed = bool(self.settings.get("reasoning_ultracode", False)) != ultra
+        except Exception:
+            ultra_changed = True
+        if not effort_changed and not ultra_changed:
             return
-        self._on_effort_changed(effort)
+        try:
+            self.settings["reasoning_ultracode"] = ultra
+        except Exception:
+            pass
+        if effort_changed:
+            self._on_effort_changed(effort)
+        else:
+            # Сменился только флаг: сохраняем, пишем конфиг, обновляем стик.
+            try:
+                save_settings(self.settings)
+            except Exception:
+                pass
+            try:
+                self._write_claude_effort_setting(effort, ultra)
+            except Exception:
+                pass
+            if hasattr(self, "effort_stick"):
+                try:
+                    self.effort_stick.setUltra(ultra)
+                except Exception:
+                    pass
+        if ultra_changed:
+            self._log_ultra_state(ultra)
+
+    def _log_ultra_state(self, on):
+        """Двухцветная строка в консоль: "ultracode" фиолетовым + статус
+        зелёным/красным."""
+        try:
+            if on:
+                state = '<span style="color:#34d399;">%s</span>' % tr("включён (ultracode)")
+            else:
+                state = '<span style="color:#ff3232;">%s</span>' % tr("выключен (ultracode)")
+            self.log('<span style="color:#a78bfc;">ultracode</span> ' + state,
+                     "info", rich=True)
+        except Exception:
+            pass
 
     def _on_effort_changed(self, effort):
         """Сохраняет выбранный reasoning effort, пишет в ~/.claude/settings.json
-        и обновляет цвет рамки/текста кликабельного комбобокса."""
+        (вместе с флагом ultracode) и обновляет палочку-индикатор в строке модели."""
         if effort not in EFFORT_LEVELS:
             return
         self.settings["reasoning_effort"] = effort
         save_settings(self.settings)
-        # Сразу прописываем в настройки самого Claude Code (поле effortLevel)
-        self._write_claude_effort_setting(effort)
+        # Сразу прописываем в настройки самого Claude Code (поле effortLevel
+        # + флаг ultracode).
+        try:
+            ultra = bool(self.settings.get("reasoning_ultracode", False))
+        except Exception:
+            ultra = False
+        self._write_claude_effort_setting(effort, ultra)
         self.log(f"{tr('Reasoning effort изменён на')}: {effort}", "info")
 
-        if hasattr(self, "fm_effort_combo") and hasattr(self, "_fm_effort_colors"):
-            if effort in self._fm_effort_colors:
-                # setCurrentText нужен, чтобы сам combobox отображал новый уровень
-                # (EffortDialog эмитит applied → сюда, но не трогает текст комбо).
-                if self.fm_effort_combo.currentText() != effort:
-                    self.fm_effort_combo.blockSignals(True)
-                    self.fm_effort_combo.setCurrentText(effort)
-                    self.fm_effort_combo.blockSignals(False)
-                self.fm_effort_combo.setTextColor(self._fm_effort_colors[effort])
-                self.fm_effort_combo.setAccentColor(self._fm_effort_colors[effort])
+        if hasattr(self, "effort_stick"):
+            self.effort_stick.setEffort(effort)
+            try:
+                self.effort_stick.setUltra(ultra)
+            except Exception:
+                pass
 
-    def _on_1m_context_toggled(self, checked):
-        """Переключает 1M-контекст. При включении модели с поддержкой получат
-        суффикс [1M] в ID; ~/.claude/settings.json перезаписывается сразу,
-        чтобы Claude Code подхватил новый id при следующем запуске."""
-        self.settings["use_1m_context"] = checked
-        save_settings(self.settings)
+    def _set_ultra(self, on):
+        """Вкл/выкл ultracode: настройка, ~/.claude/settings.json, стик, лог."""
         try:
-            current_model = self.fm_model_combo.currentText() if hasattr(self, "fm_model_combo") else self.settings.get("custom_model", "")
-            if current_model:
-                self._write_claude_model_setting(current_model)
+            on = bool(on)
+        except Exception:
+            on = False
+        try:
+            cur_effort = self.settings.get("reasoning_effort", "high")
+        except Exception:
+            cur_effort = "high"
+        if cur_effort not in EFFORT_LEVELS:
+            cur_effort = "high"
+        try:
+            self.settings["reasoning_ultracode"] = on
+            save_settings(self.settings)
         except Exception:
             pass
-        self.log(
-            tr("1M-контекст включён") if checked else tr("1M-контекст выключен"),
-            "info"
-        )
+        try:
+            self._write_claude_effort_setting(cur_effort, on)
+        except Exception:
+            pass
+        self._log_ultra_state(on)
+        if hasattr(self, "effort_stick"):
+            try:
+                self.effort_stick.setUltra(on)
+            except Exception:
+                pass
 
-    def _reposition_ctx_toggle(self):
-        """Прижимает 1M-тумблер к правому краю комбобокса модели, ставит
-        разделитель слева от него и растягивает прозрачный «щит» на всю
-        правую полосу combobox'а (от палочки до правого края, всю высоту)."""
-        if not (hasattr(self, "ctx_toggle") and hasattr(self, "fm_model_combo")):
+    def _reposition_effort_stick(self):
+        """Прижимает палочку effort к правому краю комбобокса модели,
+        по вертикали — по центру."""
+        if not (hasattr(self, "effort_stick") and hasattr(self, "fm_model_combo")):
             return
         combo = self.fm_model_combo
-        tw, th = self.ctx_toggle.width(), self.ctx_toggle.height()
-        x = max(0, combo.width() - tw - 8)
-        y = max(0, (combo.height() - th) // 2)
-        self.ctx_toggle.move(x, y)
-        sep = getattr(self, "ctx_separator", None)
-        sep_x = x
-        if sep is not None:
-            sw, sh = sep.width(), sep.height()
-            sy = max(0, (combo.height() - sh) // 2)
-            sep_x = max(0, x - sw - 2)
-            sep.move(sep_x, sy)
-        shield = getattr(self, "ctx_shield", None)
-        if shield is not None:
-            # Щит: от левого края палочки до правого края combobox'а, на всю высоту
-            shield.setGeometry(sep_x, 0, max(0, combo.width() - sep_x), combo.height())
+        stick = self.effort_stick
+        x = max(0, combo.width() - stick.width() - 8)
+        y = max(0, (combo.height() - stick.height()) // 2)
+        stick.move(x, y)
 
-    def _cursor_over_ctx_shield(self):
-        """Курсор сейчас над «щитом» (тумблер / палочка / прозрачный щит)?"""
-        combo = getattr(self, "fm_model_combo", None)
-        if combo is None:
-            return False
-        from PySide6.QtGui import QCursor
-        pos = combo.mapFromGlobal(QCursor.pos())
-        for shield in (
-            getattr(self, "ctx_toggle", None),
-            getattr(self, "ctx_separator", None),
-            getattr(self, "ctx_shield", None),
-        ):
-            if shield is not None and shield.geometry().contains(pos):
-                return True
-        return False
+    def _reposition_oa_effort_stick(self):
+        """Прижимает палочку effort к правому краю строки модели OpenAI,
+        по вертикали — по центру."""
+        if not (hasattr(self, "oa_effort_stick") and hasattr(self, "oa_model_combo")):
+            return
+        combo = self.oa_model_combo
+        stick = self.oa_effort_stick
+        x = max(0, combo.width() - stick.width() - 8)
+        y = max(0, (combo.height() - stick.height()) // 2)
+        stick.move(x, y)
 
     def eventFilter(self, obj, event):
         combo = getattr(self, "fm_model_combo", None)
         if combo is not None:
-            if obj is combo and event.type() == QEvent.Resize:
-                self._reposition_ctx_toggle()
-            elif obj in (
-                getattr(self, "ctx_toggle", None),
-                getattr(self, "ctx_separator", None),
-                getattr(self, "ctx_shield", None),
-            ):
-                et = event.type()
-                if et == QEvent.Enter:
-                    # Курсор зашёл на щит — гасим hover-подсветку combobox'а.
-                    combo._is_hovered = False
-                elif et == QEvent.Leave:
-                    # Курсор ушёл со щита. Если он остался внутри combobox'а
-                    # (и не над другим щитом) — вернём подсветку.
-                    from PySide6.QtGui import QCursor
-                    pos = combo.mapFromGlobal(QCursor.pos())
-                    if combo.rect().contains(pos) and not self._cursor_over_ctx_shield():
-                        combo._is_hovered = True
+            if obj is combo and event.type() in (QEvent.Resize, QEvent.Show):
+                self._reposition_effort_stick()
+        oa_combo = getattr(self, "oa_model_combo", None)
+        if oa_combo is not None:
+            if obj is oa_combo and event.type() in (QEvent.Resize, QEvent.Show):
+                self._reposition_oa_effort_stick()
         return super().eventFilter(obj, event)
 
     def _fm_toggle_key(self):
@@ -28142,14 +34459,27 @@ class ClaudeManager(QMainWindow):
         except Exception as e:
             print(f"[_persist_oc_url_state] Не удалось сохранить: {e}")
 
-    def _oc_open_notify(self):
-        """Окно настройки уведомлений opencode (звуки в tui.json)."""
-        dlg = OcNotifyDialog(self.settings, self)
+    def _refresh_oc_header(self):
+        """Кнопка «Настройки» не горит постоянно — только зелёный ховер.
+        Метод оставлен, чтобы подсветку можно было вернуть одним местом."""
+        try:
+            self.oc_btn_settings.set_lit(False)
+        except Exception:
+            pass
+
+    def _oc_open_settings(self):
+        """Маленькое окно настроек Custom URL: звуки и тема."""
+        if not self._is_oc_installed():
+            return
+        dlg = OcSettingsDialog(self.settings, self)
         dlg.exec()
+        self._refresh_oc_header()
 
     def _oc_manage_providers(self):
         """Окно управления провайдерами opencode: определения из конфига +
         креды из auth.json, с возможностью удаления."""
+        if not self._is_oc_installed():
+            return
         dialog = OpencodeProvidersDialog(self)
         dialog.exec()
 
@@ -28166,6 +34496,14 @@ class ClaudeManager(QMainWindow):
         """Фоновая подгрузка моделей + capabilities.reasoning для текущего
         Base URL вкладки Custom URL. Без эндпоинта тоже запускается — чтобы
         наполнить список бесплатными моделями opencode (глобальный каталог)."""
+        # Без CLI каталог не тянем (ни сети, ни записей): витрина показывает
+        # «Ошибка обновления моделей» через гейт _oc_refresh_info_button_text.
+        try:
+            if not self._is_oc_installed():
+                self._oc_refresh_info_button_text()
+                return
+        except Exception:
+            pass
         if not hasattr(self, "_oc_model_ids"):
             self._oc_model_ids = []
             self._oc_free_ids = []
@@ -28195,6 +34533,11 @@ class ClaudeManager(QMainWindow):
         self._oc_models_loader = _OcModelsLoader(self, base_url, api_key, host)
         self._oc_models_loader.loaded.connect(self._on_oc_models_loaded)
         self._oc_models_loader.start()
+        # Новая попытка — прошлый провал забываем.
+        try:
+            self._oc_models_failed = False
+        except Exception:
+            pass
         # Загрузка началась — блокируем кнопку моделей и показываем спиннер.
         self._oc_set_info_loading(True)
 
@@ -28210,23 +34553,56 @@ class ClaudeManager(QMainWindow):
         """Включает/выключает состояние загрузки на кнопке «Какие модели
         доступны»: блокирует её и запускает/гасит спиннер. Заодно блокирует
         кнопки управления (ключи, Base URL, провайдеры) — пока модели
-        грузятся, их нельзя трогать."""
+        грузятся, их нельзя трогать. Текст кнопки: идёт загрузка —
+        «Обновляем модели», конец — обычный пересчёт текста (там же
+        чинится зависший текст, если поток отвалился по чужому URL)."""
+        try:
+            self._oc_models_loading = bool(loading)
+        except Exception:
+            pass
         btn = getattr(self, "oc_info_btn", None)
         if btn is not None and hasattr(btn, "set_loading"):
             btn.set_loading(bool(loading))
+        if btn is not None and not loading:
+            # Без CLI витрина моделей всегда заблокирована (затемнена),
+            # даже когда загрузка завершилась.
+            try:
+                if not self._is_oc_installed():
+                    btn.setEnabled(False)
+            except Exception:
+                pass
+        if loading:
+            try:
+                if btn is not None:
+                    btn.setText(tr("Обновляем модели"))
+            except Exception:
+                pass
+        else:
+            try:
+                self._oc_refresh_info_button_text()
+            except Exception:
+                pass
         self._set_oc_manage_enabled(not loading)
 
     def _set_oc_manage_enabled(self, enabled):
         """Элементы управления вкладки opencode (эндпоинт, ключи, Base URL,
         провайдеры): кликабельны и яркие, либо заблокированы и затемнены
         (:disabled-стиль). Пока модели грузятся — всё заблокировано.
+        Провайдеры — только при установленном CLI (правят auth.json opencode).
         Только для вкладки Custom URL."""
+        try:
+            _cli = self._is_oc_installed()
+        except Exception:
+            _cli = False
         for attr in ("oc_url_input", "oc_btn_manage_urls", "oc_btn_manage_keys",
                      "btn_oc_manage_providers"):
             try:
                 w = getattr(self, attr, None)
                 if w is not None:
-                    w.setEnabled(bool(enabled))
+                    if attr == "btn_oc_manage_providers":
+                        w.setEnabled(bool(enabled) and bool(_cli))
+                    else:
+                        w.setEnabled(bool(enabled))
             except Exception:
                 pass
 
@@ -28241,6 +34617,22 @@ class ClaudeManager(QMainWindow):
         self._oc_reasoning = reasoning
         if hasattr(self, "oc_info_btn"):
             self._oc_refresh_info_button_text()
+        # Эндпоинт задан, но ничего не отдал (и бесплатных нет) — это провал
+        # обновления: кнопка показывает просто «Ошибка» вместо списков.
+        try:
+            failed = (not self._oc_model_ids and not self._oc_free_ids
+                      and bool((self.settings.get("oc_base_url", "") or "").strip()))
+        except Exception:
+            failed = False
+        try:
+            self._oc_models_failed = bool(failed)
+        except Exception:
+            pass
+        if failed and hasattr(self, "oc_info_btn"):
+            try:
+                self.oc_info_btn.setText(tr("Ошибка"))
+            except Exception:
+                pass
         # Свежие данные пришли асинхронно — перестраиваем уже открытое
         # инфо-окно, чтобы пользователь сразу видел актуальный список
         # (установка/удаление/обновление opencode и т.п.).
@@ -28276,9 +34668,33 @@ class ClaudeManager(QMainWindow):
         btn = getattr(self, "oc_info_btn", None)
         if btn is None:
             return
+        try:
+            _cli = self._is_oc_installed()
+        except Exception:
+            _cli = False
+        if not _cli:
+            # Без CLI моделей нет в принципе: витрина показывает ошибку
+            # вместо «Какие модели доступны» — при любом состоянии данных.
+            try:
+                btn.setText(tr("Ошибка обновления моделей"))
+            except Exception:
+                pass
+            return
+        if bool(getattr(self, "_oc_models_loading", False)):
+            try:
+                btn.setText(tr("Обновляем модели"))
+            except Exception:
+                pass
+            return
         model_ids = list(getattr(self, "_oc_model_ids", []) or [])
         free_ids = list(getattr(self, "_oc_free_ids", []) or [])
         if not model_ids and not free_ids:
+            if bool(getattr(self, "_oc_models_failed", False)):
+                try:
+                    btn.setText(tr("Ошибка"))
+                except Exception:
+                    pass
+                return
             btn.setText(tr("Какие модели доступны"))
             return
         lang_en = LANG is not None and LANG.lang == "en"
@@ -28345,10 +34761,79 @@ class ClaudeManager(QMainWindow):
         if getattr(self, "_oc_info_dlg", None) is not None:
             self._oc_info_dlg = None
 
-    def _oc_run_models_cmd(self, provider=None, config_path=None):
-        """Запускает `opencode models --verbose [provider]` и возвращает stdout.
+    def _oc_parse_plain_models(self, out):
+        """Парсит плоский вывод `opencode models` (v2, без --verbose):
+        строки вида 'provider/name', по одной на строку. Возвращает список
+        (provider, short). Строки без '/' или с пробелами пропускаем."""
+        parsed = []
+        for ln in (out or "").splitlines():
+            s = (ln or "").strip()
+            if not s or s.startswith("{"):
+                continue
+            if "/" not in s or " " in s:
+                continue
+            prov, _, short = s.partition("/")
+            prov, short = prov.strip(), short.strip()
+            if prov and short:
+                parsed.append((prov, short))
+        return parsed
+
+    def _oc_run_models_plain(self, config_path=None, retries=2):
+        """Плоский `opencode models` для v2: без --verbose и без позиционного
+        provider (оба убраны из CLI v2). config_path — через OPENCODE_CONFIG.
+        Пустой вывод повторяем до retries раз, как в verbose-варианте."""
+        exe = shutil.which("opencode")
+        if not exe:
+            return ""
+        env = os.environ.copy()
+        if config_path:
+            env["OPENCODE_CONFIG"] = config_path
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        # npm-шимы на Windows — это .cmd/.ps1; subprocess не может их запустить
+        # напрямую, поэтому через cmd /c.
+        if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+            args = ["cmd", "/c", exe, "models"]
+        else:
+            args = [exe, "models"]
+        try:
+            tries = max(1, int(retries) + 1)
+        except Exception:
+            tries = 3
+        out = ""
+        for attempt in range(tries):
+            try:
+                r = subprocess.run(
+                    args,
+                    capture_output=True, text=True, timeout=40, env=env, creationflags=flags,
+                )
+                out = r.stdout or ""
+            except Exception:
+                out = ""
+            if (out or "").strip():
+                break
+            if attempt < tries - 1:
+                try:
+                    time.sleep(2)
+                except Exception:
+                    pass
+        return out
+
+    def _oc_run_models_cmd(self, provider=None, config_path=None, retries=2):
+        """Запускает `opencode models` и возвращает stdout.
+        v1: `models --verbose [provider]` (слоёный текст + JSON с ценами).
+        v2: --verbose и позиционный provider убраны из CLI — только плоский
+        `models` (строки provider/name). config_path прокидывается через
+        OPENCODE_CONFIG в обеих версиях.
         Без provider — глобальный каталог всех провайдеров (включая бесплатные
-        opencode-модели). config_path прокидывается через OPENCODE_CONFIG."""
+        opencode-модели). config_path прокидывается через OPENCODE_CONFIG.
+        Пустой вывод (холодный старт/транзиент) — повторяем до retries раз
+        с паузой, иначе первый же пролёт показывал бы «Ошибка»."""
+        try:
+            _v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            _v2 = False
+        if _v2:
+            return self._oc_run_models_plain(config_path, retries)
         exe = shutil.which("opencode")
         if not exe:
             return ""
@@ -28365,13 +34850,27 @@ class ClaudeManager(QMainWindow):
         if provider:
             args.append(provider)
         try:
-            r = subprocess.run(
-                args,
-                capture_output=True, text=True, timeout=40, env=env, creationflags=flags,
-            )
-            return r.stdout or ""
+            tries = max(1, int(retries) + 1)
         except Exception:
-            return ""
+            tries = 3
+        out = ""
+        for attempt in range(tries):
+            try:
+                r = subprocess.run(
+                    args,
+                    capture_output=True, text=True, timeout=40, env=env, creationflags=flags,
+                )
+                out = r.stdout or ""
+            except Exception:
+                out = ""
+            if (out or "").strip():
+                break
+            if attempt < tries - 1:
+                try:
+                    time.sleep(2)
+                except Exception:
+                    pass
+        return out
 
     def _parse_verbose_sections(self, out):
         """Делит вывод `opencode models --verbose` на секции и возвращает список
@@ -28405,9 +34904,24 @@ class ClaudeManager(QMainWindow):
 
     def _oc_fetch_capabilities(self, provider, config_path):
         """Запускает `opencode models --verbose <provider>` и извлекает
-        capabilities.reasoning для каждой модели провайдера."""
+        capabilities.reasoning для каждой модели провайдера.
+        v2: CLI не отдаёт capabilities — reasoning неизвестен, всем False."""
         if not provider:
             return {}
+        try:
+            _v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            _v2 = False
+        if _v2:
+            caps = {}
+            try:
+                plain = self._oc_run_models_plain(config_path)
+            except Exception:
+                plain = ""
+            for prov, short in self._oc_parse_plain_models(plain):
+                if prov == provider:
+                    caps[short] = False
+            return caps
         caps = {}
         for prov, short, reasoning, _free in self._parse_verbose_sections(self._oc_run_models_cmd(provider, config_path)):
             if prov == provider:
@@ -28418,7 +34932,25 @@ class ClaudeManager(QMainWindow):
         """Бесплатные модели opencode: `opencode models --verbose` БЕЗ
         OPENCODE_CONFIG (глобальный каталог). Возвращает (free_ids,
         free_reasoning) для провайдера 'opencode' — только модели с нулевой
-        ценой (cost.input == 0 и cost.output == 0)."""
+        ценой (cost.input == 0 и cost.output == 0).
+        v2: цен в CLI-выводе нет — бесплатные = весь провайдер 'opencode'
+        из плоского `opencode models` (reasoning неизвестен, всем False)."""
+        try:
+            _v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            _v2 = False
+        if _v2:
+            try:
+                plain = self._oc_run_models_plain()
+            except Exception:
+                plain = ""
+            free_ids = []
+            free_reasoning = {}
+            for prov, short in self._oc_parse_plain_models(plain):
+                if prov == "opencode":
+                    free_ids.append(short)
+                    free_reasoning[short] = False
+            return free_ids, free_reasoning
         out = self._oc_run_models_cmd(None, None)
         free_ids = []
         free_reasoning = {}
@@ -28451,13 +34983,8 @@ class ClaudeManager(QMainWindow):
             if new_model in self._oa_model_colors:
                 self.oa_model_combo.setTextColor(self._oa_model_colors[new_model])
                 self.oa_model_combo.setAccentColor(self._oa_model_colors[new_model])
-        # Пересчитать disabled в popup effort'а и подтянуть значение вниз, если надо.
-        if hasattr(self, "oa_effort_combo") and new_model in OPENAI_MODEL_ORDER:
-            disabled = _openai_disabled_efforts(new_model)
-            try:
-                self.oa_effort_combo.set_picker(disabled=disabled)
-            except Exception:
-                pass
+        # Пересчитать кламп effort под потолок новой модели.
+        if new_model in OPENAI_MODEL_ORDER:
             cur_effort = self.settings.get("openai_effort", "low")
             clamped = _clamp_openai_effort(new_model, cur_effort)
             if clamped != cur_effort:
@@ -28476,7 +35003,7 @@ class ClaudeManager(QMainWindow):
         self._oa_effort_changed(effort)
 
     def _oa_effort_changed(self, effort):
-        """Сохраняет reasoning effort вкладки OpenAI и обновляет комбо.
+        """Сохраняет reasoning effort вкладки OpenAI и обновляет палочку-индикатор.
         Клампит значение под ограничения текущей модели."""
         if effort not in OPENAI_EFFORT_LEVELS:
             return
@@ -28485,14 +35012,8 @@ class ClaudeManager(QMainWindow):
         self.settings["openai_effort"] = effort
         save_settings(self.settings)
         self.log(f"{tr('Reasoning effort изменён на')}: {effort}", "info")
-        if hasattr(self, "oa_effort_combo") and hasattr(self, "_oa_effort_colors"):
-            if effort in self._oa_effort_colors:
-                if self.oa_effort_combo.currentText() != effort:
-                    self.oa_effort_combo.blockSignals(True)
-                    self.oa_effort_combo.setCurrentText(effort)
-                    self.oa_effort_combo.blockSignals(False)
-                self.oa_effort_combo.setTextColor(self._oa_effort_colors[effort])
-                self.oa_effort_combo.setAccentColor(self._oa_effort_colors[effort])
+        if hasattr(self, "oa_effort_stick"):
+            self.oa_effort_stick.setEffort(effort)
 
     def _animate_opacity(self, effect, target, duration=280):
         """Плавно анимирует opacity у QGraphicsOpacityEffect"""
@@ -28564,7 +35085,7 @@ class ClaudeManager(QMainWindow):
         FreeModel, но без Base URL и ключей (официальный вход через аккаунт).
         customurl — вкладка Custom URL (opencode CLI)."""
         if mode is None:
-            mode = self.settings.get("app_mode", "anthropic")
+            mode = self.settings.get("app_mode", "customurl")
         if mode not in ("anthropic", "official", "customurl", "openai"):
             mode = "anthropic"
 
@@ -28575,6 +35096,27 @@ class ClaudeManager(QMainWindow):
         self.settings["app_mode"] = mode
         self.settings["use_custom_token"] = True
         save_settings(self.settings)
+
+        # Свои модели — только Anthropic: в official-режиме их не видно,
+        # поэтому при переходе туда с выбранной своей — откат на Opus 4.8.
+        if is_official:
+            try:
+                cur_m = self.settings.get("custom_model", "")
+                customs = self.settings.get("custom_models", []) or []
+                if cur_m and cur_m in customs:
+                    self.settings["custom_model"] = "Opus 4.8"
+                    save_settings(self.settings)
+                    try:
+                        self.log(tr("Своя модель недоступна в официальном режиме — переключено на Opus 4.8"), "warning")
+                    except Exception:
+                        pass
+                    if hasattr(self, "fm_model_combo"):
+                        try:
+                            self.fm_model_combo.setCurrentText("Opus 4.8")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         # Синхронизируем навигацию в сайдбаре
         if hasattr(self, "mode_toggle"):
@@ -28746,11 +35288,27 @@ class ClaudeManager(QMainWindow):
                     and not getattr(self, "_oc_version_checked_once", False)):
                 self._oc_version_checked_once = True
                 threading.Thread(target=self._check_oc_version, daemon=True).start()
+            # CLI поставили снаружи, пока приложение работало: стартовый
+            # деплой его не видел — разворачиваем при первом входе.
+            try:
+                if (not getattr(self, "_oc_deployed_once", False)
+                        and self._is_oc_installed()):
+                    self._oc_deploy_integration()
+            except Exception:
+                pass
             # Первичная подгрузка моделей (эндпоинт + бесплатные opencode) —
             # чтобы комбо всегда было наполнено даже без заданного Base URL.
             if not getattr(self, "_oc_models_loaded_once", False):
                 self._oc_models_loaded_once = True
                 self._oc_refresh_models()
+
+        # Стики effort — переприжать к правому краю после перекладки секций
+        # (геометрия комбо в момент старта/переключения вкладок несвежая).
+        try:
+            QTimer.singleShot(0, self._reposition_effort_stick)
+            QTimer.singleShot(0, self._reposition_oa_effort_stick)
+        except Exception:
+            pass
 
     def _ensure_terminal(self):
         """Проверка Windows Terminal перед любым запуском.
@@ -28794,26 +35352,21 @@ class ClaudeManager(QMainWindow):
         "Opus 4.6": "claude-opus-4-6",
     }
 
-    # Модели, поддерживающие расширенный 1M-контекст — им дописываем суффикс [1M],
-    # если пользователь включил соответствующий тумблер.
-    MODELS_WITH_1M_CONTEXT = {
-        "Opus 4.8", "Opus 4.8 (default)",
-        "Opus 4.7", "Opus 4.6", "Opus 5", "Opus 5.5",
-        "Sonnet 5", "Sonnet 5.5", "Sonnet 4.6",
-        "Fable 5", "Fable 5.1",
-    }
-
     # Модели, для которых НЕ передавать --model (только env), чтобы /model показывал Default
     NO_CLI_FLAG_MODELS = set()  # Пустой — все модели форсятся через --model
 
     def _resolve_model_id(self, model_choice):
-        """Возвращает реальный ID модели для CLI/env или None для дефолта."""
-        base = self.MODEL_ID_MAP.get(model_choice)
-        if base is None:
-            return None
-        if self.settings.get("use_1m_context", False) and model_choice in self.MODELS_WITH_1M_CONTEXT:
-            return base + "[1M]"
-        return base
+        """Возвращает реальный ID модели для CLI/env или None для дефолта.
+        Всегда чистый ID без суффиксов — тумблер контекста удалён.
+        Свои модели (custom_models) возвращаются как есть — введённый ID
+        и есть CLI-ID (например claude-haiku-5.5:free)."""
+        try:
+            customs = self.settings.get("custom_models", []) or []
+        except Exception:
+            customs = []
+        if model_choice in customs:
+            return model_choice
+        return self.MODEL_ID_MAP.get(model_choice)
 
     def _write_claude_model_setting(self, model_choice):
         """Записывает выбранную модель в ~/.claude/settings.json"""
@@ -28859,30 +35412,12 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
 
-    def _write_claude_effort_setting(self, effort):
-        """Записывает reasoning effort в ~/.claude/settings.json.
-        Claude Code CLI знает только low/medium/high/xhigh/max. Для ultracode
-        УДАЛЯЕМ effortLevel из settings.json и ставим ultracode=true — иначе
-        effortLevel=max перебьёт ultracode-режим в текущей сессии."""
-        if effort == "ultracode":
-            try:
-                claude_dir = os.path.join(os.path.expanduser("~"), ".claude")
-                os.makedirs(claude_dir, exist_ok=True)
-                claude_settings_path = os.path.join(claude_dir, "settings.json")
-                claude_settings = {}
-                if os.path.exists(claude_settings_path):
-                    with open(claude_settings_path, 'r', encoding='utf-8') as f:
-                        try:
-                            claude_settings = json.load(f)
-                        except json.JSONDecodeError:
-                            claude_settings = {}
-                claude_settings.pop("effortLevel", None)
-                claude_settings["ultracode"] = True
-                with open(claude_settings_path, 'w', encoding='utf-8') as f:
-                    json.dump(claude_settings, f, indent=2)
-            except Exception as e:
-                self.log(tr("Не удалось записать effort в настройки Claude: {}").format(e), "warning")
-            return
+    def _write_claude_effort_setting(self, effort, ultra=False):
+        """Записывает reasoning effort в ~/.claude/settings.json + флаг ultracode.
+        Claude Code CLI знает только low/medium/high/xhigh/max; ultracode —
+        отдельная фича поверх любого уровня. Оба ключа живут рядом, ultracode —
+        всегда последним: {"effortLevel": "high", ..., "ultracode": true}."""
+        ultra = bool(ultra)
         if effort not in ("low", "medium", "high", "xhigh", "max"):
             return
         try:
@@ -28897,7 +35432,13 @@ class ClaudeManager(QMainWindow):
                     except json.JSONDecodeError:
                         claude_settings = {}
             claude_settings["effortLevel"] = effort
-            claude_settings.pop("ultracode", None)
+            # Ultracode — всегда явным boolean и всегда последним ключом:
+            # сносим и добавляем заново, чтобы порядок не зависел от истории.
+            try:
+                claude_settings.pop("ultracode", None)
+            except Exception:
+                pass
+            claude_settings["ultracode"] = ultra
             with open(claude_settings_path, 'w', encoding='utf-8') as f:
                 json.dump(claude_settings, f, indent=2)
         except Exception as e:
@@ -28906,98 +35447,25 @@ class ClaudeManager(QMainWindow):
     def launch_claude(self):
         """Запускает Claude Code с выбранной моделью"""
         # Вкладка OpenAI живёт своей жизнью — там Codex CLI
-        if self.settings.get("app_mode", "anthropic") == "openai":
+        if self.settings.get("app_mode", "customurl") == "openai":
             self.launch_codex()
             return
         # Вкладка Custom URL живёт своей жизнью — там opencode CLI
-        if self.settings.get("app_mode", "anthropic") == "customurl":
+        if self.settings.get("app_mode", "customurl") == "customurl":
             self.launch_opencode()
             return
         # Под-режим Claude (двойная ячейка) — официальный запуск без подмен
-        if self.settings.get("app_mode", "anthropic") == "official":
+        if self.settings.get("app_mode", "customurl") == "official":
             self._launch_claude_official()
             return
         # Windows Terminal перед запуском (предупредит, если его нет)
         if not self._ensure_terminal():
             return
-        # Жёсткая проверка: установленная версия не должна быть выше REQUIRED_CLAUDE_VERSION.
-        # Пропускаем её, если включены официальные обновления — там версия выше пина ожидаема.
-        # Без блокирующего subprocess: сначала кэш фонового опроса, тяжёлый
-        # вызов — только в рабочем потоке, продолжение — по сигналу.
-        if not self.settings.get("auto_update_enabled", False):
-            local = getattr(self, "_claude_local_version", "") or ""
-            if local:
-                if self._claude_version_blocked(local):
-                    return
-                self._launch_claude_after_version()
-                return
-            # Кэш пуст (холодный старт) — версию добудем в фоне.
-            # Кнопку лочим от даблклика, GUI не виснет.
-            if getattr(self, "_launch_busy", False):
-                return
-            self._launch_busy = True
-            try:
-                self.btn_claude.setEnabled(False)
-            except Exception:
-                pass
-            self.log(tr("Проверяю версию Claude Code..."), "info")
-            threading.Thread(target=self._fetch_claude_version_bg,
-                             daemon=True).start()
-            return
-
         self._launch_claude_after_version()
         return
 
-    def _claude_version_blocked(self, local):
-        """True — версия выше пина: показан диалог-блокировка (GUI-поток)."""
-        try:
-            cmp = compare_versions(local, REQUIRED_CLAUDE_VERSION)
-        except Exception:
-            cmp = 0
-        if cmp > 0:
-            try:
-                self._show_version_block_dialog(local)
-            except Exception:
-                pass
-            return True
-        return False
-
-    def _fetch_claude_version_bg(self):
-        """Тяжёлый `claude --version` в рабочем потоке (до 5с)."""
-        try:
-            ver = self._get_installed_claude_version() or ""
-        except Exception:
-            ver = ""
-        try:
-            self.claude_ver_ready.emit(ver)
-        except Exception:
-            pass
-
-    def _on_claude_ver_ready(self, ver):
-        """Продолжение запуска после фоновой проверки версии (GUI-поток)."""
-        try:
-            self._launch_busy = False
-            try:
-                self.btn_claude.setEnabled(True)
-            except Exception:
-                pass
-            local = ver or getattr(self, "_claude_local_version", "") or ""
-            if local:
-                try:
-                    self._claude_local_version = local
-                except Exception:
-                    pass
-                if self._claude_version_blocked(local):
-                    return
-            self._launch_claude_after_version()
-        except Exception as e:
-            try:
-                self.log(tr("Ошибка запуска: {}").format(e), "error")
-            except Exception:
-                pass
-
     def _launch_claude_after_version(self):
-        """Продолжение запуска после проверки версии (GUI-поток, быстро:
+        """Запуск Claude Code (GUI-поток, быстро:
         настройки, env, спавн — без subprocess и сети)."""
         model = self.settings.get("custom_model", "")
 
@@ -29028,34 +35496,33 @@ class ClaudeManager(QMainWindow):
         # Устанавливаем переменные окружения и запускаем
         env = os.environ.copy()
 
-        # Reasoning effort. Для обычных уровней (low..max) — CLI-флаг + env +
-        # settings.json.effortLevel. Для ultracode — вообще НЕ трогаем ни
-        # --effort, ни CLAUDE_CODE_EFFORT_LEVEL: Claude Code сам увидит его
-        # варнингом ("CLAUDE_CODE_EFFORT_LEVEL=max overrides effort this
-        # session — clear it and ultracode takes over"), и включит ultracode
-        # только по флагу CLAUDE_CODE_ULTRACODE=1 + settings.json.ultracode=true.
+        # Reasoning effort + ultracode независимо: уровень — своим CLI-флагом,
+        # фича — флагом CLAUDE_CODE_ULTRACODE=1 + settings.json.ultracode=true.
+        # EFFORT_LEVEL из env при включённой фиче убираем, чтобы не перебил.
         effort_ui = self.settings.get("reasoning_effort", "high")
+        if effort_ui not in ("low", "medium", "high", "xhigh", "max"):
+            effort_ui = "high"
+        try:
+            ultra = bool(self.settings.get("reasoning_ultracode", False))
+        except Exception:
+            ultra = False
         cur_model_for_ultra = self.settings.get("custom_model") if use_custom else model
-        if effort_ui == "ultracode" and cur_model_for_ultra in MODELS_WITHOUT_ULTRACODE:
+        if ultra and cur_model_for_ultra in MODELS_WITHOUT_ULTRACODE:
             self.log(
-                f"{cur_model_for_ultra} {tr('не поддерживает ultracode — понижаю до max')}",
+                f"{cur_model_for_ultra} {tr('не поддерживает ultracode — ultracode выключен')}",
                 "warning"
             )
-            effort_ui = "max"
-        if effort_ui == "ultracode":
-            # Явно вычищаем любые прежние значения из окружения родителя,
-            # иначе они перебьют ultracode на текущей сессии.
+            ultra = False
+        cli_effort = effort_ui
+        env["CLAUDE_CODE_EFFORT_LEVEL"] = cli_effort
+        if ultra:
             env.pop("CLAUDE_CODE_EFFORT_LEVEL", None)
             env["CLAUDE_CODE_ULTRACODE"] = "1"
-            effort_flag = ""
-            effort = "ultracode"
         else:
-            cli_effort = effort_ui if effort_ui in ("low", "medium", "high", "xhigh", "max") else "high"
-            env["CLAUDE_CODE_EFFORT_LEVEL"] = cli_effort
             env.pop("CLAUDE_CODE_ULTRACODE", None)
-            effort_flag = f" --effort {cli_effort}"
-            effort = cli_effort
-        self._write_claude_effort_setting(effort_ui)
+        effort_flag = f" --effort {cli_effort}"
+        effort = cli_effort
+        self._write_claude_effort_setting(effort, ultra)
 
         # Кастомные настройки (BaseURL). Пересчитываем активный ключ на
         # случай, если зелёный ключ «пожелтел» за время работы приложения.
@@ -29067,7 +35534,7 @@ class ClaudeManager(QMainWindow):
             return
 
         custom_model = self.settings.get("custom_model", "")
-        custom_base_url = self.settings.get("custom_base_url", "https://cc.freemodel.dev")
+        custom_base_url = self.settings.get("custom_base_url", DEFAULT_BASE_URLS[0])
 
         env["ANTHROPIC_API_KEY"] = custom_api_key
         env["ANTHROPIC_BASE_URL"] = custom_base_url
@@ -29110,12 +35577,13 @@ class ClaudeManager(QMainWindow):
     def _launch_claude_official(self):
         """Официальный запуск Claude Code (под-режим Claude двойной ячейки).
 
-        Как будто пользователь сам набрал `claude` в терминале: окружение не
-        подменяется (никаких ANTHROPIC_API_KEY / BASE_URL / AUTH_TOKEN),
-        ~/.claude/settings.json не трогаем — логин в аккаунт Anthropic
-        сохраняется между запусками. Модель и effort передаются честными
-        CLI-флагами --model/--effort. Пин версии REQUIRED_CLAUDE_VERSION здесь
-        не проверяем: официальный запуск работает с любой версией."""
+        Связан с вкладкой Anthropic: делят одни контролы модели/effort/
+        ultracode и один конфиг. В ~/.claude/settings.json пишем только
+        свои ключи (model, effortLevel, ultracode) — логин в аккаунт
+        Anthropic и всё остальное не трогаем. В окружение ключи не
+        подмешиваем (никаких ANTHROPIC_API_KEY / BASE_URL / AUTH_TOKEN) —
+        только флаг CLAUDE_CODE_ULTRACODE. Модель и effort передаются
+        честными CLI-флагами --model/--effort."""
         # Windows Terminal перед запуском (предупредит, если его нет)
         if not self._ensure_terminal():
             return
@@ -29134,25 +35602,44 @@ class ClaudeManager(QMainWindow):
         model_choice = self.settings.get("custom_model", "")
         model_id = self._resolve_model_id(model_choice)
 
+        # Окружение родителя как есть — ровно то, что увидел бы claude в
+        # обычном терминале этого пользователя.
+        env = os.environ.copy()
+
+        # Reasoning effort + ultracode независимо (как во вкладке Anthropic):
+        # уровень — своим CLI-флагом, фича — флагом окружения + settings.
+        # Режем только модели без поддержки фичи (effort при этом не трогаем).
         effort = self.settings.get("reasoning_effort", "high")
-        if effort == "ultracode":
-            # ultracode требует записи в ~/.claude/settings.json, которую в
-            # официальном режиме мы принципиально не делаем — понижаем до max.
-            self.log(tr("ultracode недоступен в официальном режиме — понижаю до max"), "warning")
-            effort = "max"
         if effort not in ("low", "medium", "high", "xhigh", "max"):
             effort = "high"
+        try:
+            ultra = bool(self.settings.get("reasoning_ultracode", False))
+        except Exception:
+            ultra = False
+        if ultra and model_choice in MODELS_WITHOUT_ULTRACODE:
+            self.log(
+                f"{model_choice} {tr('не поддерживает ultracode — ultracode выключен')}",
+                "warning"
+            )
+            ultra = False
+        if ultra:
+            env.pop("CLAUDE_CODE_EFFORT_LEVEL", None)
+            env["CLAUDE_CODE_ULTRACODE"] = "1"
+        else:
+            env.pop("CLAUDE_CODE_ULTRACODE", None)
+        effort_flag = f" --effort {effort}"
+        # Синхрон effort + модель как во вкладке Anthropic: обе вкладки делят
+        # одни контролы и один конфиг Claude Code, отличается только запуск
+        # (ключ против аккаунта). Пишем только свои ключи, логин не трогаем.
+        self._write_claude_effort_setting(effort, ultra)
+        self._write_claude_model_setting(model_choice)
 
         cli_cmd = "claude"
         if model_id and model_id not in self.NO_CLI_FLAG_MODELS:
             cli_cmd += f" --model {model_id}"
-        cli_cmd += f" --effort {effort}"
+        cli_cmd += effort_flag
 
         self.log(tr("Запуск официального Claude Code..."), "info")
-
-        # Окружение родителя как есть — ровно то, что увидел бы claude в
-        # обычном терминале этого пользователя.
-        env = os.environ.copy()
 
         # Снимаем блок PowerShell ExecutionPolicy для этой сессии — как и в
         # остальных режимах, Scope Process ничего не меняет глобально.
@@ -29179,7 +35666,7 @@ class ClaudeManager(QMainWindow):
             if not api_key:
                 self.log("Нет активного API ключа — включите ключ в окне «Управление»", "error")
                 return False
-            base_url = self.settings.get("openai_base_url", "https://api.freemodel.dev")
+            base_url = self.settings.get("openai_base_url", DEFAULT_OPENAI_BASE_URLS[0])
             model = self.settings.get("openai_model", "gpt-5.6-sol")
             effort = self.settings.get("openai_effort", "low")
 
@@ -29431,18 +35918,22 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            def _ps(s):
-                # экранируем одинарные кавычки для PowerShell-литералов
-                return tr(s).replace("'", "''")
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                f"Write-Host '{_ps('Останавливаю запущенные процессы codex...')}' -ForegroundColor Cyan; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                f"Write-Host '{_ps('Установка Codex CLI через npm...')}' -ForegroundColor Cyan; "
+                "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
+                "$npmBin = Join-Path $env:APPDATA 'npm'; "
+                "if (Test-Path $npmBin) { "
+                "  Get-ChildItem $npmBin -Force -Filter '.codex*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
+                "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
+                "npm uninstall -g @openai/codex 2>$null; "
+                "Write-Host '[4/4] Installing latest (@openai/codex)...' -ForegroundColor Cyan; "
                 "npm install -g @openai/codex; "
-                f"Write-Host '`n{_ps('Готово. Проверь команду: codex -V')}' -ForegroundColor Green; "
-                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Done. Check: codex -V' -ForegroundColor Green; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -29527,34 +36018,31 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            def _ps(s):
-                # экранируем одинарные кавычки для PowerShell-литералов
-                return tr(s).replace("'", "''")
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                f"Write-Host '{_ps('Останавливаю запущенные процессы codex...')}' -ForegroundColor Cyan; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                f"Write-Host '{_ps('Удаление Codex CLI (npm)...')}' -ForegroundColor Cyan; "
+                "Write-Host '[2/3] Removing Codex CLI (npm)...' -ForegroundColor Cyan; "
                 "npm uninstall -g @openai/codex; "
                 "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@openai\\codex'; "
                 "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('Повторная попытка (файл был залочен)...')}' -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
                 "  npm uninstall -g @openai/codex; "
                 "} "
                 "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('NPM не смог удалить — удаляю папку напрямую...')}' -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'NPM could not remove — deleting folder directly...' -ForegroundColor Yellow; "
                 "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
                 "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'codex*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
                 "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('Не всё удалось удалить — закрой все окна Codex и попробуй снова.')}' -ForegroundColor Red; "
+                "  Write-Host ''; Write-Host '[3/3] Not everything was removed — close all Codex windows and try again.' -ForegroundColor Red; "
                 "} else { "
-                f"  Write-Host '`n{_ps('Codex CLI полностью удалён.')}' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host '[3/3] Codex CLI fully removed.' -ForegroundColor Green; "
                 "} "
-                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -29663,13 +36151,10 @@ class ClaudeManager(QMainWindow):
         return [d for d in candidates if os.path.isdir(d)]
 
     def _is_oc_installed(self):
-        if shutil.which("opencode"):
-            return True
-        for d in self._detect_oc_install_dirs():
-            for name in ("opencode.exe", "opencode.cmd", "opencode.bat", "opencode.ps1", "opencode"):
-                if os.path.isfile(os.path.join(d, name)):
-                    return True
-        return False
+        try:
+            return bool(_oc_have_cli())
+        except Exception:
+            return False
 
     def _find_oc_bin(self):
         """Абсолютный путь к шиму opencode для запуска версии.
@@ -29714,6 +36199,290 @@ class ClaudeManager(QMainWindow):
         self._oc_local_version = local
         self._oc_latest_version = latest
         self._update_oc_button_state()
+
+    @staticmethod
+    def _format_oc_session_elapsed(sec):
+        try:
+            sec = max(0, int(sec))
+        except Exception:
+            sec = 0
+        h, rem = divmod(sec, 3600)
+        m, s = divmod(rem, 60)
+        return "%02d:%02d:%02d" % (h, m, s)
+
+    def _tick_oc_session(self):
+        """Тик раз в секунду: читаем файл наблюдателя (без спавнов),
+        перерисовываем время. Протухший файл — перестартуем наблюдателя
+        с backoff; CLI пропал — гасим наблюдателя."""
+        try:
+            now = time.time()
+            active, start_ts, fresh = _oc_watch_read_state()
+            try:
+                self._oc_session_start_ts = float(start_ts) if active else 0.0
+            except Exception:
+                self._oc_session_start_ts = 0.0
+            self._update_oc_session_ui()
+            # Дешёвая сверка CLI не чаще раза в 10 сек (which + пара stat).
+            if now - getattr(self, "_oc_watch_cli_check", 0.0) >= 10.0:
+                self._oc_watch_cli_check = now
+                try:
+                    _cli = self._is_oc_installed()
+                except Exception:
+                    _cli = False
+                if not _cli:
+                    try:
+                        self._oc_watch_stop()
+                    except Exception:
+                        pass
+                    return
+            # Наблюдатель нужен (CLI есть), а свежего состояния нет —
+            # умер или убит снаружи: перестартуем, но не бесконечно
+            # (иначе война с антивирусом). Счётчик сбрасывает успешный старт.
+            if not fresh:
+                try:
+                    _respawns = int(getattr(self, "_oc_watch_respawns", 0) or 0)
+                    _last = float(getattr(self, "_oc_watch_last_spawn", 0.0) or 0.0)
+                except Exception:
+                    _respawns, _last = 0, 0.0
+                if _respawns < _OC_WATCH_MAX_RESPAWNS and now - _last >= 20.0:
+                    try:
+                        self._oc_watch_start()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _oc_watch_start(self):
+        """Стартует процесс-наблюдатель сессии (один, скрытый). Перед стартом
+        глушит осиротевшего от прошлого краша. Живой и свежий — не трогаем.
+        Сбрасывает счётчик перестартов при успехе. Только при установленном CLI."""
+        try:
+            if not self._is_oc_installed():
+                return
+        except Exception:
+            return
+        try:
+            proc = getattr(self, "_oc_watch_proc", None)
+            if proc is not None:
+                try:
+                    if proc.poll() is None:
+                        return
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Осиротевший от прошлого запуска (CCM умер, powershell остался).
+        try:
+            _oc_watch_kill_stale()
+        except Exception:
+            pass
+        try:
+            _script = _oc_watch_script_path()
+            _state = _oc_watch_state_path()
+            _pidf = _oc_watch_pid_path()
+            if not _script or not _state or not _pidf:
+                return
+            _text = _oc_watch_script_text(_state)
+            try:
+                _cur = ""
+                if os.path.exists(_script):
+                    with open(_script, "r", encoding="utf-8") as f:
+                        _cur = f.read()
+                if _cur != _text:
+                    with open(_script, "w", encoding="utf-8") as f:
+                        f.write(_text)
+            except Exception:
+                return
+            _DEVNULL = getattr(subprocess, "DEVNULL", None)
+            _proc = subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive",
+                 "-ExecutionPolicy", "Bypass",
+                 "-WindowStyle", "Hidden", "-File", _script],
+                stdin=_DEVNULL, stdout=_DEVNULL, stderr=_DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+            try:
+                with open(_pidf, "w", encoding="ascii") as f:
+                    f.write(str(_proc.pid))
+            except Exception:
+                pass
+            self._oc_watch_proc = _proc
+            self._oc_watch_last_spawn = time.time()
+            self._oc_watch_respawns = 0
+        except Exception:
+            try:
+                self._oc_watch_respawns = int(
+                    getattr(self, "_oc_watch_respawns", 0) or 0) + 1
+            except Exception:
+                pass
+
+    def _oc_watch_stop(self):
+        """Глушит наблюдателя и чистит его файлы (лучшая попытка, молча)."""
+        try:
+            proc = getattr(self, "_oc_watch_proc", None)
+            self._oc_watch_proc = None
+            if proc is not None:
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            _oc_watch_kill_stale()
+        except Exception:
+            pass
+        for _fn in ("_oc_watch_pid_path", "_oc_watch_state_path",
+                    "_oc_watch_script_path"):
+            try:
+                _p = globals().get(_fn, lambda: "")()
+                if _p and os.path.exists(_p):
+                    os.remove(_p)
+            except Exception:
+                pass
+
+    def _on_oc_session_click(self):
+        """Клик по пилюле сессии: подтверждение + остановка сервиса.
+        Чаты не теряются — сессии живут в базе сервиса и переживают
+        его перезапуск. Клик по неактивной пилюле игнорируем."""
+        try:
+            _active = float(getattr(self, "_oc_session_start_ts", 0.0) or 0.0) > 0
+        except Exception:
+            _active = False
+        if not _active:
+            return
+        try:
+            dlg = ConfirmActionDialog(
+                title=tr("Завершить сессию?"),
+                message=tr("Вы не потеряете свои чаты, если завершите сессию."),
+                detail="opencode serve --service",
+                confirm_text=tr("Завершить"),
+                icon="■",
+                icon_color=(255, 90, 90),
+                parent=self
+            )
+            if dlg.exec() != QDialog.Accepted:
+                return
+        except Exception:
+            return
+        # Сразу переводим пилюлю в «завершается» (жёлтый + спиннер), чтобы
+        # не мигать серым по локальному нулю и не ловить предсмертную
+        # запись файла обратно в зелёный. Убийство идёт в фоне — GUI
+        # не виснет, спиннер крутится плавно; результат вернётся сигналом.
+        try:
+            self._oc_session_stopping = True
+            self._oc_session_stopping_since = time.time()
+            self._oc_session_killed_ts = float(
+                getattr(self, "_oc_session_start_ts", 0.0) or 0.0)
+            self._update_oc_session_ui()
+        except Exception:
+            pass
+        try:
+            threading.Thread(target=self._kill_oc_session_bg, daemon=True).start()
+        except Exception:
+            try:
+                self._oc_session_stopping = False
+                self._update_oc_session_ui()
+            except Exception:
+                pass
+
+    def _kill_oc_session_bg(self):
+        """Фон: остановка сервиса. Результат — сигналом в GUI-поток."""
+        try:
+            _ok = _oc_kill_service()
+        except Exception:
+            _ok = False
+        try:
+            self.oc_session_kill_done.emit(bool(_ok))
+        except Exception:
+            pass
+
+    def _on_oc_session_kill_done(self, ok):
+        """Слот результата убийства (GUI-поток). Успех — выходим из
+        «завершается» по факту от наблюдателя (файл перевернётся сам);
+        провал — сразу возвращаем активный вид и ругаемся в консоль."""
+        try:
+            if ok:
+                self.log(tr("Сессия завершена"), "success")
+            else:
+                self._oc_session_stopping = False
+                self._update_oc_session_ui()
+                self.log(tr("Не удалось завершить сессию"), "error")
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        """Выход: глушим наблюдателя сессии, чтобы не осиротел."""
+        try:
+            self._oc_watch_stop()
+        except Exception:
+            pass
+        try:
+            super().closeEvent(event)
+        except Exception:
+            try:
+                event.accept()
+            except Exception:
+                pass
+
+    def _update_oc_session_ui(self):
+        """Статус сессии в шапке после полоски: зелёная + тикающее время /
+        серая. Переходное «завершается» (жёлтый + спиннер) держим, пока
+        наблюдатель не подтвердит смерть, не появится новая сессия или
+        не выйдет таймаут 25 сек, — иначе предсмертная запись файла
+        мигала бы обратно зелёным."""
+        try:
+            start_ts = float(getattr(self, "_oc_session_start_ts", 0.0) or 0.0)
+        except Exception:
+            start_ts = 0.0
+        active = start_ts > 0
+        try:
+            header = getattr(self, "page_header", None)
+            if header is None:
+                return
+            try:
+                _stopping = bool(getattr(self, "_oc_session_stopping", False))
+            except Exception:
+                _stopping = False
+            if _stopping:
+                try:
+                    _since = float(getattr(
+                        self, "_oc_session_stopping_since", 0.0) or 0.0)
+                    _killed = float(getattr(
+                        self, "_oc_session_killed_ts", 0.0) or 0.0)
+                    _now = time.time()
+                except Exception:
+                    _since, _killed, _now = 0.0, 0.0, 0.0
+                _dead = not active
+                _timed_out = _since > 0 and (_now - _since) > 25.0
+                _reborn = (active and _killed > 0
+                           and abs(start_ts - _killed) > 1.0)
+                if _dead or _timed_out or _reborn:
+                    self._oc_session_stopping = False
+                else:
+                    try:
+                        header.set_stopping()
+                    except Exception:
+                        pass
+                    return
+            if active:
+                try:
+                    elapsed = self._format_oc_session_elapsed(time.time() - start_ts)
+                except Exception:
+                    elapsed = "00:00:00"
+                header.set_session(True, tr("Сессия активна") + " • " + elapsed)
+            else:
+                header.set_session(False, tr("Сессия не активна"))
+        except Exception:
+            pass
 
     def _update_oc_button_state(self):
         """Кнопки и индикатор opencode CLI (нет / установлен / доступно обновление)."""
@@ -29774,6 +36543,35 @@ class ClaudeManager(QMainWindow):
                 f"color: {color}; background: transparent; border: none;"
             )
 
+        # Без установленного CLI настройки (звуки/пуши/тема) и провайдеры
+        # затемнены и некликабельны — иначе они писали бы файлы интеграции
+        # в пустоту. Разблокировка — после установки (см. _on_oc_install_done).
+        if hasattr(self, "oc_btn_settings"):
+            try:
+                self.oc_btn_settings.setEnabled(installed)
+                self.oc_btn_settings.setToolTip(
+                    "" if installed else tr("Сначала установите opencode"))
+            except Exception:
+                pass
+        if hasattr(self, "btn_oc_manage_providers"):
+            try:
+                self.btn_oc_manage_providers.setEnabled(installed)
+            except Exception:
+                pass
+        # Витрина моделей без CLI — затемнена, текст-ошибка (см. гейт
+        # в _oc_refresh_info_button_text). Загрузку тоже учитываем,
+        # чтобы не разблокировать её посреди фонового обновления.
+        if hasattr(self, "oc_info_btn"):
+            try:
+                _loading = bool(getattr(self, "_oc_models_loading", False))
+                self.oc_info_btn.setEnabled(bool(installed) and not _loading)
+            except Exception:
+                pass
+            try:
+                self._oc_refresh_info_button_text()
+            except Exception:
+                pass
+
         # Состояние установки могло смениться — пересчитать кнопку запуска.
         try:
             self._update_launch_button_state()
@@ -29781,7 +36579,7 @@ class ClaudeManager(QMainWindow):
             pass
 
     def _install_oc_cli(self):
-        """Ставит/обновляет opencode CLI (последняя версия) через npm i -g opencode-ai."""
+        """Ставит/обновляет opencode CLI (последняя версия) через npm install -g @opencode/cli."""
         installed = self._is_oc_installed()
         local = getattr(self, "_oc_local_version", "")
         latest = getattr(self, "_oc_latest_version", "") or tr("последняя")
@@ -29798,7 +36596,7 @@ class ClaudeManager(QMainWindow):
         else:
             title = tr("Установка opencode CLI")
             message = tr(
-                "Будет установлен opencode CLI (npm-пакет opencode-ai).\n\n"
+                "Будет установлен opencode CLI (npm-пакет @opencode/cli).\n\n"
                 "Откроется окно PowerShell, где пойдёт установка."
             )
             confirm_text = tr("Установить")
@@ -29808,7 +36606,7 @@ class ClaudeManager(QMainWindow):
         dlg = ConfirmActionDialog(
             title=title,
             message=message,
-            detail="npm i -g opencode-ai",
+            detail="npm install -g @opencode/cli",
             confirm_text=confirm_text,
             icon=icon,
             icon_color=icon_color,
@@ -29833,15 +36631,23 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            def _ps(s):
-                # экранируем одинарные кавычки для PowerShell-литералов
-                return tr(s).replace("'", "''")
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                f"Write-Host '{_ps('Установка opencode через npm...')}' -ForegroundColor Cyan; "
-                "npm i -g opencode-ai; "
-                f"Write-Host '`n{_ps('Готово. Проверь команду: opencode -v')}' -ForegroundColor Green; "
-                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running opencode processes...' -ForegroundColor Cyan; "
+                "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 600; "
+                "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
+                "$npmBin = Join-Path $env:APPDATA 'npm'; "
+                "if (Test-Path $npmBin) { "
+                "  Get-ChildItem $npmBin -Force -Filter '.opencode*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "} "
+                "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
+                "npm uninstall -g opencode-ai 2>$null; "
+                "npm uninstall -g @opencode/cli 2>$null; "
+                "Write-Host '[4/4] Installing latest (@opencode/cli)...' -ForegroundColor Cyan; "
+                "npm install -g @opencode/cli; "
+                "Write-Host ''; Write-Host 'Done. Check: opencode -v' -ForegroundColor Green; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -29902,7 +36708,7 @@ class ClaudeManager(QMainWindow):
                 tr("Будет удалён глобальный npm-пакет opencode") + version_part + ". " +
                 tr("Настройки в %USERPROFILE%\\.local\\share\\opencode не пострадают — удалится только бинарь.")
             ),
-            detail="npm uninstall -g opencode-ai",
+            detail="npm uninstall -g @opencode/cli",
             confirm_text=tr("Удалить"),
             icon="×",
             icon_color=(235, 90, 90),
@@ -29926,25 +36732,35 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            def _ps(s):
-                # экранируем одинарные кавычки для PowerShell-литералов
-                return tr(s).replace("'", "''")
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                f"Write-Host '{_ps('Удаление opencode (npm)...')}' -ForegroundColor Cyan; "
-                "npm uninstall -g opencode-ai; "
-                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\opencode-ai'; "
-                "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('NPM не смог удалить — удаляю папку напрямую...')}' -ForegroundColor Yellow; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running opencode processes...' -ForegroundColor Cyan; "
+                "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 600; "
+                "Write-Host '[2/3] Removing opencode (npm)...' -ForegroundColor Cyan; "
+                "npm uninstall -g @opencode/cli 2>$null; "
+                "npm uninstall -g opencode-ai 2>$null; "
+                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@opencode\\cli'; "
+                "$npmDirLegacy = Join-Path $env:APPDATA 'npm\\node_modules\\opencode-ai'; "
+                "if ((Test-Path $npmDir) -or (Test-Path $npmDirLegacy)) { "
+                "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
+                "  Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
+                "  Start-Sleep -Seconds 2; "
+                "  npm uninstall -g @opencode/cli 2>$null; "
+                "  npm uninstall -g opencode-ai 2>$null; "
+                "} "
+                "if ((Test-Path $npmDir) -or (Test-Path $npmDirLegacy)) { "
+                "  Write-Host ''; Write-Host 'NPM could not remove — deleting folders directly...' -ForegroundColor Yellow; "
                 "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
+                "  Remove-Item -Recurse -Force $npmDirLegacy -ErrorAction SilentlyContinue; "
                 "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'opencode*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
-                "if (Test-Path $npmDir) { "
-                f"  Write-Host '`n{_ps('Не всё удалось удалить — попробуй позже.')}' -ForegroundColor Red; "
+                "if ((Test-Path $npmDir) -or (Test-Path $npmDirLegacy)) { "
+                "  Write-Host ''; Write-Host '[3/3] Not everything was removed — close all opencode windows and try again.' -ForegroundColor Red; "
                 "} else { "
-                f"  Write-Host '`n{_ps('opencode полностью удалён.')}' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host '[3/3] opencode fully removed.' -ForegroundColor Green; "
                 "} "
-                f"Write-Host '`n{_ps('Нажмите любую клавишу, чтобы закрыть PowerShell...')}' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -29990,6 +36806,82 @@ class ClaudeManager(QMainWindow):
         threading.Thread(target=_wait_and_emit, daemon=True).start()
         progress_dlg.exec()
 
+    def _oc_deploy_integration(self):
+        """Развёртывание интеграции opencode: профиль терминала с иконкой,
+        чистка глобала + свежий per-launch конфиг, push-файлы и ссылка
+        в живом глобале, сторож пушей. Вызывать только при установленном
+        CLI (старт с opencode / успешная установка / первый вход на вкладку
+        после внешней установки). Молча, идемпотентно."""
+        # Профиль терминала с иконкой готовим заранее, а не в момент запуска:
+        # wt подхватывает settings.json с задержкой, иначе иконки не будет.
+        try:
+            if find_windows_terminal():
+                _oc_wt_ensure_icon_profile()
+        except Exception:
+            pass
+        # Глобальный tui.json без наших звуков/темы (ручные запуски чистые),
+        # per-launch конфиг свежий.
+        try:
+            _oc_migrate_scoped_config(self.settings)
+        except Exception:
+            pass
+        # Push-файлы (плагин, тост, иконка) свежие, как звуки.
+        # Ссылка в живом глобале — состояние тумблера: вкл — есть (тосты
+        # в любых сессиях, старых и новых), выкл — нет.
+        try:
+            if _oc_push_enabled():
+                try:
+                    _pd = _oc_push_dir()
+                    _missing_before = not (
+                        _pd and os.path.exists(
+                            os.path.join(_pd, "ccm-notify", "index.js")))
+                except Exception:
+                    _missing_before = False
+                _oc_push_files()
+                try:
+                    _oc_push_ensure_global_ref(True)
+                except Exception:
+                    pass
+                try:
+                    _oc_push_ensure_loaded()
+                except Exception:
+                    pass
+                if _missing_before:
+                    # Файлы только восстановились — вотчи мертвы: дёргаем
+                    # глобал для переподписки сервиса (иначе failed залипнет).
+                    try:
+                        _oc_push_touch_global()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    _oc_push_ensure_global_ref(False)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Сторож пушей на всё время работы: раз в 20 секунд сверяем новые
+        # сессии с загрузками плагина; пропущенную лечим дёрганием entrypoint.
+        # Создаём один раз — повторные деплои (установка, вход на вкладку)
+        # второй таймер не заводят.
+        try:
+            if getattr(self, "_push_watch", None) is None:
+                self._push_watch = QTimer(self)
+                self._push_watch.timeout.connect(lambda: _oc_push_ensure_loaded())
+                self._push_watch.start(20000)
+        except Exception:
+            pass
+        # Наблюдатель сессии: один скрытый powershell на всё время работы
+        # (старт/стоп вместе с программой, см. closeEvent и _tick_oc_session).
+        try:
+            self._oc_watch_start()
+        except Exception:
+            pass
+        try:
+            self._oc_deployed_once = True
+        except Exception:
+            pass
+
     def _on_oc_install_done(self, ctx):
         """PowerShell закрылся — обновляем окно прогресса и состояние кнопок."""
         ctx = ctx or {}
@@ -30013,6 +36905,35 @@ class ClaudeManager(QMainWindow):
                             self.log(tr("Добавил в PATH: {}").format(_oc_dir), "success")
                         else:
                             self.log(tr("Не удалось добавить npm в PATH автоматически: {}").format(_err), "warning")
+            except Exception:
+                pass
+            # CLI только что появился — разворачиваем интеграцию сразу:
+            # настройки разблокируются, файлы загрузятся сами.
+            try:
+                self._oc_deploy_integration()
+            except Exception:
+                pass
+            try:
+                self.log(tr("Интеграция opencode развёрнута"), "success")
+            except Exception:
+                pass
+        if is_uninstall and not installed_now:
+            # CLI снесли — сторожу больше нечего охранять (сторож и так
+            # молчит без CLI, но таймер гасим). Наблюдатель сессии тоже
+            # гасим полностью. Настройки гаснут сами
+            # через _update_oc_button_state ниже.
+            try:
+                _w = getattr(self, "_push_watch", None)
+                if _w is not None:
+                    _w.stop()
+            except Exception:
+                pass
+            try:
+                self._oc_watch_stop()
+            except Exception:
+                pass
+            try:
+                self._oc_deployed_once = False
             except Exception:
                 pass
 
@@ -30139,6 +37060,9 @@ class ClaudeManager(QMainWindow):
         if base_url:
             host = re.sub(r"[^A-Za-z0-9]", "", (re.sub(r"^https?://", "", base_url).split("/")[0] or "")) or "custom"
         config = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+        # NB: ключ "theme" сюда НЕ пишем — в opencode.json тема deprecated
+        # и игнорируется, выбор темы читается только из tui.json
+        # (см. _oc_tui_theme_set). Было проверено по документации.
         if base_url:
             provider = {
                 "npm": "@ai-sdk/openai-compatible",
@@ -30181,8 +37105,10 @@ class ClaudeManager(QMainWindow):
         """Продолжение запуска opencode (GUI-поток): конфиг, env, спавн."""
         try:
             self._launch_busy = False
+            # Честное состояние кнопки (могла смениться установка CLI),
+            # а не слепое включение.
             try:
-                self.btn_claude.setEnabled(True)
+                self._update_launch_button_state()
             except Exception:
                 pass
             if not isinstance(payload, dict):
@@ -30207,9 +37133,6 @@ class ClaudeManager(QMainWindow):
                 if model_ids:
                     self.log(tr("Обнаружено моделей на {}: {}").format(
                         base_url, len(model_ids)), "info")
-                else:
-                    self.log("Не удалось получить /models — модели будут пустые",
-                             "warning")
             else:
                 self.log("Не удалось записать конфиг провайдера", "warning")
             if not working_dir:
@@ -30222,14 +37145,120 @@ class ClaudeManager(QMainWindow):
                 pass
 
     def _spawn_opencode_session(self, working_dir, env):
-        """Спавн opencode (GUI-поток, быстро: только Popen)."""
+        """Тонкая обёртка: тяжёлый спавн (конфиги, профиль, Popen wt) едет
+        в рабочем потоке — GUI не виснет. Результат возвращается сигналом
+        в GUI-поток (лог «opencode запущен»/ошибка)."""
+        try:
+            _env = dict(env) if isinstance(env, dict) else {}
+            try:
+                _settings = dict(getattr(self, "settings", None) or {})
+            except Exception:
+                _settings = {}
+            threading.Thread(
+                target=self._spawn_opencode_session_bg,
+                args=(working_dir, _env, _settings),
+                daemon=True).start()
+        except Exception as e:
+            try:
+                self._launch_busy = False
+            except Exception:
+                pass
+            try:
+                self.log(tr("Ошибка запуска: {}").format(e), "error")
+            except Exception:
+                pass
+
+    def _spawn_opencode_session_bg(self, working_dir, env, settings):
+        """Фон: env, scoped-конфиг, WT-профиль, Popen. Без Qt — только
+        данные и процессы. Профиль держим всегда — иконка приложения видна
+        при любом запуске из CCM, картинка в нём — только при включённой
+        прозрачной теме. Звуки и тема едут через per-launch конфиг
+        (только эта сессия, глобал чистый)."""
+        try:
+            env = _oc_launch_env(env, settings)
+        except Exception:
+            pass
+        # Push-уведомления: plugin в scoped-конфиг запуска плюс ссылка
+        # в живом глобале (новые сессии любого происхождения тоже с тостами).
+        # Нет конфига — соберём из глобала + plugin.
+        try:
+            if isinstance(env, dict):
+                base_cfg = env.get("OPENCODE_CONFIG", "") or ""
+                scoped = _oc_scoped_config_with_push(base_cfg, settings)
+                if scoped:
+                    env["OPENCODE_CONFIG"] = scoped
+        except Exception:
+            pass
         ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
         launch_cmd = "opencode"
+        # OPENCODE_TUI_CONFIG живёт только на время работы opencode: ставим
+        # его в скрипте и чистим после выхода — иначе повторные ручные запуски
+        # в этой же вкладке подхватят наш конфиг. Из окружения сессии убираем.
+        # V2: плюс OPENCODE_CLI_CONFIG_CONTENT с тем же attention/темой.
         try:
-            spawn_powershell_session(working_dir, f"{ps_prefix}{launch_cmd}", env=env)
-            self.log(tr("opencode запущен"), "success")
+            if not isinstance(env, dict):
+                env = {}
+            prefix_parts = []
+            suffix_parts = []
+            tui_cfg = env.pop("OPENCODE_TUI_CONFIG", "") or ""
+            if tui_cfg and os.path.exists(tui_cfg):
+                prefix_parts.append("$env:OPENCODE_TUI_CONFIG='%s'"
+                                    % tui_cfg.replace("'", "''"))
+                suffix_parts.append("Remove-Item Env:\\OPENCODE_TUI_CONFIG"
+                                    " -ErrorAction SilentlyContinue")
+            try:
+                v2_run = (_oc_installed_major() >= 2)
+            except Exception:
+                v2_run = False
+            if v2_run:
+                cli_content = _oc_build_ccm_cli_content(settings)
+                if cli_content:
+                    prefix_parts.append("$env:OPENCODE_CLI_CONFIG_CONTENT='%s'"
+                                        % cli_content.replace("'", "''"))
+                    suffix_parts.append("Remove-Item Env:\\OPENCODE_CLI_CONFIG_CONTENT"
+                                        " -ErrorAction SilentlyContinue")
+            if prefix_parts:
+                launch_cmd = ("; ".join(prefix_parts) + "; opencode; "
+                              + "; ".join(suffix_parts))
+        except Exception:
+            pass
+        profile = None
+        try:
+            if find_windows_terminal():
+                # Иконка приложения в запущенном из CCM терминале — при любом
+                # запуске, фон не важен: профиль с иконкой создаём при нужде.
+                _oc_wt_ensure_icon_profile()
+                if _oc_wt_has_ours():
+                    profile = _OC_WT_PROFILE
+        except Exception:
+            profile = None
+        try:
+            spawn_powershell_session(working_dir, f"{ps_prefix}{launch_cmd}",
+                                     env=env, wt_profile=profile)
         except Exception as e:
-            self.log(tr("Ошибка запуска: {}").format(e), "error")
+            try:
+                self.oc_launch_done.emit(False, str(e))
+            except Exception:
+                pass
+            return
+        try:
+            self.oc_launch_done.emit(True, "")
+        except Exception:
+            pass
+
+    def _on_oc_launch_done(self, ok, err):
+        """Слот результата спавна (GUI-поток): сброс флага + только лог."""
+        try:
+            self._launch_busy = False
+        except Exception:
+            pass
+        try:
+            if ok:
+                self.log(tr("opencode запущен"), "success")
+            else:
+                self.log(tr("Ошибка запуска: {}").format(err or "?"), "error")
+        except Exception:
+            pass
 
     def launch_opencode(self):
         """Запускает opencode CLI (вкладка Custom URL).
@@ -30279,14 +37308,11 @@ class ClaudeManager(QMainWindow):
                 env["ANTHROPIC_API_KEY"] = api_key
         elif base_url:
             # Сетевой фетч моделей (до 2×10с) — только в рабочем потоке.
-            # Кнопку лочим от даблклика, GUI не виснет.
+            # Кнопку визуально не затемняем: от даблклика держит флаг
+            # _launch_busy, GUI не виснет.
             if getattr(self, "_launch_busy", False):
                 return
             self._launch_busy = True
-            try:
-                self.btn_claude.setEnabled(False)
-            except Exception:
-                pass
             self.log(tr("Готовлю запуск opencode..."), "info")
             threading.Thread(
                 target=self._fetch_oc_models_bg,
@@ -30298,6 +37324,11 @@ class ClaudeManager(QMainWindow):
 
         # Модель НЕ форсируем: открывается модель, которую пользователь выбрал
         # внутри opencode в прошлой сессии. Приложение не перезаписывает её.
+        # Прямой спавн тоже под флагом: воркер асинхронный, даблклик иначе
+        # открыл бы два терминала. Сброс — в слоте результата.
+        if getattr(self, "_launch_busy", False):
+            return
+        self._launch_busy = True
         self._spawn_opencode_session(working_dir, env)
 
     def _statusline_bash_command(self):
@@ -30431,7 +37462,7 @@ class ClaudeManager(QMainWindow):
                 if not self._confirm_statusline_action(
                     title=tr("Переустановить status line?"),
                     message=tr(
-                        "Вы действит  льно хотите переустановить status line? "
+                        "Вы действительно хотите переустановить status line? "
                         "Ваш текущий блок statusLine в ~/.claude/settings.json "
                         "и файл ~/.claude/statusline-command.sh будут полностью "
                         "перезаписаны нашей версией. Откатить это нельзя."
@@ -30688,19 +37719,19 @@ class ClaudeManager(QMainWindow):
                 pass
 
     def _on_auto_update_toggled(self, checked):
-        """Переключает режим обновления Claude Code: пин + блокировки (OFF,
-        безопасный режим по умолчанию) ↔ официальный npm-пакет без ограничений (ON)."""
+        """Переключает авто-обновление Claude Code: вкл — приложение само
+        ставит последнюю версию через npm; выкл — ничего не ставит само,
+        встроенный обновлятор CLI гасится и версия замораживается."""
         if checked:
             dlg = ConfirmActionDialog(
-                title=tr("Поддержка новых версий Claude Code"),
+                title=tr("Включить авто-обновление"),
                 message=tr(
-                    "Включится официальный установщик "
-                    "(npm install -g @anthropic-ai/claude-code). Claude Code будет "
-                    "обновляться сам до последней версии.\n\n"
-                    "Сейчас всё работает и на последней версии. Если что-то "
-                    "вдруг перестанет работать — просто выключи этот переключатель, "
-                    "и приложение вернёт проверенную версию, на которой всё "
-                    "гарантированно работает."
+                    "Приложение будет само обновлять Claude Code до последней версии "
+                    "через npm (npm install -g @anthropic-ai/claude-code), а встроенный "
+                    "автообновлятор CLI будет включён.\n\n"
+                    "Выключить можно в любой момент — тогда приложение перестанет "
+                    "что-либо ставить само, а встроенный обновлятор CLI выключится "
+                    "и версия будет заморожена."
                 ),
                 detail="npm install -g @anthropic-ai/claude-code",
                 confirm_text=tr("Включить"),
@@ -30710,50 +37741,41 @@ class ClaudeManager(QMainWindow):
             )
             if dlg.exec() != QDialog.Accepted:
                 self.autoupdate_toggle.setChecked(False)
-                self.log(tr("Поддержка новых версий: включение отменено"), "info")
+                self.log(tr("Включение авто-обновления отменено"), "info")
                 return
 
             self.settings["auto_update_enabled"] = True
             save_settings(self.settings)
             self._remove_safe_update_pins()
-            self.log(tr("Поддержка новых версий Claude Code включена"), "success")
+            self.log(tr("Авто-обновление Claude Code включено"), "success")
         else:
             dlg = ConfirmActionDialog(
-                title=tr("Переход в безопасный режим"),
+                title=tr("Выключить авто-обновление"),
                 message=tr(
-                    "Приложение перестанет обновлять Claude Code и зафиксируется "
-                    f"на проверенной версии v{REQUIRED_CLAUDE_VERSION} — именно на ней "
-                    "гарантированно работают FreeModel / opencode / любые сторонние "
-                    "Base URL и API-ключи.\n\n"
-                    "Встроенный автообновлятор Claude Code будет выключен "
-                    "(DISABLE_UPDATES=1, autoUpdates=false), чтобы CLI сам не "
-                    "подтянул новую версию за спиной. Если сейчас установлена "
-                    "версия новее — запуск будет заблокирован, пока не откатишь "
-                    "её кнопкой «Откатить Claude Code».\n\n"
-                    "Включай этот режим только если сам этого хочешь или если "
-                    "на новой версии реально появились проблемы."
+                    "Приложение перестанет само обновлять Claude Code. Встроенный "
+                    "автообновлятор CLI тоже будет выключен "
+                    "(DISABLE_UPDATES=1, autoUpdates=false), и версия "
+                    "будет заморожена на текущей — ничего само не обновится, "
+                    "пока не включишь обратно."
                 ),
                 detail="",
-                confirm_text=tr("Перейти в безопасный режим"),
-                icon="🛡",
-                icon_color=(235, 150, 90),
+                confirm_text=tr("Выключить"),
+                icon="↓",
+                icon_color=(180, 180, 190),
                 parent=self
             )
             if dlg.exec() != QDialog.Accepted:
                 self.autoupdate_toggle.setChecked(True)
-                self.log(tr("Безопасный режим: переход отменён"), "info")
+                self.log(tr("Выключение авто-обновления отменено"), "info")
                 return
 
             self.settings["auto_update_enabled"] = False
             save_settings(self.settings)
             self._ensure_disable_updates_in_settings()
             self._ensure_auto_updates_false_in_claude_json()
-            self.log(tr("Поддержка новых версий Claude Code выключена — вернулись к безопасному режиму"), "info")
+            self.log(tr("Авто-обновление Claude Code выключено — версия заморожена"), "info")
 
-        # Свежий фон-запрос версии: в auto-update режиме тянем актуальный
-        # latest из npm registry, в safe — снапаем на REQUIRED_CLAUDE_VERSION.
-        # Без этого лейбл «Доступно обновление / Установлена» показывал бы
-        # старое значение до перезапуска приложения.
+        # Свежий фон-запрос версии и пересчёт кнопки установки.
         self._claude_latest_version = ""
         try:
             threading.Thread(target=self._check_claude_version, daemon=True).start()
@@ -30766,7 +37788,7 @@ class ClaudeManager(QMainWindow):
             pass
 
     def _remove_safe_update_pins(self):
-        """Снимает DISABLE_UPDATES/autoUpdates=false, поставленные safe-режимом,
+        """Снимает DISABLE_UPDATES/autoUpdates=false,
         чтобы встроенный автообновлятор Claude Code реально заработал."""
         try:
             with self._claude_files_lock:
@@ -31045,198 +38067,10 @@ class ClaudeManager(QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
         progress.exec()
 
-    def _install_claude_code(self):
-        """Устанавливает/переустанавливает Claude Code v{REQUIRED_CLAUDE_VERSION} через npm в PowerShell"""
-        if self.settings.get("auto_update_enabled", False):
-            self._install_claude_code_official()
-            return
-
-        installed = self._is_claude_installed()
-        local = getattr(self, "_claude_local_version", "")
-        required = REQUIRED_CLAUDE_VERSION
-
-        # Определяем сценарий: install / downgrade / reinstall
-        needs_change = True
-        is_update = False
-        is_downgrade = False
-        if installed and local:
-            try:
-                cmp = compare_versions(local, required)
-            except Exception:
-                cmp = 0
-            if cmp == 0:
-                needs_change = False
-            elif cmp > 0:
-                is_downgrade = True
-            else:
-                is_update = True
-
-        if not needs_change:
-            self.log(tr("Claude Code v{} уже установлен").format(required), "info")
-            return
-
-        if is_downgrade:
-            title = tr("Откат Claude Code до") + f" v{required}"
-            message = (
-                tr("У тебя установлена") + f" v{local}. v{required} — " +
-                tr("проверенная стабильная версия, на которой приложение работает всегда. "
-                   "npm переустановит пакет на нужную версию. Настройки в %USERPROFILE%\\.claude не пострадают.")
-            )
-            confirm_text = tr("Откатить")
-            icon = "↓"
-            icon_color = (235, 150, 90)
-        elif is_update:
-            title = tr("Установка Claude Code") + f" v{required}"
-            message = (
-                tr("У тебя установлена") + f" v{local}. " +
-                tr("Будет установлена фиксированная") + f" v{required} — " +
-                tr("проверенная стабильная версия, на которой приложение работает всегда.")
-            )
-            confirm_text = tr("Установить")
-            icon = "↑"
-            icon_color = (245, 180, 60)
-        else:
-            title = tr("Установка Claude Code") + f" v{required}"
-            message = (
-                tr("Будет установлена фиксированная версия") + f" v{required} — " +
-                tr("проверенная стабильная версия, на которой приложение работает всегда.\n\n"
-                   "Откроется окно PowerShell, где пойдёт установка.")
-            )
-            confirm_text = tr("Установить")
-            icon = "↓"
-            icon_color = (52, 211, 153)
-
-        dlg = ConfirmActionDialog(
-            title=title,
-            message=message,
-            detail=f"npm install -g @anthropic-ai/claude-code@{required}",
-            confirm_text=confirm_text,
-            icon=icon,
-            icon_color=icon_color,
-            parent=self
-        )
-        if dlg.exec() != QDialog.Accepted:
-            self.log("Операция отменена", "info")
-            return
-
-        if not self._is_npm_installed():
-            self._show_npm_missing_dialog()
-            return
-
-        action_word = tr("переустановку") if installed else tr("установку")
-        self.log(tr("Запускаю {} Claude Code v{} через npm...").format(action_word, required), "info")
-
-        progress_dlg = ClaudeInstallProgressDialog(
-            is_update=installed,
-            old_version=local,
-            new_version=required,
-            parent=self,
-        )
-        self._claude_install_dlg = progress_dlg
-
-        try:
-            popen = subprocess.Popen([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                # 1) Прибить все запущенные claude.exe — иначе файл залочен и npm падает с EBUSY
-                "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
-                "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
-                "Start-Sleep -Milliseconds 600; "
-                # 1b) Убрать битые временные шимы npm (след прерванной установки:
-                #     ".claude.cmd-XXXX" без финального rename) — из-за них claude
-                #     «не установлен», а повторный npm install той же версии
-                #     бывает no-op и шимы не восстанавливает
-                "Write-Host 'Проверяю целостность шимов npm...' -ForegroundColor Cyan; "
-                "$npmBin = Join-Path $env:APPDATA 'npm'; "
-                "if (Test-Path $npmBin) { "
-                "  Get-ChildItem $npmBin -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
-                "} "
-                # 2) Снести старую установку через install.ps1 (живёт в ~/.local/bin и ~/.claude/local) —
-                #    иначе её битый shim перехватывает команду 'claude' в PATH
-                "Write-Host 'Удаляю старую установку Claude Code (install.ps1)...' -ForegroundColor Cyan; "
-                "$localBin = Join-Path $env:USERPROFILE '.local\\bin'; "
-                "if (Test-Path $localBin) { "
-                "  Get-ChildItem $localBin -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue; "
-                "} "
-                "$claudeLocal = Join-Path $env:USERPROFILE '.claude\\local'; "
-                "if (Test-Path $claudeLocal) { "
-                "  Remove-Item -Recurse -Force $claudeLocal -ErrorAction SilentlyContinue; "
-                "} "
-                # 3) Переустановка через npm: uninstall + install гарантирует
-                #    свежие bin-шимы даже если npm считает версию уже установленной
-                f"Write-Host 'Установка Claude Code v{required} через npm...' -ForegroundColor Cyan; "
-                "npm uninstall -g @anthropic-ai/claude-code 2>$null; "
-                f"npm install -g @anthropic-ai/claude-code@{required}; "
-                "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
-                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
-                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
-            ])
-        except Exception as e:
-            self.log(tr("Не удалось запустить установку: {}").format(e), "error")
-            progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
-            progress_dlg.exec()
-            return
-
-        # Контекст для коллбэка
-        self._claude_install_ctx = {
-            "is_update": is_update,
-            "old_local": local,
-            "progress_dlg": progress_dlg,
-            "popen": popen,
-        }
-
-        # Подключаем сигнал ОДИН раз (UniqueConnection чтобы не плодить дубли)
-        try:
-            self.claude_install_finished.disconnect(self._on_claude_install_done_safe)
-        except Exception:
-            pass
-        self.claude_install_finished.connect(
-            self._on_claude_install_done_safe, Qt.QueuedConnection
-        )
-
-        # Фоновая нить: ждёт PowerShell, читает версию там же (никаких subprocess.run в main!),
-        # затем эмитит сигнал с готовым контекстом
-        def _wait_and_emit():
-            try:
-                popen.wait()
-            except Exception:
-                pass
-            try:
-                rc = popen.returncode
-            except Exception:
-                rc = None
-            # Версию читаем здесь, в фоне — не блокируем UI
-            new_local = ""
-            try:
-                # дать инсталлятору пару секунд "отпустить" файл
-                time.sleep(0.5)
-                new_local = self._get_installed_claude_version()
-            except Exception:
-                new_local = ""
-            try:
-                installed_now = self._is_claude_installed()
-            except Exception:
-                installed_now = False
-            ctx = {
-                "is_update": is_update,
-                "old_local": local,
-                "new_local": new_local,
-                "installed_now": installed_now,
-                "returncode": rc,
-            }
-            try:
-                self.claude_install_finished.emit(ctx)
-            except Exception:
-                pass
-
-        threading.Thread(target=_wait_and_emit, daemon=True).start()
-
-        # Показываем окно (модально, но процесс PowerShell идёт параллельно)
-        progress_dlg.exec()
 
     def _install_claude_code_official(self):
         """Ставит/обновляет Claude Code через npm-пакет @anthropic-ai/claude-code
-        (последняя официальная версия). Используется в режиме поддержки новых
-        версий — без пина на REQUIRED_CLAUDE_VERSION."""
+        (последняя официальная версия)."""
         installed = self._is_claude_installed()
         local = getattr(self, "_claude_local_version", "")
 
@@ -31279,22 +38113,24 @@ class ClaudeManager(QMainWindow):
         try:
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                # 1) Прибить все запущенные claude.exe — иначе файл залочен и npm падает
-                "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
+                # 1) Kill running claude.exe — locked file breaks npm
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running claude processes...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                # 1b) Битые временные шимы npm — как в safe-установщике
-                "Write-Host 'Проверяю целостность шимов npm...' -ForegroundColor Cyan; "
+                # 1b) Broken npm temp shims — like the safe installer
+                "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
                 "$npmBin = Join-Path $env:APPDATA 'npm'; "
                 "if (Test-Path $npmBin) { "
                 "  Get-ChildItem $npmBin -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
-                # 2) Установка/обновление последней версии через npm
-                "Write-Host 'Установка/обновление Claude Code через npm...' -ForegroundColor Cyan; "
+                # 2) Remove old version via npm
+                "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
                 "npm uninstall -g @anthropic-ai/claude-code 2>$null; "
+                # 3) Install/update latest via npm
+                "Write-Host '[4/4] Installing latest (@anthropic-ai/claude-code)...' -ForegroundColor Cyan; "
                 "npm install -g @anthropic-ai/claude-code@latest; "
-                "Write-Host '`nГотово. Проверь команду: claude --version' -ForegroundColor Green; "
-                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Done. Check: claude --version' -ForegroundColor Green; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -31416,33 +38252,6 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
 
-    def _show_version_block_dialog(self, current_version):
-        """Показывает окно блокировки запуска: установленная версия Claude Code слишком новая."""
-        required = REQUIRED_CLAUDE_VERSION
-        message = (
-            tr("У тебя установлена Claude Code") + f" v{current_version}, " +
-            tr("а приложение сейчас в безопасном режиме и работает только с") + f" v{required}.\n\n"
-            f"v{required} — " +
-            tr("проверенная стабильная версия, на которой приложение работает всегда.\n\n"
-               "Нажми «Откатить» — установщик поставит проверенную версию, и запуск снова заработает.\n\n"
-               "Если откатывать версию не хочется — включи «Авто-обновление» на панели над кнопками. "
-               "В этом режиме приложение перестаёт следить за версией и запускает любую установленную.")
-        )
-        dlg = ConfirmActionDialog(
-            title=tr("Запуск заблокирован"),
-            message=message,
-            detail=f"npm install -g @anthropic-ai/claude-code@{required}",
-            confirm_text=tr("Откатить до") + f" v{required}",
-            icon="!",
-            icon_color=(235, 90, 90),
-            parent=self
-        )
-        self.log(
-            tr("Запуск заблокирован: установлена v{}, требуется v{}").format(current_version, required),
-            "warning"
-        )
-        if dlg.exec() == QDialog.Accepted:
-            self._install_claude_code()
 
     def _is_npm_installed(self):
         """True если в системе есть npm (нужен для установки Claude Code).
@@ -31549,16 +38358,16 @@ class ClaudeManager(QMainWindow):
         try:
             subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                "Write-Host 'Устанавливаю Node.js LTS через winget...' -ForegroundColor Cyan; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host 'Устанавливаю Node.js LTS через winget...' -ForegroundColor Cyan; "
                 "Write-Host 'Источник: OpenJS.NodeJS.LTS (winget по умолчанию берёт официальный пакет с nodejs.org)' -ForegroundColor DarkGray; "
                 "winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements; "
                 "if ($LASTEXITCODE -eq 0) { "
-                "  Write-Host '`nNode.js установлен. Перезапусти Claude Code Manager, чтобы он подхватил npm в PATH.' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host 'Node.js установлен. Перезапусти Claude Code Manager, чтобы он подхватил npm в PATH.' -ForegroundColor Green; "
                 "} else { "
-                "  Write-Host '`nУстановка завершилась с ошибкой. Код выхода:' $LASTEXITCODE -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'Установка завершилась с ошибкой. Код выхода:' $LASTEXITCODE -ForegroundColor Yellow; "
                 "  Write-Host 'Можно поставить вручную с https://nodejs.org/en/download' -ForegroundColor Yellow; "
                 "} "
-                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Нажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -31801,105 +38610,35 @@ class ClaudeManager(QMainWindow):
             err_dlg.exec()
 
     def _update_install_button_state(self):
-        """Обновляет кнопки и индикатор по состоянию (нет / нужная версия / другая версия)"""
+        """Обновляет кнопки и индикатор: нет / есть обновление / актуальная версия"""
         installed = self._is_claude_installed()
         local = getattr(self, "_claude_local_version", "")
 
-        auto_update = self.settings.get("auto_update_enabled", False)
+        latest = getattr(self, "_claude_latest_version", "") or ""
+        update_available = False
+        if installed and local and latest:
+            try:
+                update_available = compare_versions(latest, local) > 0
+            except Exception:
+                update_available = False
 
-        # «Добавить в PATH» полезно только в auto-update режиме, где install.ps1
-        # кладёт бинарь в ~/.local/bin (эта папка обычно не в PATH). В безопасном
-        # режиме ставим через npm — папка %APPDATA%\npm уже в PATH.
+        # Кнопка всегда доступна: установка идёт через npm в %APPDATA%\npm,
+        # при отсутствии папки диалог сам подскажет, что делать.
         if hasattr(self, "btn_add_to_path"):
-            self.btn_add_to_path.setEnabled(bool(auto_update))
-
-        if auto_update:
-            latest = getattr(self, "_claude_latest_version", "") or ""
-            update_available = False
-            if installed and local and latest:
-                try:
-                    update_available = compare_versions(latest, local) > 0
-                except Exception:
-                    update_available = False
-
-            if hasattr(self, "btn_install_claude"):
-                if not installed:
-                    self.btn_install_claude.setEnabled(True)
-                    self.btn_install_claude.setText(tr("Установить Claude Code"))
-                    self.btn_install_claude.set_hover_color(52, 211, 153)
-                elif update_available:
-                    self.btn_install_claude.setEnabled(True)
-                    self.btn_install_claude.setText(tr("Обновить Claude Code"))
-                    self.btn_install_claude.set_hover_color(245, 180, 60)
-                else:
-                    self.btn_install_claude.setEnabled(False)
-                    self.btn_install_claude.setText(tr("Установить Claude Code"))
-
-            if hasattr(self, "btn_uninstall_claude"):
-                self.btn_uninstall_claude.setEnabled(installed)
-
-            if hasattr(self, "claude_install_indicator"):
-                if not installed:
-                    self.claude_install_indicator.set_state("off")
-                elif update_available:
-                    self.claude_install_indicator.set_state("warn")
-                else:
-                    self.claude_install_indicator.set_state("on")
-
-            if hasattr(self, "claude_install_status_label"):
-                if not installed:
-                    text = tr("Не установлен")
-                    color = "rgb(255, 50, 50)"
-                elif update_available:
-                    text = tr("Доступно обновление") + (f" v{latest}" if latest else "")
-                    color = "rgb(245, 180, 60)"
-                else:
-                    text = tr("Установлена") + (f" v{local}" if local else "")
-                    color = "rgb(52, 211, 153)"  # новый зелёный
-                self.claude_install_status_label.setText(text)
-                self.claude_install_status_label.setStyleSheet(
-                    f"color: {color}; background: transparent; border: none;"
-                )
-            # Состояние установки могло смениться — пересчитать кнопку запуска.
-            try:
-                self._update_launch_button_state()
-            except Exception:
-                pass
-            return
-
-        # ── Safe mode: пин на REQUIRED_CLAUDE_VERSION ──
-        required = REQUIRED_CLAUDE_VERSION
-
-        version_match = False
-        version_higher = False
-        version_unknown = installed and not local  # бинарь есть, но версию ещё не успели прочитать
-        if installed and local:
-            try:
-                cmp = compare_versions(local, required)
-            except Exception:
-                cmp = 0
-            version_match = (cmp == 0)
-            version_higher = (cmp > 0)
+            self.btn_add_to_path.setEnabled(True)
 
         if hasattr(self, "btn_install_claude"):
             if not installed:
                 self.btn_install_claude.setEnabled(True)
                 self.btn_install_claude.setText(tr("Установить Claude Code"))
                 self.btn_install_claude.set_hover_color(52, 211, 153)
-            elif version_unknown:
-                self.btn_install_claude.setEnabled(False)
-                self.btn_install_claude.setText(tr("Установить Claude Code"))
-            elif version_match:
-                self.btn_install_claude.setEnabled(False)
-                self.btn_install_claude.setText(tr("Установить Claude Code"))
-            elif version_higher:
-                self.btn_install_claude.setEnabled(True)
-                self.btn_install_claude.setText(tr("Откатить Claude Code"))
-                self.btn_install_claude.set_hover_color(235, 150, 90)
-            else:
+            elif update_available:
                 self.btn_install_claude.setEnabled(True)
                 self.btn_install_claude.setText(tr("Обновить Claude Code"))
                 self.btn_install_claude.set_hover_color(245, 180, 60)
+            else:
+                self.btn_install_claude.setEnabled(False)
+                self.btn_install_claude.setText(tr("Установить Claude Code"))
 
         if hasattr(self, "btn_uninstall_claude"):
             self.btn_uninstall_claude.setEnabled(installed)
@@ -31907,49 +38646,31 @@ class ClaudeManager(QMainWindow):
         if hasattr(self, "claude_install_indicator"):
             if not installed:
                 self.claude_install_indicator.set_state("off")
-            elif version_unknown:
+            elif update_available:
                 self.claude_install_indicator.set_state("warn")
-            elif version_match:
-                self.claude_install_indicator.set_state("on")
             else:
-                self.claude_install_indicator.set_state("warn")
+                self.claude_install_indicator.set_state("on")
 
         if hasattr(self, "claude_install_status_label"):
             if not installed:
-                self.claude_install_status_label.setText(tr("Не установлен"))
-                self.claude_install_status_label.setStyleSheet(
-                    "color: rgb(255, 50, 50); background: transparent; border: none;"
-                )
-            elif version_unknown:
-                self.claude_install_status_label.setText(tr("Проверяю версию…"))
-                self.claude_install_status_label.setStyleSheet(
-                    "color: rgb(180, 180, 190); background: transparent; border: none;"
-                )
-            elif version_match:
-                self.claude_install_status_label.setText(tr("Установлена") + f" v{local}")
-                self.claude_install_status_label.setStyleSheet(
-                    "color: rgb(52, 211, 153); background: transparent; border: none;"
-                )
-            elif version_higher:
-                self.claude_install_status_label.setText(
-                    tr("Установлена") + f" v{local} — " + tr("запуск заблокирован")
-                )
-                self.claude_install_status_label.setStyleSheet(
-                    "color: rgb(235, 150, 90); background: transparent; border: none;"
-                )
+                text = tr("Не установлен")
+                color = "rgb(255, 50, 50)"
+            elif update_available:
+                text = tr("Доступно обновление") + (f" v{latest}" if latest else "")
+                color = "rgb(245, 180, 60)"
             else:
-                self.claude_install_status_label.setText(
-                    tr("Доступно обновление") + f" v{required}"
-                )
-                self.claude_install_status_label.setStyleSheet(
-                    "color: rgb(245, 180, 60); background: transparent; border: none;"
-                )
-
+                text = tr("Установлена") + (f" v{local}" if local else "")
+                color = "rgb(52, 211, 153)"  # новый зелёный
+            self.claude_install_status_label.setText(text)
+            self.claude_install_status_label.setStyleSheet(
+                f"color: {color}; background: transparent; border: none;"
+            )
         # Состояние установки могло смениться — пересчитать кнопку запуска.
         try:
             self._update_launch_button_state()
         except Exception:
             pass
+        return
 
     def _format_date(self, iso_date):
         """Преобразует ISO-дату из npm в DD.MM.YYYY"""
@@ -32013,7 +38734,7 @@ class ClaudeManager(QMainWindow):
         if sig != prev:
             self._claude_binary_signature = sig
             # КРИТИЧНО: бинарь сменился — кэш версии устарел. Чистим, чтобы UI не
-            # показывал зелёный «v2.1.173 установлен» по старому значению, пока
+               # показывал зелёную «установлена» по старому значению, пока
             # фоновая перепроверка не отработает.
             self._claude_local_version = ""
             if not getattr(self, "_version_check_running", False):
@@ -32048,7 +38769,7 @@ class ClaudeManager(QMainWindow):
         return tuple(parts)
 
     def _check_claude_version(self):
-        """Фоновая проверка локальной версии Claude Code. Целевая версия всегда жёстко зафиксирована."""
+        """Фоновая проверка локальной версии Claude Code и свежей версии в npm."""
         if getattr(self, "_version_check_running", False):
             return
         self._version_check_running = True
@@ -32058,10 +38779,7 @@ class ClaudeManager(QMainWindow):
                 self._claude_binary_signature = self._compute_claude_binary_signature()
             except Exception:
                 pass
-            if self.settings.get("auto_update_enabled", False):
-                latest = check_claude_code_latest_version() or local
-            else:
-                latest = REQUIRED_CLAUDE_VERSION
+            latest = check_claude_code_latest_version() or local
             try:
                 self.claude_version_checked.emit(local, latest, "")
             except Exception:
@@ -32075,54 +38793,7 @@ class ClaudeManager(QMainWindow):
         self._claude_latest_version = latest
         self._claude_latest_date = latest_date
         self._update_install_button_state()
-        # Если установлена версия НИЖЕ требуемой — предупреждаем (раз за сессию)
-        try:
-            self._maybe_warn_outdated_version()
-        except Exception:
-            pass
 
-    def _maybe_warn_outdated_version(self):
-        """Если установленная версия Claude Code меньше REQUIRED_CLAUDE_VERSION,
-        показывает окно с рекомендацией обновиться. Срабатывает один раз за
-        сессию (флаг _outdated_warning_shown)."""
-        if self.settings.get("auto_update_enabled", False):
-            return
-        if getattr(self, "_outdated_warning_shown", False):
-            return
-        local = getattr(self, "_claude_local_version", "") or ""
-        if not local:
-            return
-        required = REQUIRED_CLAUDE_VERSION
-        try:
-            cmp = compare_versions(local, required)
-        except Exception:
-            return
-        if cmp >= 0:
-            return  # либо ровно required, либо выше — там своя логика блокировки
-
-        self._outdated_warning_shown = True
-        self.log(
-            tr("Установлена устаревшая Claude Code v{} — рекомендуется обновить до v{}").format(local, required),
-            "warning"
-        )
-        dlg = ConfirmActionDialog(
-            title=tr("Устаревшая версия Claude Code"),
-            message=(
-                tr("У тебя установлена Claude Code") + f" v{local} — " +
-                tr("это устаревшая версия.") + "\n\n" +
-                tr("Проверенная и стабильная версия, на которой это приложение работает гарантированно, — ") +
-                f"v{required}. " +
-                tr("Рекомендуем обновить до") + f" v{required} — " +
-                tr("установщик поставит нужную версию, настройки в %USERPROFILE%\\.claude не пострадают.")
-            ),
-            detail=f"npm install -g @anthropic-ai/claude-code@{required}",
-            confirm_text=tr("Обновить до") + f" v{required}",
-            icon="↑",
-            icon_color=(245, 180, 60),
-            parent=self
-        )
-        if dlg.exec() == QDialog.Accepted:
-            self._install_claude_code()
 
     def _uninstall_claude_code(self):
         """Удаляет Claude Code через npm uninstall с подтверждением"""
@@ -32165,29 +38836,29 @@ class ClaudeManager(QMainWindow):
         try:
             popen = subprocess.Popen([
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                # 1) Прибить все запущенные claude.exe / node, держащие бинарь — иначе npm падает с EBUSY
-                "Write-Host 'Останавливаю запущенные процессы claude...' -ForegroundColor Cyan; "
+                # 1) Kill running claude.exe / node locking the binary — else npm fails with EBUSY
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/5] Stopping running claude processes...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                # 2) Основная попытка удаления npm-версии
-                "Write-Host 'Удаление Claude Code (npm)...' -ForegroundColor Cyan;"
+                # 2) Main npm removal attempt
+                "Write-Host '[2/5] Removing Claude Code (npm)...' -ForegroundColor Cyan;"
                 "npm uninstall -g @anthropic-ai/claude-code; "
-                # 3) Если файл   сё ещё залочен и остался — повторная попытка после паузы
+                # 3) If the file is still locked — retry after a pause
                 "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@anthropic-ai\\claude-code'; "
                 "if (Test-Path $npmDir) { "
-                "  Write-Host '`nПовторная попытка (файл был залочен)...' -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
                 "  npm uninstall -g @anthropic-ai/claude-code; "
                 "} "
                 "if (Test-Path $npmDir) { "
-                "  Write-Host '`nNPM не смог удалить — удаляю папку напрямую...' -ForegroundColor Yellow; "
+                "  Write-Host ''; Write-Host 'NPM could not remove — deleting folder directly...' -ForegroundColor Yellow; "
                 "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
                 "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
                 "} "
-                # 4) Снести установку через install.ps1 (~/.local/bin + ~/.claude/local)
-                "Write-Host '`nУдаление Claude Code (install.ps1)...' -ForegroundColor Cyan; "
+                # 4) Remove install.ps1 setup (~/.local/bin + ~/.claude/local)
+                "Write-Host ''; Write-Host '[3/5] Removing Claude Code (install.ps1)...' -ForegroundColor Cyan; "
                 "$localBin = Join-Path $env:USERPROFILE '.local\\bin'; "
                 "if (Test-Path $localBin) { "
                 "  Get-ChildItem $localBin -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue; "
@@ -32196,15 +38867,16 @@ class ClaudeManager(QMainWindow):
                 "if (Test-Path $claudeLocal) { "
                 "  Remove-Item -Recurse -Force $claudeLocal -ErrorAction SilentlyContinue; "
                 "} "
-                # 5) Финальная проверка
+                # 5) Final check
+                "Write-Host '[4/5] Verifying removal...' -ForegroundColor Cyan; "
                 "$leftNpm = Test-Path $npmDir; "
                 "$leftLocal = (Test-Path $claudeLocal) -or (Test-Path (Join-Path $localBin 'claude.exe')); "
                 "if ($leftNpm -or $leftLocal) { "
-                "  Write-Host '`nНе всё удалось удалить — закрой все окна Claude Code и попробуй снова.' -ForegroundColor Red; "
+                "  Write-Host ''; Write-Host '[5/5] Not everything was removed — close all Claude Code windows and try again.' -ForegroundColor Red; "
                 "} else { "
-                "  Write-Host '`nClaude Code полностью удалён.' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host '[5/5] Claude Code fully removed.' -ForegroundColor Green; "
                 "} "
-                "Write-Host '`nНажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             ])
         except Exception as e:
@@ -32301,7 +38973,7 @@ class ClaudeManager(QMainWindow):
                 pass
 
         try:
-            self.claude_version_checked.emit(new_local, REQUIRED_CLAUDE_VERSION, "")
+            self.claude_version_checked.emit(new_local, getattr(self, "_claude_latest_version", "") or "", "")
         except Exception:
             pass
         try:
@@ -32649,6 +39321,29 @@ def main():
     # чтобы виджеты при инициализации уже могли читать LANG.lang.
     global LANG
     LANG = LanguageManager()
+
+    # Один экземпляр: повторный запуск не плодит окна, а говорит об этом.
+    # QLockFile атомарен — при двойном клике выживает один процесс.
+    # Ссылку держим на app: иначе GC отпустит лок раньше времени.
+    # Протухший лок упавшего процесса QLockFile сносит сам.
+    try:
+        _lock_path = os.path.join(tempfile.gettempdir(), "ClaudeCodeManager.lock")
+        app._ccm_single_lock = QLockFile(_lock_path)
+        try:
+            app._ccm_single_lock.setStaleLockTime(30000)
+        except Exception:
+            pass
+        if not app._ccm_single_lock.tryLock(100):
+            try:
+                QMessageBox.information(None, "Claude Code Manager",
+                                        tr("Приложение уже запущено"))
+            except Exception:
+                pass
+            sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
 
     # Проверка обновлений ДО главного окна: если есть новая версия —
     # сразу окно скачивания, без лишних кнопок (авто-обновление).
