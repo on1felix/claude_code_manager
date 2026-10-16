@@ -2331,6 +2331,25 @@ def _oc_watch_kill_stale():
         pass
 
 
+def _oc_session_debounce(active, start_ts, hits):
+    """Дебаунс пилюли сессии: одиночные протухшие чтения (зависший WMI-опрос,
+    придержанный антивирусом файл) не гасят индикатор — гаснем только с
+    третьего подряд. Возвращает (start_ts|None держать прежний, hits)."""
+    try:
+        hits = int(hits or 0)
+    except Exception:
+        hits = 0
+    if active:
+        try:
+            return float(start_ts), 0
+        except Exception:
+            return 0.0, 0
+    hits += 1
+    if hits >= 3:
+        return 0.0, hits
+    return None, hits
+
+
 def _oc_watch_read_state():
     """Читает файл состояния: (active, start_ts, fresh). Только чтение
     файла — ни одного дочернего процесса. Протухший файл = (False, 0, False)."""
@@ -33490,6 +33509,7 @@ class ClaudeManager(QMainWindow):
         # процесс-наблюдатель пишет состояние в файл, тик только читает
         # его и перерисовывает время каждую секунду. Ноль спавнов в тике.
         self._oc_session_start_ts = 0.0  # epoch старта сервиса, 0 = нет сессии
+        self._oc_session_stale_hits = 0  # подряд протухших чтений (дебаунс)
         self._oc_session_stopping = False  # переходное «завершается»
         self._oc_session_stopping_since = 0.0
         self._oc_session_killed_ts = 0.0
@@ -36261,9 +36281,20 @@ class ClaudeManager(QMainWindow):
             now = time.time()
             active, start_ts, fresh = _oc_watch_read_state()
             try:
-                self._oc_session_start_ts = float(start_ts) if active else 0.0
+                _ts, _hits = _oc_session_debounce(
+                    active, start_ts,
+                    getattr(self, "_oc_session_stale_hits", 0))
             except Exception:
-                self._oc_session_start_ts = 0.0
+                _ts, _hits = 0.0, 3
+            try:
+                self._oc_session_stale_hits = _hits
+            except Exception:
+                pass
+            if _ts is not None:
+                try:
+                    self._oc_session_start_ts = _ts
+                except Exception:
+                    pass
             self._update_oc_session_ui()
             # Дешёвая сверка CLI не чаще раза в 10 сек (which + пара stat).
             if now - getattr(self, "_oc_watch_cli_check", 0.0) >= 10.0:
