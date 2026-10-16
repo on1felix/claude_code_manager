@@ -29,7 +29,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QRect, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "6.0.2"  # Для обновлений
+APP_VERSION = "6.0.3"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -2132,17 +2132,54 @@ def _oc_watch_script_path():
         return ""
 
 
-def _oc_watch_script_text(state_file):
+def _oc_watch_script_text(state_file, ppid=0, global_file="", ref=""):
     """Тело наблюдателя: WMI-опрос `serve --service` + атомарная запись
     состояния. Только чтение процессов и запись своего файла — ни сети,
-    ни реестра, ни автозагрузки."""
+    ни реестра, ни автозагрузки. Плюс присмотр за родителем: CCM умер
+    (килл/краш — closeEvent не отработал) — вычищаем ТОЛЬКО нашу
+    plugins-ссылку из живого глобала и завершаемся сами, сирот
+    не оставляем. Файл правим лишь если ссылка там есть; отсутствующий
+    файл не создаём; чужие записи, комментарии и форматирование не трогаем."""
     safe = (state_file or "").replace("'", "''")
+    try:
+        ppid = int(ppid or 0)
+    except Exception:
+        ppid = 0
+    gsafe = (global_file or "").replace("'", "''")
+    rsafe = (ref or "").replace("'", "''")
     return (
         "$ErrorActionPreference = 'SilentlyContinue'\n"
         "$stateFile = '%s'\n" % safe +
         "$tmpFile = \"$stateFile.tmp\"\n"
+        "$ccmParent = %d\n" % ppid +
+        "$ccmGlobal = '%s'\n" % gsafe +
+        "$ccmRef = '%s'\n" % rsafe +
+        "$misses = 0\n"
         "while ($true) {\n"
         "  try {\n"
+        "    if ($ccmParent -gt 0) {\n"
+        "      $pp = Get-Process -Id $ccmParent -ErrorAction SilentlyContinue\n"
+        "      if ($null -eq $pp -or $pp.ProcessName -notlike 'python*') { $misses++ } else { $misses = 0 }\n"
+        "      if ($misses -ge 2) {\n"
+        "        if ($ccmGlobal -ne '' -and $ccmRef -ne '' -and (Test-Path -LiteralPath $ccmGlobal)) {\n"
+        "          try {\n"
+        "            $txt = [System.IO.File]::ReadAllText($ccmGlobal)\n"
+        "            if ($txt.IndexOf($ccmRef, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {\n"
+        "              $rx = '\"' + [regex]::Escape($ccmRef) + '\"\\s*,?'\n"
+        "              $opt = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase\n"
+        "              $new = [regex]::Replace($txt, $rx, '', $opt)\n"
+        "              $new = [regex]::Replace($new, ',(\\s*\\])', '$1', $opt)\n"
+        "              $new = [regex]::Replace($new, '(\\r?\\n)[ \\t]*(\\r?\\n)', '$1', $opt)\n"
+        "              if ($new -cne $txt) {\n"
+        "                $enc = New-Object System.Text.UTF8Encoding $false\n"
+        "                [System.IO.File]::WriteAllText($ccmGlobal, $new, $enc)\n"
+        "              }\n"
+        "            }\n"
+        "          } catch { }\n"
+        "        }\n"
+        "        exit\n"
+        "      }\n"
+        "    }\n"
         "    $svc = Get-CimInstance Win32_Process -Filter \"Name='opencode.exe'\" | "
         "Where-Object { $_.CommandLine -match 'serve' } | Select-Object -First 1\n"
         "    if ($svc) {\n"
@@ -36282,7 +36319,17 @@ class ClaudeManager(QMainWindow):
             _pidf = _oc_watch_pid_path()
             if not _script or not _state or not _pidf:
                 return
-            _text = _oc_watch_script_text(_state)
+            _text = ""
+            try:
+                _text = _oc_watch_script_text(
+                    _state, ppid=os.getpid(),
+                    global_file=_oc_global_config_path(),
+                    ref=_oc_push_global_ref())
+            except Exception:
+                try:
+                    _text = _oc_watch_script_text(_state)
+                except Exception:
+                    return
             try:
                 _cur = ""
                 if os.path.exists(_script):
@@ -36423,6 +36470,15 @@ class ClaudeManager(QMainWindow):
         """Выход: глушим наблюдателя сессии, чтобы не осиротел."""
         try:
             self._oc_watch_stop()
+        except Exception:
+            pass
+        try:
+            # Убираем нашу plugins-ссылку из живого глобала: пока приложение
+            # открыто — тосты работают, закрыли — глобал чистый, чужие
+            # терминалы молчат. Без CLI ничего не трогаем. No-op, если
+            # ссылки уже нет (тумблер ВЫКЛ).
+            if _oc_have_cli():
+                _oc_push_ensure_global_ref(False)
         except Exception:
             pass
         try:
