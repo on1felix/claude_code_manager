@@ -2132,13 +2132,17 @@ def _oc_watch_script_path():
         return ""
 
 
-def _oc_watch_script_text(state_file, ppid=0, global_file="", ref=""):
+def _oc_watch_script_text(state_file, ppid=0, global_file="", ref="",
+                           proc="python"):
     """Тело наблюдателя: WMI-опрос `serve --service` + атомарная запись
     состояния. Только чтение процессов и запись своего файла — ни сети,
     ни реестра, ни автозагрузки. Плюс присмотр за родителем: CCM умер
     (килл/краш — closeEvent не отработал) — вычищаем ТОЛЬКО нашу
     plugins-ссылку из живого глобала и завершаемся сами, сирот
-    не оставляем. Файл правим лишь если ссылка там есть; отсутствующий
+    не оставляем. Родителя узнаём по PID + имени процесса из
+    sys.executable (python/pythonw/ClaudeCodeManager — захардкоженного
+    'python*' больше нет: запуск через exe убивал сторожа заживо).
+    Файл правим лишь если ссылка там есть; отсутствующий
     файл не создаём; чужие записи, комментарии и форматирование не трогаем."""
     safe = (state_file or "").replace("'", "''")
     try:
@@ -2147,6 +2151,7 @@ def _oc_watch_script_text(state_file, ppid=0, global_file="", ref=""):
         ppid = 0
     gsafe = (global_file or "").replace("'", "''")
     rsafe = (ref or "").replace("'", "''")
+    psafe = (proc or "python").replace("'", "''")
     return (
         "$ErrorActionPreference = 'SilentlyContinue'\n"
         "$stateFile = '%s'\n" % safe +
@@ -2154,12 +2159,13 @@ def _oc_watch_script_text(state_file, ppid=0, global_file="", ref=""):
         "$ccmParent = %d\n" % ppid +
         "$ccmGlobal = '%s'\n" % gsafe +
         "$ccmRef = '%s'\n" % rsafe +
+        "$ccmProc = '%s'\n" % psafe +
         "$misses = 0\n"
         "while ($true) {\n"
         "  try {\n"
         "    if ($ccmParent -gt 0) {\n"
         "      $pp = Get-Process -Id $ccmParent -ErrorAction SilentlyContinue\n"
-        "      if ($null -eq $pp -or $pp.ProcessName -notlike 'python*') { $misses++ } else { $misses = 0 }\n"
+        "      if ($null -eq $pp -or $pp.ProcessName -ne $ccmProc) { $misses++ } else { $misses = 0 }\n"
         "      if ($misses -ge 2) {\n"
         "        if ($ccmGlobal -ne '' -and $ccmRef -ne '' -and (Test-Path -LiteralPath $ccmGlobal)) {\n"
         "          try {\n"
@@ -36321,10 +36327,17 @@ class ClaudeManager(QMainWindow):
                 return
             _text = ""
             try:
+                try:
+                    _exe = sys.executable or ""
+                    _proc = os.path.splitext(os.path.basename(_exe))[0]
+                    if not _proc:
+                        _proc = "python"
+                except Exception:
+                    _proc = "python"
                 _text = _oc_watch_script_text(
                     _state, ppid=os.getpid(),
                     global_file=_oc_global_config_path(),
-                    ref=_oc_push_global_ref())
+                    ref=_oc_push_global_ref(), proc=_proc)
             except Exception:
                 try:
                     _text = _oc_watch_script_text(_state)
