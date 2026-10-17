@@ -29,7 +29,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QRect, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "6.0.3"  # Для обновлений
+APP_VERSION = "6.0.4"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -1341,10 +1341,11 @@ TRANSLATIONS = {
     "Каталог провайдеров недоступен": "Provider catalog unavailable",
     "Все провайдеры каталога уже подключены": "All catalog providers are already connected",
     "Подключение провайдера": "Connect provider",
-    "Ключ сохранится в auth.json — как при opencode auth login.": "The key is saved to auth.json — same as `opencode auth login`.",
+    "Ключ сохранится в конфигурацию opencode.": "The key will be saved to the opencode configuration.",
+    "аккаунт opencode": "opencode account",
     "Сверху — подключённые провайдеры, ниже — доступные из каталога opencode. Клик по доступному подключает его по API-ключу. Список обновляется при открытии окна.": "Connected providers on top, available ones from the opencode catalog below. Click an available provider to connect it with an API key. The list refreshes when the window opens.",
     "Без Base URL и кредов": "No Base URL or credentials",
-    "Вы уверены, что хотите удалить провайдера? Будет удалена и креда (auth.json), и определение из конфига.": "Are you sure you want to delete this provider? Both the credential (auth.json) and the config definition will be removed.",
+    "Вы уверены, что хотите удалить провайдера? Будут удалены креда (auth.json), аккаунт opencode и определение из конфига.": "Are you sure you want to delete this provider? The credential (auth.json), the opencode account, and the config definition will be removed.",
     # ── главное окно: подписи статусов
     "Не запущен": "Not running",
     "Подключен": "Connected",
@@ -1915,7 +1916,7 @@ TRANSLATIONS = {
     "Не удалось установить Terminal": "Terminal installation failed",
     "winget не найден — установи Terminal вручную из Microsoft Store.":
         "winget was not found — install Terminal manually from the Microsoft Store.",
-    "При отмене запуск пойдёт без терминала.": "Cancelling will launch without the terminal.",
+    "При отмене всё пойдёт без терминала.": "Cancelling will proceed without the terminal.",
     "Добавить в PATH": "Add to PATH",
     "opencode не найден": "opencode not found",
     "Не нашёл папку с установленным opencode. Сначала установи opencode кнопкой выше, потом жми «Добавить npm в PATH».":
@@ -2484,6 +2485,144 @@ def spawn_powershell_session(working_dir, ps_body, env=None, wt_profile=None):
         ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {ps_body}"],
         env=env
     )
+
+def _wait_process_exit(pid):
+    """Ждёт завершения процесса по PID (Windows). Возвращает код выхода
+    или None, если дождаться не удалось."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32")
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE,
+                                           ctypes.POINTER(wintypes.DWORD)]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        SYNCHRONIZE = 0x00100000
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = k32.OpenProcess(
+            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, int(pid))
+        if not handle:
+            return None
+        try:
+            k32.WaitForSingleObject(handle, 0xFFFFFFFF)  # INFINITE
+            code = wintypes.DWORD(0)
+            if k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return int(code.value)
+            return None
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+class _SetupSessionWait:
+    """Ожидание закрытия окна установки, открытого через Windows Terminal.
+
+    wt.exe отдаёт управление сразу после открытия окна, поэтому его
+    хэндл (popen) для ожидания не годится. Скрипт установки первым делом
+    пишет свой PID в temp-файл, мы дожидаемся файла и ждём завершения
+    процесса PowerShell нативно — как раньше ждали сам powershell.exe.
+    Наружу — тот минимум, что нужен коду установки: wait() и returncode.
+    """
+
+    def __init__(self, pid_file, popen, cleanup):
+        self._pid_file = pid_file
+        self._popen = popen
+        self._cleanup = cleanup
+        self.returncode = None
+
+    def _read_pid(self, timeout=20.0):
+        """PID скрипта из файла; 0 — файл так и не появился."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with open(self._pid_file, encoding="utf-8",
+                          errors="ignore") as f:
+                    digits = "".join(ch for ch in f.read() if ch.isdigit())
+                if digits:
+                    return int(digits)
+            except OSError:
+                pass
+            time.sleep(0.05)
+        return 0
+
+    def wait(self):
+        pid = self._read_pid()
+        if pid:
+            self.returncode = _wait_process_exit(pid)
+        else:
+            # Файл не появился — окно, похоже, не открылось. Ждём хотя бы
+            # процесс-лаунчер, чтобы не подвесить диалог прогресса.
+            try:
+                self.returncode = self._popen.wait()
+            except Exception:
+                pass
+        try:
+            self._cleanup()
+        except Exception:
+            pass
+        return self.returncode
+
+
+def spawn_setup_session(ps_body, env=None, working_dir=None):
+    """Окно установки/удаления (PowerShell) — тем же способом, что запуск
+    CLI из spawn_powershell_session: при наличии wt.exe окно рисует
+    Windows Terminal с дефолтным профилем (как запуск Claude Code/Codex —
+    наш профиль с картинкой для установок не используется); если wt нет —
+    обычный powershell.exe, как раньше.
+
+    Отличия от запуска CLI:
+      * без -NoExit — окно закрывается само, когда скрипт отработал
+        (в конце скриптов стоит ожидание клавиши, как и раньше);
+      * возвращает не Popen, а _SetupSessionWait с wait()/returncode:
+        через wt хэндл процесса для ожидания не годится (см. класс)."""
+    wt = find_windows_terminal()
+    if wt:
+        stamp = "{}_{}".format(os.getpid(), int(time.time() * 1000))
+        script = os.path.join(tempfile.gettempdir(),
+                              "ccm_setup_{}.ps1".format(stamp))
+        pid_file = os.path.join(tempfile.gettempdir(),
+                                "ccm_setup_{}.pid".format(stamp))
+        body = ("[IO.File]::WriteAllText('{}', [string]$PID)\n".format(
+            pid_file.replace("'", "''")) + ps_body)
+        try:
+            with open(script, 'w', encoding='utf-8-sig') as f:
+                f.write(body)
+        except OSError:
+            # Не смогли записать скрипт — деградируем к обычному запуску.
+            return subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-Command", ps_body],
+                env=env
+            )
+        # Профиль терминала не задаём: окно открывается с дефолтным
+        # профилем — как запуск Claude Code/Codex (фон только у opencode).
+        proc = subprocess.Popen(
+            [wt, "-d", working_dir or os.path.expanduser("~"),
+             "powershell", "-NoProfile", "-ExecutionPolicy",
+             "Bypass", "-File", script],
+            env=env
+        )
+
+        def _cleanup():
+            for path_ in (script, pid_file):
+                try:
+                    os.remove(path_)
+                except OSError:
+                    pass
+
+        timer = threading.Timer(1800.0, _cleanup)
+        timer.daemon = True
+        timer.start()
+        return _SetupSessionWait(pid_file, proc, _cleanup)
+    return subprocess.Popen(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-Command", ps_body],
+        env=env
+    )
+
 
 def check_app_update():
     """Проверяет наличие обновлений приложения через GitHub API"""
@@ -5111,10 +5250,10 @@ class ConfirmActionDialog(QDialog):
         self._fade = fade
 
 class TerminalCheckDialog(QDialog):
-    """Проверка Windows Terminal перед запуском.
+    """Проверка Windows Terminal перед запуском или установкой/удалением.
 
     Если wt.exe нет — предупреждение + [Установить] / [Отмена].
-    «Отмена» — запуск без терминала. «Установить» — официальный winget-пакет
+    «Отмена» — продолжаем без терминала. «Установить» — официальный winget-пакет
     Microsoft.WindowsTerminal (последняя версия); окно переключается на
     прогресс-бар (как у обновления приложения), в конце — результат + [ОК].
     """
@@ -5226,7 +5365,7 @@ class TerminalCheckDialog(QDialog):
         btn_row.addWidget(self.btn_ok)
         layout.addLayout(btn_row)
 
-        self.cancel_hint = QLabel(tr("При отмене запуск пойдёт без терминала."))
+        self.cancel_hint = QLabel(tr("При отмене всё пойдёт без терминала."))
         self.cancel_hint.setFont(QFont("Segoe UI", 9))
         self.cancel_hint.setAlignment(Qt.AlignCenter)
         self.cancel_hint.setStyleSheet("color: #6a6d78; background: transparent; border: none;")
@@ -27656,6 +27795,314 @@ def _backup_file(path):
         pass
 
 
+def _oc_cli_run(args, timeout=30, env=None):
+    """Тихий запуск opencode CLI без окна: stdout или '' при любой ошибке.
+    npm-шимы Windows (.cmd/.bat) запускаем через cmd /c."""
+    try:
+        exe = shutil.which("opencode")
+        if not exe:
+            return ""
+        cmd = [exe] + [str(a) for a in (args or [])]
+        if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd", "/c"] + cmd
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout, env=env, creationflags=flags)
+        return r.stdout or ""
+    except Exception:
+        return ""
+
+
+def _oc_reload_config():
+    """Просит живой сервис opencode v2 перечитать конфиг (`opencode reload`);
+    v1/ошибки — молча ничего."""
+    try:
+        if _oc_installed_major() >= 2:
+            _oc_cli_run(["reload"], timeout=20)
+    except Exception:
+        pass
+
+
+def _oc_v2_accounts_map():
+    """Аккаунты opencode v2 (SQLite сервиса) через `opencode auth list
+    --format json`: {integration_id: {"name": str, "creds": [{id, label}]}}.
+    v1 или ошибка — пустой словарь."""
+    try:
+        if _oc_installed_major() < 2:
+            return {}
+    except Exception:
+        return {}
+    out = _oc_cli_run(["auth", "list", "--format", "json"], timeout=30)
+    try:
+        data = json.loads(out or "[]")
+    except Exception:
+        return {}
+    res = {}
+    try:
+        for item in (data or []):
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("id") or "").strip()
+            if not pid:
+                continue
+            creds = []
+            for c in (item.get("connections") or []):
+                if not isinstance(c, dict):
+                    continue
+                creds.append({
+                    "id": str(c.get("id") or ""),
+                    "label": str(c.get("label") or ""),
+                })
+            res[pid] = {"name": str(item.get("name") or pid),
+                        "creds": creds}
+    except Exception:
+        return {}
+    return res
+
+
+def _oc_v2_logout(pid, cred_id):
+    """Снимает аккаунт провайдера из хранилища opencode v2 (`auth logout`).
+    Строго с credential id: без него opencode открыл бы интерактивный выбор
+    аккаунта. True при успехе."""
+    try:
+        if _oc_installed_major() < 2:
+            return False
+        if not pid or not cred_id:
+            return False
+        exe = shutil.which("opencode")
+        if not exe:
+            return False
+        cmd = [exe, "auth", "logout", str(pid), str(cred_id)]
+        if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd", "/c"] + cmd
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=30, creationflags=flags)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _oc_v2_connect_key(integration_id, key, label=None):
+    """Создаёт настоящее подключение каталог-провайдера в opencode v2:
+    прежние креды этого провайдера снимаем (`auth logout`), новый ключ
+    импортируем (`auth import`) — как это делает сам opencode при входе.
+    От «connection» в хранилище opencode зависят группировка провайдеров
+    и «Избранное» в выборе моделей (/model). True, если после операции
+    у провайдера есть аккаунт."""
+    try:
+        if _oc_installed_major() < 2:
+            return False
+        integration_id = str(integration_id or "").strip()
+        if not integration_id or not key:
+            return False
+        accounts = _oc_v2_accounts_map()
+        for cred in ((accounts.get(integration_id) or {}).get("creds") or []):
+            cid = str(cred.get("id") or "")
+            if cid:
+                _oc_v2_logout(integration_id, cid)
+        entry = [{
+            "id": "cred_ccm%s" % int(time.time() * 1000),
+            "integrationID": integration_id,
+            "label": str(label or integration_id),
+            "value": {"type": "key", "key": str(key)},
+            "active": True,
+        }]
+        fd, path = tempfile.mkstemp(prefix="ccm-oc-key-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(entry, f)
+            _oc_cli_run(["auth", "import", path], timeout=30)
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        after = _oc_v2_accounts_map()
+        return bool(((after.get(integration_id) or {}).get("creds") or []))
+    except Exception:
+        return False
+
+
+# Пакеты провайдеров v2: у @opencode/ai — встроенные имена, остальные npm —
+# с префиксом aisdk: (так сам opencode v2 мигрирует поле npm).
+_OC_V2_PKG_MAP = {
+    "@ai-sdk/openai": "@opencode/ai/providers/openai",
+    "@ai-sdk/openai-compatible": "@opencode/ai/providers/openai-compatible",
+    "@ai-sdk/anthropic": "@opencode/ai/providers/anthropic",
+    "@ai-sdk/google": "@opencode/ai/providers/google",
+    "@ai-sdk/google-vertex": "@opencode/ai/providers/google-vertex",
+    "@ai-sdk/amazon-bedrock": "@opencode/ai/providers/amazon-bedrock",
+    "@ai-sdk/azure": "@opencode/ai/providers/azure",
+    "@ai-sdk/xai": "@opencode/ai/providers/xai",
+    "@openrouter/ai-sdk-provider": "@opencode/ai/providers/openrouter",
+}
+
+
+def _oc_v2_package_for(npm):
+    """npm-пакет каталога -> поле package для конфига v2."""
+    npm = (npm or "").strip()
+    if not npm:
+        return "@opencode/ai/providers/openai-compatible"
+    return _OC_V2_PKG_MAP.get(npm, "aisdk:" + npm)
+
+
+def _oc_v2_model_entry(m):
+    """Переводит модель каталога (поля models.json, v1-форма) в v2-форму:
+    name, limit{context,output}, cost{input,output,cache{read,write}},
+    capabilities{tools,input,output}. Неизвестное отбрасываем — смесь
+    v1/v2 внутри одной записи opencode разбирает с предупреждениями."""
+    out = {}
+    if not isinstance(m, dict):
+        return {"name": str(m)}
+    name = m.get("name") or m.get("id") or ""
+    if name:
+        out["name"] = str(name)
+    lm = m.get("limit")
+    if isinstance(lm, dict):
+        lim = {}
+        for k in ("context", "output"):
+            v = lm.get(k)
+            if v is not None:
+                try:
+                    lim[k] = int(v)
+                except Exception:
+                    pass
+        if lim:
+            out["limit"] = lim
+    cst = m.get("cost")
+    if isinstance(cst, dict):
+        c = {}
+        for k in ("input", "output"):
+            v = cst.get(k)
+            if v is not None:
+                try:
+                    c[k] = float(v)
+                except Exception:
+                    pass
+        cc = {}
+        for src, dst in (("cache_read", "read"), ("cache_write", "write")):
+            v = cst.get(src)
+            if v is not None:
+                try:
+                    cc[dst] = float(v)
+                except Exception:
+                    pass
+        if cc:
+            c["cache"] = cc
+        if c:
+            out["cost"] = c
+    caps = {}
+    tc = m.get("tool_call")
+    if isinstance(tc, bool):
+        caps["tools"] = tc
+    mod = m.get("modalities")
+    if isinstance(mod, dict):
+        for k in ("input", "output"):
+            v = mod.get(k)
+            if isinstance(v, list) and v:
+                caps[k] = [str(x) for x in v]
+    if caps:
+        out["capabilities"] = caps
+    if not out:
+        out["name"] = str(name or "model")
+    return out
+
+
+def _oc_apply_provider_block(cfg, new_id, name, key, meta, catalog_pid=None,
+                             v2=True):
+    """Правит dict глобального конфига opencode: блок провайдера и его ключ.
+    v2 — providers/<id>/{name,package,settings.apiKey,models}; v1 — provider
+    /<id>/{name,npm,options.apiKey,models}. Существующий блок не затирается:
+    name и ключ обновляются, package/npm — только если не заданы, модели
+    каталога переносятся лишь экземпляру под новым id (и для v2 сразу
+    конвертируются в v2-форму)."""
+    key_map = "providers" if v2 else "provider"
+    providers = cfg.get(key_map)
+    if not isinstance(providers, dict):
+        providers = {}
+        cfg[key_map] = providers
+    block = providers.get(new_id)
+    if not isinstance(block, dict):
+        block = {}
+        providers[new_id] = block
+    block["name"] = name
+    npm = (meta or {}).get("npm") or "@ai-sdk/openai-compatible"
+    if v2:
+        if ("package" not in block and "npm" not in block
+                and new_id != (catalog_pid or new_id)):
+            block["package"] = _oc_v2_package_for(npm)
+        if key:
+            settings = block.get("settings")
+            if not isinstance(settings, dict):
+                settings = {}
+                block["settings"] = settings
+            settings["apiKey"] = key
+    else:
+        if "npm" not in block:
+            block["npm"] = npm
+        if key:
+            options = block.get("options")
+            if not isinstance(options, dict):
+                options = {}
+                block["options"] = options
+            options["apiKey"] = key
+    if new_id != (catalog_pid or new_id):
+        models = (meta or {}).get("models") or {}
+        if models and not isinstance(block.get("models"), dict):
+            if v2:
+                block["models"] = {
+                    str(mid): _oc_v2_model_entry(mm)
+                    for mid, mm in models.items()
+                }
+            else:
+                block["models"] = {mid: dict(m) for mid, m in models.items()}
+    return cfg
+
+
+def _oc_custom_provider_doc(base_url, api_key, model_ids, v2=True):
+    """Документ конфига кастомного OpenAI-совместимого провайдера (файл
+    opencode-provider.json запуска): v2 — providers/<host>/package
+    @opencode/ai/providers/openai-compatible + settings; v1 — provider/<host>
+    /npm @ai-sdk/openai-compatible + options. Модели перечисляем явно —
+    каталога у кастомного эндпоинта нет."""
+    if v2:
+        config = {"$schema": "https://opencode.ai/config.json",
+                  "providers": {}}
+    else:
+        config = {"$schema": "https://opencode.ai/config.json",
+                  "provider": {}}
+    if not base_url:
+        return config
+    host = re.sub(r"[^A-Za-z0-9]", "",
+                  (re.sub(r"^https?://", "", base_url).split("/")[0] or "")) or "custom"
+    if v2:
+        provider = {
+            "package": "@opencode/ai/providers/openai-compatible",
+            "name": base_url,
+            "settings": {"baseURL": base_url.rstrip("/")},
+            "models": {},
+        }
+        if api_key:
+            provider["settings"]["apiKey"] = api_key
+        for mid in (model_ids or []):
+            provider["models"][str(mid)] = {"name": str(mid)}
+        config["providers"][host] = provider
+    else:
+        provider = {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": base_url,
+            "options": {"baseURL": base_url.rstrip("/")},
+            "models": {},
+        }
+        if api_key:
+            provider["options"]["apiKey"] = api_key
+        for mid in (model_ids or []):
+            provider["models"][str(mid)] = {"name": str(mid)}
+        config["provider"][host] = provider
+    return config
+
+
 class _OcClickFrame(QFrame):
     """QFrame с сигналом clicked: клик левой кнопкой внутри — подключение."""
 
@@ -27675,6 +28122,7 @@ class _OcCatalogLoader(QThread):
     {provider_id: {name, npm, env, models_count}}."""
 
     loaded = Signal(dict)
+    accounts_loaded = Signal(dict)  # v2: аккаунты из SQLite сервиса
 
     def __init__(self, owner):
         super().__init__()
@@ -27717,6 +28165,16 @@ class _OcCatalogLoader(QThread):
         except Exception:
             slim = {}
         self.loaded.emit(slim)
+        # v2: аккаунты живут в SQLite сервиса — тянем их тем же потоком.
+        accounts = {}
+        try:
+            accounts = _oc_v2_accounts_map()
+        except Exception:
+            accounts = {}
+        try:
+            self.accounts_loaded.emit(accounts)
+        except Exception:
+            pass
 
 
 class OcApiKeyDialog(QDialog):
@@ -27789,7 +28247,7 @@ class OcApiKeyDialog(QDialog):
         """)
         layout.addWidget(name_label)
 
-        hint = QLabel(tr("Ключ сохранится в auth.json — как при opencode auth login."))
+        hint = QLabel(tr("Ключ сохранится в конфигурацию opencode."))
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignCenter)
         hint.setFont(QFont("Segoe UI", 9))
@@ -27906,8 +28364,9 @@ class OpencodeProvidersDialog(QDialog):
     """Управление провайдерами opencode.
 
     Сверху — секция «Подключённые провайдеры»: определения из ~/.config/opencode
-    (opencode.json/.jsonc) и креды из ~/.local/share/opencode/auth.json,
-    у каждой строки есть «Удалить» (убирает и креду, и определение).
+    (opencode.json/.jsonc, ключи v1 «provider» и v2 «providers»), креды из
+    ~/.local/share/opencode/auth.json и аккаунты opencode v2 из SQLite
+    (`opencode auth list`) — у каждой строки есть «Удалить» (убирает всё).
 
     Ниже — секция «Доступные провайдеры»: глобальный каталог opencode
     (~/.cache/opencode/models.json). Клик по строке открывает ввод API-ключа;
@@ -27942,6 +28401,7 @@ class OpencodeProvidersDialog(QDialog):
         # Окно пересоздаётся при каждом открытии, поэтому каталог и списки
         # обновляются при каждом открытии окна.
         self._catalog = {}
+        self._v2_accounts = {}  # аккаунты v2 (SQLite): {id: {name, creds}}
         self._catalog_loader = None
         self._start_catalog_load()
 
@@ -28074,23 +28534,40 @@ class OpencodeProvidersDialog(QDialog):
         self._fade_out = fade
 
     def _collect(self):
-        """Возвращает {provider_id: record} из кредов и конфига."""
+        """Возвращает {provider_id: record} из кредов и конфига.
+        v1: provider/options; v2: providers/settings; плюс аккаунты v2 из
+        SQLite сервиса (auth list) — они видны в списке даже без конфига."""
         records = {}
         auth = _load_jsonc(self.auth_path) if os.path.exists(self.auth_path) else {}
         cfg = _load_jsonc(self.config_path) if self.config_path else {}
-        providers = cfg.get("provider") or {}
+        providers = {}
+        for key in ("provider", "providers"):
+            block = cfg.get(key)
+            if isinstance(block, dict):
+                for k, v in block.items():
+                    if isinstance(v, dict):
+                        providers[str(k)] = v  # v2-блок сильнее v1 при дубле
         disabled = set(cfg.get("disabled_providers") or [])
         enabled = set(cfg.get("enabled_providers") or [])
+        v2_accounts = getattr(self, "_v2_accounts", {}) or {}
 
-        for pid in set(list(auth.keys()) + list(providers.keys())):
+        for pid in set(list(auth.keys()) + list(providers.keys())
+                       + list(v2_accounts.keys())):
             cfg_block = providers.get(pid) or {}
             opts = cfg_block.get("options") or {}
+            settings = cfg_block.get("settings") or {}
+            creds = (v2_accounts.get(pid) or {}).get("creds") or []
+            name = (cfg_block.get("name")
+                    or (v2_accounts.get(pid) or {}).get("name")
+                    or str(pid))
             rec = {
                 "id": str(pid),
-                "name": (cfg_block.get("name") or str(pid)),
-                "base_url": (opts.get("baseURL") or ""),
+                "name": name,
+                "base_url": (opts.get("baseURL") or settings.get("baseURL")
+                             or ""),
                 "has_cred": pid in auth,
                 "in_config": pid in providers,
+                "v2_creds": list(creds),
                 "disabled": pid in disabled,
                 "enabled": pid in enabled,
             }
@@ -28107,10 +28584,16 @@ class OpencodeProvidersDialog(QDialog):
                 pass
         self._catalog_loader = _OcCatalogLoader(self)
         self._catalog_loader.loaded.connect(self._on_catalog_loaded)
+        self._catalog_loader.accounts_loaded.connect(self._on_accounts_loaded)
         self._catalog_loader.start()
 
     def _on_catalog_loaded(self, slim):
         self._catalog = slim or {}
+        self.refresh()
+
+    def _on_accounts_loaded(self, accounts):
+        """Аккаунты opencode v2 из фонового потока: {id: {name, creds}}."""
+        self._v2_accounts = accounts if isinstance(accounts, dict) else {}
         self.refresh()
 
     def _section_header(self, text, color):
@@ -28295,9 +28778,15 @@ class OpencodeProvidersDialog(QDialog):
         self.refresh()
 
     def _apply_provider_credentials(self, new_id, name, key, catalog_pid=None):
-        """Реально подключает провайдера: креда в auth.json (формат как у
-        `opencode auth login`), имя — в конфиг. catalog_pid — оригинальный id
-        каталога, new_id — под каким id подключаем (с суффиксом 2, 3, ...
+        """Реально подключает провайдера: определение и ключ — в конфиг
+        opencode (v2: providers + settings.apiKey — именно это читает
+        сервис; v1: provider + options.apiKey), ключ дублируется в
+        auth.json (совместимость с opencode v1). В v2 каталог-провайдер
+        дополнительно подключается по-настоящему (auth logout старых кред
+        и auth import нового ключа) — это создаёт connection, от которого
+        зависят группировка провайдеров и «Избранное» в /model.
+        catalog_pid — оригинальный
+        id каталога, new_id — под каким id подключаем (с суффиксом 2, 3, ...
         если исходный занят). Существующий конфиг-блок не затирается:
         обновляется только name (+ models для экземпляров с новым id)."""
         try:
@@ -28311,34 +28800,34 @@ class OpencodeProvidersDialog(QDialog):
             auth[new_id] = {"type": "api", "key": key}
             _save_json(self.auth_path, auth)
         except Exception:
-            return
+            pass
 
         meta = self._catalog.get(catalog_pid or new_id, {})
+        try:
+            v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            v2 = False
+
+        # v2: настоящее подключение интеграции — от «connection» в хранилище
+        # opencode зависят группировка провайдеров и «Избранное» в /model.
+        # Делаем только для каталог-провайдеров (у кастомных подключений
+        # не бывает); при неудаче остаётся прежний путь через конфиг.
+        if v2:
+            try:
+                target = str(catalog_pid or new_id)
+                if target in (self._catalog or {}):
+                    _oc_v2_connect_key(target, key, name)
+            except Exception:
+                pass
+
         if self.config_path:
             try:
                 cfg = _load_jsonc(self.config_path)
                 if not isinstance(cfg, dict):
                     cfg = {}
-                providers = cfg.get("provider")
-                if not isinstance(providers, dict):
-                    providers = {}
-                    cfg["provider"] = providers
-                block = providers.get(new_id)
-                if not isinstance(block, dict):
-                    block = {}
-                    providers[new_id] = block
-                # Имя обновляем всегда; npm не трогаем, если уже задан
-                # (у кастомных роутеров там свой пакет).
-                block["name"] = name
-                if "npm" not in block:
-                    npm = meta.get("npm") or "@ai-sdk/openai-compatible"
-                    block["npm"] = npm
-                # Экземпляр под новым id не совпадает с каталогом — opencode
-                # не найдёт для него модели сам, переносим из каталога.
-                if new_id != (catalog_pid or new_id):
-                    models = meta.get("models") or {}
-                    if models:
-                        block["models"] = {mid: dict(m) for mid, m in models.items()}
+                _oc_apply_provider_block(
+                    cfg, new_id, name, key, meta,
+                    catalog_pid=catalog_pid, v2=v2)
                 disabled = cfg.get("disabled_providers")
                 if isinstance(disabled, list):
                     for pid_like in (new_id, catalog_pid):
@@ -28346,6 +28835,8 @@ class OpencodeProvidersDialog(QDialog):
                             disabled.remove(pid_like)
                 _backup_file(self.config_path)
                 _save_json(self.config_path, cfg)
+                # Живой сервис v2 держит конфиг в памяти — просим перечитать.
+                _oc_reload_config()
             except Exception:
                 pass
 
@@ -28378,6 +28869,8 @@ class OpencodeProvidersDialog(QDialog):
             tags.append("auth")
         if rec["in_config"]:
             tags.append("конфиг")
+        if rec.get("v2_creds"):
+            tags.append(tr("аккаунт opencode"))
         if rec["disabled"]:
             tags.append("выключен")
         if rec["enabled"]:
@@ -28417,6 +28910,22 @@ class OpencodeProvidersDialog(QDialog):
             current_key = cred.get("key") or ""
         except Exception:
             pass
+        if not current_key and self.config_path:
+            # v2 хранит ключ в конфиге (settings.apiKey; v1 — options.apiKey).
+            try:
+                cfg = _load_jsonc(self.config_path)
+                for _k in ("providers", "provider"):
+                    block = (cfg.get(_k) or {}).get(pid) or {}
+                    if not isinstance(block, dict):
+                        continue
+                    current_key = (
+                        ((block.get("settings") or {}).get("apiKey") or "")
+                        or ((block.get("options") or {}).get("apiKey") or "")
+                    )
+                    if current_key:
+                        break
+            except Exception:
+                pass
         dlg = OcApiKeyDialog(
             pid, rec.get("name") or pid, self,
             title=tr("Редактировать провайдера"),
@@ -28437,7 +28946,7 @@ class OpencodeProvidersDialog(QDialog):
         confirm = ConfirmDeleteDialog(
             pid,
             self,
-            question_text=tr("Вы уверены, что хотите удалить провайдера? Будет удалена и креда (auth.json), и определение из конфига."),
+            question_text=tr("Вы уверены, что хотите удалить провайдера? Будут удалены креда (auth.json), аккаунт opencode и определение из конфига."),
         )
         if confirm.exec() != QDialog.Accepted:
             return
@@ -28465,26 +28974,51 @@ class OpencodeProvidersDialog(QDialog):
             if host and host != pid:
                 release_provider_color(host)
 
-        # Удаляем определение из конфига
+        # Удаляем определение из конфига (v1: provider, v2: providers)
+        removed_any = False
         if self.config_path:
             cfg = _load_jsonc(self.config_path)
             changed = False
-            providers = cfg.get("provider")
-            if isinstance(providers, dict) and pid in providers:
-                del providers[pid]
-                changed = True
+            for key in ("provider", "providers"):
+                providers = cfg.get(key)
+                if isinstance(providers, dict) and pid in providers:
+                    del providers[pid]
+                    changed = True
             for key in ("disabled_providers", "enabled_providers"):
                 items = cfg.get(key)
                 if isinstance(items, list) and pid in items:
                     items.remove(pid)
                     changed = True
             if changed:
+                removed_any = True
                 _backup_file(self.config_path)
                 try:
                     _save_json(self.config_path, cfg)
                 except Exception:
                     pass
 
+        # v2: аккаунты живут в SQLite сервиса (auth.json после миграции базы
+        # больше не читается) — снимаем через `opencode auth logout`. Логаут
+        # строго с credential id: без него opencode открыл бы интерактивный
+        # выбор аккаунта и подвесил окно.
+        try:
+            if _oc_installed_major() >= 2:
+                accounts = _oc_v2_accounts_map()
+                for cred in ((accounts.get(pid) or {}).get("creds") or []):
+                    cid = str(cred.get("id") or "")
+                    if cid and _oc_v2_logout(pid, cid):
+                        removed_any = True
+                acc = getattr(self, "_v2_accounts", None)
+                if isinstance(acc, dict):
+                    acc.pop(pid, None)
+        except Exception:
+            pass
+
+        if removed_any:
+            try:
+                _oc_reload_config()
+            except Exception:
+                pass
         self.refresh()
 
 # ============================================================
@@ -34854,10 +35388,13 @@ class ClaudeManager(QMainWindow):
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         # npm-шимы на Windows — это .cmd/.ps1; subprocess не может их запустить
         # напрямую, поэтому через cmd /c.
+        # v2: общий сервис игнорирует OPENCODE_CONFIG клиента — для
+        # конфиг-зависимых запросов поднимаем приватный сервер (--standalone).
+        extra = ["--standalone"] if config_path else []
         if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
-            args = ["cmd", "/c", exe, "models"]
+            args = ["cmd", "/c", exe, "models"] + extra
         else:
-            args = [exe, "models"]
+            args = [exe, "models"] + extra
         try:
             tries = max(1, int(retries) + 1)
         except Exception:
@@ -35374,10 +35911,10 @@ class ClaudeManager(QMainWindow):
             pass
 
     def _ensure_terminal(self):
-        """Проверка Windows Terminal перед любым запуском.
+        """Проверка Windows Terminal перед запуском/установкой/удалением.
         Если терминала нет — красивое окно с предупреждением и кнопками
-        [Установить] / [Отмена]. Возвращает True, если можно запускать
-        (терминал есть, либо пользователь выбрал запуск без него)."""
+        [Установить] / [Отмена]. Возвращает True, если можно продолжать
+        (терминал есть, либо пользователь выбрал продолжать без него)."""
         try:
             if find_windows_terminal():
                 return True
@@ -35972,6 +36509,9 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю установку Codex CLI через npm...", "info")
 
+        if not self._ensure_terminal():
+            return
+
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
             old_version=local,
@@ -35981,8 +36521,7 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            popen = subprocess.Popen([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            popen = spawn_setup_session(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
@@ -35998,7 +36537,7 @@ class ClaudeManager(QMainWindow):
                 "Write-Host ''; Write-Host 'Done. Check: codex -V' -ForegroundColor Green; "
                 "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
-            ])
+            )
         except Exception as e:
             self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
@@ -36073,6 +36612,9 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю удаление Codex CLI через npm...", "info")
 
+        if not self._ensure_terminal():
+            return
+
         progress_dlg = ClaudeInstallProgressDialog(
             is_uninstall=True,
             old_version=local,
@@ -36081,8 +36623,7 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            popen = subprocess.Popen([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            popen = spawn_setup_session(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
@@ -36107,7 +36648,7 @@ class ClaudeManager(QMainWindow):
                 "} "
                 "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
-            ])
+            )
         except Exception as e:
             self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
@@ -36722,6 +37263,9 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю установку opencode через npm...", "info")
 
+        if not self._ensure_terminal():
+            return
+
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
             old_version=local,
@@ -36731,8 +37275,7 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            popen = subprocess.Popen([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            popen = spawn_setup_session(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running opencode processes...' -ForegroundColor Cyan; "
                 "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
@@ -36749,7 +37292,7 @@ class ClaudeManager(QMainWindow):
                 "Write-Host ''; Write-Host 'Done. Check: opencode -v' -ForegroundColor Green; "
                 "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
-            ])
+            )
         except Exception as e:
             self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
@@ -36824,6 +37367,9 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю удаление opencode через npm...", "info")
 
+        if not self._ensure_terminal():
+            return
+
         progress_dlg = ClaudeInstallProgressDialog(
             is_uninstall=True,
             old_version=local,
@@ -36832,8 +37378,7 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            popen = subprocess.Popen([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            popen = spawn_setup_session(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running opencode processes...' -ForegroundColor Cyan; "
                 "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
@@ -36862,7 +37407,7 @@ class ClaudeManager(QMainWindow):
                 "} "
                 "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
-            ])
+            )
         except Exception as e:
             self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
@@ -37155,26 +37700,16 @@ class ClaudeManager(QMainWindow):
         кастомный эндпоинт не обслуживает. Здесь явно перечисляем модели,
         которые эндпоинт отдаёт на /v1/models. Дефолтная модель и effort
         НЕ задаются — выбор модели у пользователя убран, opencode сам решает,
-        какую модель использовать."""
-        host = ""
-        if base_url:
-            host = re.sub(r"[^A-Za-z0-9]", "", (re.sub(r"^https?://", "", base_url).split("/")[0] or "")) or "custom"
-        config = {"$schema": "https://opencode.ai/config.json", "provider": {}}
+        какую модель использовать. Форма зависит от версии: v2 — providers/
+        package/settings, v1 — provider/npm/options."""
+        try:
+            v2 = (_oc_installed_major() >= 2)
+        except Exception:
+            v2 = False
         # NB: ключ "theme" сюда НЕ пишем — в opencode.json тема deprecated
         # и игнорируется, выбор темы читается только из tui.json
         # (см. _oc_tui_theme_set). Было проверено по документации.
-        if base_url:
-            provider = {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": base_url,
-                "options": {"baseURL": base_url.rstrip("/")},
-                "models": {},
-            }
-            if api_key:
-                provider["options"]["apiKey"] = api_key
-            for mid in model_ids:
-                provider["models"][mid] = {"name": mid}
-            config["provider"][host] = provider
+        config = _oc_custom_provider_doc(base_url, api_key, model_ids, v2=v2)
         try:
             os.makedirs(SETTINGS_DIR, exist_ok=True)
             path = os.path.join(SETTINGS_DIR, "opencode-provider.json")
@@ -37228,6 +37763,9 @@ class ClaudeManager(QMainWindow):
                 cfg_path = ""
             if cfg_path:
                 env["OPENCODE_CONFIG"] = cfg_path
+                # v2: общий сервис конфиг клиента не читает — помечаем
+                # запуск, чтобы TUI поднялся с приватным сервером.
+                env["_CCM_OC_PRIVATE_SERVER"] = "1"
                 env.pop("OPENAI_BASE_URL", None)
                 env.pop("OPENAI_API_KEY", None)
                 if model_ids:
@@ -37275,6 +37813,10 @@ class ClaudeManager(QMainWindow):
         прозрачной теме. Звуки и тема едут через per-launch конфиг
         (только эта сессия, глобал чистый)."""
         try:
+            _private_server = bool((env or {}).pop("_CCM_OC_PRIVATE_SERVER", ""))
+        except Exception:
+            _private_server = False
+        try:
             env = _oc_launch_env(env, settings)
         except Exception:
             pass
@@ -37317,9 +37859,16 @@ class ClaudeManager(QMainWindow):
                                         % cli_content.replace("'", "''"))
                     suffix_parts.append("Remove-Item Env:\\OPENCODE_CLI_CONFIG_CONTENT"
                                         " -ErrorAction SilentlyContinue")
+            oc_word = "opencode"
+            # Запуск с пользовательским провайдером (OPENCODE_CONFIG) в v2:
+            # приватный сервер читает наш конфиг, общий — нет.
+            if _private_server and v2_run:
+                oc_word = "opencode --standalone"
             if prefix_parts:
-                launch_cmd = ("; ".join(prefix_parts) + "; opencode; "
+                launch_cmd = ("; ".join(prefix_parts) + "; " + oc_word + "; "
                               + "; ".join(suffix_parts))
+            else:
+                launch_cmd = oc_word
         except Exception:
             pass
         profile = None
@@ -38202,6 +38751,9 @@ class ClaudeManager(QMainWindow):
         action_word = tr("обновление") if installed else tr("установку")
         self.log(tr("Запускаю {} Claude Code через npm (@anthropic-ai/claude-code)...").format(action_word), "info")
 
+        if not self._ensure_terminal():
+            return
+
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
             old_version=local,
@@ -38211,8 +38763,7 @@ class ClaudeManager(QMainWindow):
         self._claude_install_dlg = progress_dlg
 
         try:
-            popen = subprocess.Popen([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            popen = spawn_setup_session(
                 # 1) Kill running claude.exe — locked file breaks npm
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running claude processes...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
@@ -38232,7 +38783,7 @@ class ClaudeManager(QMainWindow):
                 "Write-Host ''; Write-Host 'Done. Check: claude --version' -ForegroundColor Green; "
                 "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
-            ])
+            )
         except Exception as e:
             self.log(tr("Не удалось запустить установку: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
@@ -38455,9 +39006,12 @@ class ClaudeManager(QMainWindow):
         """Запускает PowerShell с winget install OpenJS.NodeJS.LTS — пользователь
         видит весь процесс. После завершения окно ждёт нажатия клавиши."""
         self.log("Запускаю установку Node.js LTS через winget...", "info")
+
+        if not self._ensure_terminal():
+            return
+
         try:
-            subprocess.Popen([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            spawn_setup_session(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host 'Устанавливаю Node.js LTS через winget...' -ForegroundColor Cyan; "
                 "Write-Host 'Источник: OpenJS.NodeJS.LTS (winget по умолчанию берёт официальный пакет с nodejs.org)' -ForegroundColor DarkGray; "
                 "winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements; "
@@ -38469,7 +39023,7 @@ class ClaudeManager(QMainWindow):
                 "} "
                 "Write-Host ''; Write-Host 'Нажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
-            ])
+            )
         except Exception as e:
             self.log(tr("Не удалось запустить установку Node.js: {}").format(e), "error")
 
@@ -38926,6 +39480,9 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю удаление Claude Code через npm...", "info")
 
+        if not self._ensure_terminal():
+            return
+
         # Красное окно прогресса — тот же класс, что для install/update.
         progress_dlg = ClaudeInstallProgressDialog(
             is_uninstall=True,
@@ -38934,8 +39491,7 @@ class ClaudeManager(QMainWindow):
         )
 
         try:
-            popen = subprocess.Popen([
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            popen = spawn_setup_session(
                 # 1) Kill running claude.exe / node locking the binary — else npm fails with EBUSY
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/5] Stopping running claude processes...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
@@ -38978,7 +39534,7 @@ class ClaudeManager(QMainWindow):
                 "} "
                 "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
-            ])
+            )
         except Exception as e:
             self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
             progress_dlg.mark_failed(f"Не удалось запустить PowerShell:\n{e}")
