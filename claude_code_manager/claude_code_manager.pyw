@@ -1199,12 +1199,9 @@ TRANSLATIONS = {
     "Настройки в %USERPROFILE%\\.codex не пострадают — удалится только бинарь.":
         "Settings in %USERPROFILE%\\.codex will be kept — only the binary is removed.",
     "Установка завершена успешно.\n"
-    "Если команда codex не найдена — открой новое окно консоли\n"
-    "(npm обычно сам прописывает её в PATH).":
+    "Если PATH не находит команду — просто перезапустите приложение.":
         "Installation completed successfully.\n"
-        "If the codex command is not found — open a new console window\n"
-        "(npm usually adds it to PATH automatically).",
-    "Обновление завершено успешно.": "Update completed successfully.",
+        "If PATH doesn't find the command — just restart the app.",
     "Codex CLI удалён": "Codex CLI uninstalled",
     "Codex CLI обновлён до v{v}": "Codex CLI updated to v{v}",
     "Codex CLI установлен (v{v})": "Codex CLI installed (v{v})",
@@ -1398,7 +1395,6 @@ TRANSLATIONS = {
     "Название": "Name",
     "Удалить этот API ключ?": "Delete this API key?",
     "Ключ и его настройки будут удалены безвозвратно.": "The key and its settings will be permanently removed.",
-    "Да, удалить": "Yes, delete",
     "Ключ": "Key",
     "активен": "active",
     "подтвердите": "confirm",
@@ -1545,15 +1541,9 @@ TRANSLATIONS = {
         "model  •  context  •  session ID  •  git repo",
     # ── мульти-строчные тексты диалогов
     "Обновление завершено успешно.\n"
-    "Перезапустите Claude Code для применения изменений.":
+    "Если PATH не находит команду — просто перезапустите приложение.":
         "Update completed successfully.\n"
-        "Restart Claude Code to apply the changes.",
-    "Установка завершена успешно.\n"
-    "Если команда claude не найдена — открой новое окно консоли\n"
-    "(npm обычно сам прописывает её в PATH).":
-        "Installation completed successfully.\n"
-        "If the `claude` command is not found — open a new console window\n"
-        "(npm usually adds it to PATH automatically).",
+        "If PATH doesn't find the command — just restart the app.",
     "Обновление отменено": "Update cancelled",
     "Установка отменена": "Installation cancelled",
     "Окно PowerShell было закрыто до завершения.\n"
@@ -1581,7 +1571,6 @@ TRANSLATIONS = {
     "Claude Code обновлён ✓": "Claude Code updated ✓",
     "Claude Code удалён ✓": "Claude Code uninstalled ✓",
     "Удаление Claude Code": "Uninstall Claude Code",
-    "Удаление отменено": "Uninstall cancelled",
     "Удаление не завершено": "Uninstall not completed",
     "Удаление завершено успешно.": "Uninstall completed successfully.",
     # ── console banner
@@ -1802,22 +1791,6 @@ TRANSLATIONS = {
     # ── status line confirmations
     "Переустановить status line?": "Reinstall status line?",
     "Удалить status line?": "Remove status line?",
-    "Вы действительно хотите переустановить status line? "
-    "Ваш текущий блок statusLine в ~/.claude/settings.json "
-    "и файл ~/.claude/statusline-command.sh будут полностью "
-    "перезаписаны нашей версией. Откатить это нельзя.":
-        "Are you sure you want to reinstall the status line? "
-        "Your current statusLine block in ~/.claude/settings.json "
-        "and the file ~/.claude/statusline-command.sh will be fully "
-        "overwritten with our version. This cannot be undone.",
-    "Вы действительно хотите удалить status line? "
-    "Блок statusLine уйдёт из ~/.claude/settings.json, "
-    "а файл ~/.claude/statusline-command.sh — будет стёрт. "
-    "Остальные настройки Claude Code останутся   ак есть.":
-        "Are you sure you want to remove the status line? "
-        "The statusLine block will be removed from ~/.claude/settings.json, "
-        "and the file ~/.claude/statusline-command.sh will be erased. "
-        "Other Claude Code settings will remain untouched.",
     "Да, переустановить": "Yes, reinstall",
     "Да, удалить": "Yes, remove",
     # ── uninstall claude
@@ -1846,13 +1819,13 @@ TRANSLATIONS = {
         "The Claude Code folder is already in your user PATH.",
     "Добавит папку с Claude Code в пользовательскую PATH, чтобы "
     "команду «claude» можно было запускать из любой консоли. "
-    "После этого перезапусти терминал.":
+    "Если PATH не находит команду — просто перезапустите приложение.":
         "Adds the Claude Code folder to your user PATH so the «claude» "
-        "command works from any console. Restart the terminal after this.",
+        "command works from any console. If PATH doesn't find the command — just restart the app.",
     "Папка с Claude Code добавлена в пользовательскую PATH. "
-    "Открой новую консоль и проверь: claude --version.":
+    "Если PATH не находит команду — просто перезапустите приложение.":
         "The Claude Code folder was added to your user PATH. "
-        "Open a new console and check: claude --version.",
+        "If PATH doesn't find the command — just restart the app.",
     "Что-то пошло не так при записи в реестр:":
         "Something went wrong while writing to the registry:",
     "Понятно": "Got it",
@@ -1922,18 +1895,21 @@ TRANSLATIONS = {
     "Не нашёл папку с установленным opencode. Сначала установи opencode кнопкой выше, потом жми «Добавить npm в PATH».":
         "Could not find the installed opencode folder. Install opencode with the button above first, then press “Add npm to PATH”.",
     "Папка с opencode уже прописана в пользовательской PATH.": "The opencode folder is already in your user PATH.",
-    "Добавит папку с opencode в пользовательскую PATH, чтобы команду «opencode» можно было запускать из любой консоли. После этого перезапусти терминал.":
-        "Adds the opencode folder to your user PATH so the “opencode” command works from any console. Restart your terminal afterwards.",
-    "Папка с opencode добавлена в пользовательскую PATH. Открой новую консоль и проверь: opencode --version.":
-        "The opencode folder was added to your user PATH. Open a new console and check: opencode --version.",
+    "Добавит папку с opencode в пользовательскую PATH, чтобы команду «opencode» можно было запускать из любой консоли. Если PATH не находит команду — просто перезапустите приложение.":
+        "Adds the opencode folder to your user PATH so the “opencode” command works from any console. If PATH doesn't find the command — just restart the app.",
+    "Папка с opencode добавлена в пользовательскую PATH. Если PATH не находит команду — просто перезапустите приложение.":
+        "The opencode folder was added to your user PATH. If PATH doesn't find the command — just restart the app.",
+    "Codex CLI не найден": "Codex CLI not found",
+    "Не нашёл папку с установленным Codex CLI. Сначала установи Codex кнопкой выше, потом жми «Добавить в PATH».":
+        "Could not find the installed Codex CLI folder. Install Codex with the button above first, then press “Add to PATH”.",
+    "Папка с Codex CLI уже прописана в пользовательской PATH.": "The Codex CLI folder is already in your user PATH.",
+    "Добавит папку с Codex CLI в пользовательскую PATH, чтобы команду «codex» можно было запускать из любой консоли. Если PATH не находит команду — просто перезапустите приложение.":
+        "Adds the Codex CLI folder to your user PATH so the “codex” command works from any console. If PATH doesn't find the command — just restart the app.",
+    "Папка с Codex CLI добавлена в пользовательскую PATH. Если PATH не находит команду — просто перезапустите приложение.":
+        "The Codex CLI folder was added to your user PATH. If PATH doesn't find the command — just restart the app.",
     "Не удалось добавить npm в PATH автоматически: {}": "Failed to add npm to PATH automatically: {}",
     "opencode установлен, но его папка не в PATH — команда не видна новым терминалам":
         "opencode is installed but its folder is not in PATH — new terminals cannot see the command",
-    "Установка завершена успешно.\nНет команды opencode? Открой новую консоль.":
-        "Installation completed successfully.\nNo opencode command? Open a new console.",
-    "Перезапустите программу": "Please restart the app",
-    "opencode установлен. Перезапусти программу, чтобы она увидела новую команду и обновлённый PATH.":
-        "opencode is installed. Restart the app so it picks up the new command and updated PATH.",
     "В системе не найден npm — он входит в состав Node.js. Без npm Claude Code установить нельзя.\n\nНа твоей системе нет winget, поэтому установить автоматически не получится. Нажми «Скачать Node.js» — откроется официальная страница nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, поставь его и перезапусти это приложение.": "npm was not found on this system — it ships with Node.js. Without npm, Claude Code cannot be installed.\n\nwinget is not available on your system, so automatic installation is not possible. Click “Download Node.js” — the official nodejs.org/en/download page will open. Download the Windows Installer (.msi) LTS, install it and restart this app.",
     "Вы действительно хотите переустановить status line? Ваш текущий блок statusLine в ~/.claude/settings.json и файл ~/.claude/statusline-command.sh будут полностью перезаписаны нашей версией. Откатить это нельзя.": "Do you really want to reinstall the status line? Your current statusLine block in ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be fully overwritten with our version. This cannot be undone.",
     "Вы действительно хотите удалить status line? Блок statusLine уйдёт из ~/.claude/settings.json, а файл ~/.claude/statusline-command.sh — будет стёрт. Остальные настройки Claude Code останутся как есть.": "Do you really want to remove the status line? The statusLine block will be removed from ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be erased. Other Claude Code settings stay as they are.",
@@ -2055,6 +2031,151 @@ def check_oc_latest_version():
     except Exception:
         return ''
 
+# ── Поиск CLI (claude/codex/opencode) по всем npm-папкам ─────────────────
+# npm ставит глобальные пакеты в свой глобальный prefix: стандарт —
+# %APPDATA%\npm, но при кастомном префиксе (npm config set prefix /
+# npm_config_prefix, например ~\npm-global) шимы лежат ТАМ. Поэтому ищем
+# во всех реальных префиксах пользователя, а не только в дефолтном.
+_NPM_PREFIX_CACHE = {"value": "", "probed": False, "running": False}
+_NPM_PREFIX_LOCK = threading.Lock()
+
+
+def _npm_prefix_from_npmrc():
+    """prefix из ~/.npmrc (его пишет `npm config set prefix`). '' — нет."""
+    try:
+        path = os.path.join(os.path.expanduser("~"), ".npmrc")
+        # utf-8-sig — .npmrc мог быть сохранён с BOM (например, Блокнотом)
+        with open(path, encoding="utf-8-sig", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line[0] in "#;":
+                    continue
+                key, eq, val = line.partition("=")
+                if not eq or key.strip().lower() != "prefix":
+                    continue
+                val = val.strip().strip('"').strip("'")
+                # ~ в значении (prefix=~/npm-global) npm раскрывает сам —
+                # повторяем, иначе на Windows папка не найдётся
+                val = os.path.expanduser(os.path.expandvars(val))
+                if val:
+                    return os.path.normpath(val)
+    except Exception:
+        pass
+    return ""
+
+
+def _npm_prefix_probe():
+    """`npm prefix -g` — реальный глобальный префикс npm этого пользователя."""
+    val = ""
+    try:
+        proc = subprocess.run(
+            ["cmd", "/c", "npm", "prefix", "-g"],
+            capture_output=True, text=True, timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        lines = [ln.strip() for ln in (proc.stdout or "").splitlines()
+                 if ln.strip()]
+        val = lines[-1] if lines else ""
+    except Exception:
+        val = ""
+    with _NPM_PREFIX_LOCK:
+        _NPM_PREFIX_CACHE["value"] = val
+        _NPM_PREFIX_CACHE["probed"] = True
+        _NPM_PREFIX_CACHE["running"] = False
+
+
+def _npm_prefix_cached():
+    """Кэш `npm prefix -g`. Первый вызов поднимает опрос в фоне — GUI не
+    морозим; до готовности хватает ~/.npmrc и переменных окружения."""
+    need = False
+    with _NPM_PREFIX_LOCK:
+        val = _NPM_PREFIX_CACHE["value"]
+        if not _NPM_PREFIX_CACHE["probed"] and not _NPM_PREFIX_CACHE["running"]:
+            _NPM_PREFIX_CACHE["running"] = True
+            need = True
+    if need:
+        try:
+            threading.Thread(target=_npm_prefix_probe, daemon=True).start()
+        except Exception:
+            pass
+    return val
+
+
+def _which_cli(name):
+    """Путь к шиму CLI с явным .exe/.cmd/.bat. which() без расширения может
+    вернуть bash-скрипт `claude` (без .cmd) — его Windows не запускает."""
+    try:
+        for ext in (".exe", ".cmd", ".bat"):
+            p = shutil.which(name + ext)
+            if p:
+                return p
+        return shutil.which(name) or ""
+    except Exception:
+        return ""
+
+
+def _cli_bin_dirs(extra_names=()):
+    """Все существующие папки, где могут лежать глобальные шимы CLI:
+    реальные npm-префиксы пользователя (env / ~/.npmrc / `npm prefix -g`),
+    папки CLI из PATH и стандартные места. Важные — первыми, без дублей."""
+    cands = []
+    for key in ("npm_config_prefix", "NPM_CONFIG_PREFIX"):
+        try:
+            v = os.path.expanduser((os.environ.get(key) or "").strip())
+        except Exception:
+            v = ""
+        if v:
+            cands.append(v)
+    for p in (_npm_prefix_from_npmrc(), _npm_prefix_cached()):
+        if p:
+            cands.append(p)
+    for nm in extra_names:
+        wp = _which_cli(nm)
+        if wp:
+            cands.append(os.path.dirname(wp))
+    home = os.path.expanduser("~")
+    cands.extend([
+        os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
+        os.path.join(os.environ.get("APPDATA", ""), "npm"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "npm"),
+        os.path.join(home, "npm-global"),
+        os.path.join(home, ".npm-global"),
+        os.path.join(home, "npm"),
+    ])
+    seen, out = set(), []
+    for d in cands:
+        try:
+            if not d:
+                continue
+            d = os.path.normpath(d)  # единый вид путей: только обратные слэши
+            key = os.path.normcase(d)
+            if key in seen:
+                continue
+            seen.add(key)
+            if os.path.isdir(d):
+                out.append(d)
+        except Exception:
+            continue
+    return out
+
+
+def _run_cli_version(exe, timeout=10.0):
+    """Вывод `<exe> --version` ('' при любой ошибке). Всё, кроме .exe,
+    запускаем через cmd /c (на Windows надёжнее для .cmd/.bat)."""
+    try:
+        if str(exe).lower().endswith(".exe"):
+            argv = [exe, "--version"]
+        else:
+            argv = ["cmd", "/c", exe, "--version"]
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        return (proc.stdout or "") + (proc.stderr or "")
+    except Exception:
+        return ""
+
+
 def get_installed_oc_version(exe=None):
     """Возвращает установленную версию opencode CLI ('' если не установлен).
 
@@ -2063,10 +2184,21 @@ def get_installed_oc_version(exe=None):
     поэтому гоним через `cmd /c <путь> --version`.
     exe: явный путь к шиму. Нужен, когда папка npm есть на диске, но её нет
     в PATH текущего процесса — тогда shutil.which() даёт None, а версия
-    по явному пути всё равно читается."""
+    по явному пути всё равно читается. Если путь не задан и в PATH пусто —
+    ищем шим во всех npm-папках (включая кастомные префиксы)."""
     try:
         if not exe:
-            exe = shutil.which("opencode")
+            exe = _which_cli("opencode")
+        if not exe:
+            for d in _cli_bin_dirs():
+                for name in ("opencode.cmd", "opencode.exe", "opencode.bat",
+                             "opencode"):
+                    p = os.path.join(d, name)
+                    if os.path.isfile(p):
+                        exe = p
+                        break
+                if exe:
+                    break
         if not exe:
             return ""
         proc = subprocess.run(
@@ -2080,22 +2212,17 @@ def get_installed_oc_version(exe=None):
     except Exception:
         return ''
 
+
 def _oc_have_cli():
-    """True, если opencode CLI найден (PATH или известные папки npm).
-    Без self — для точек без доступа к окну (сторож пушей)."""
+    """True, если opencode CLI найден (PATH или любые npm-папки, включая
+    кастомные префиксы). Без self — для точек без доступа к окну (сторож пушей)."""
     try:
-        if shutil.which("opencode"):
+        if _which_cli("opencode"):
             return True
     except Exception:
         pass
     try:
-        candidates = [
-            os.path.join(os.environ.get("APPDATA", ""), "npm"),
-            os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
-        ]
-        for d in candidates:
-            if not os.path.isdir(d):
-                continue
+        for d in _cli_bin_dirs(("opencode",)):
             for name in ("opencode.exe", "opencode.cmd", "opencode.bat",
                          "opencode.ps1", "opencode"):
                 if os.path.isfile(os.path.join(d, name)):
@@ -29781,9 +29908,7 @@ class ClaudeInstallProgressDialog(QDialog):
                 self.sub_lbl.setText("")
             self.status_lbl.setText(tr(
                 "Обновление завершено успешно.\n"
-                "Перезапустите Claude Code для применения изменений."
-            ) if self._product == "Claude Code" else tr(
-                "Обновление завершено успешно."
+                "Если PATH не находит команду — просто перезапустите приложение."
             ))
         else:
             ver = actual_version or self._new_version
@@ -29793,24 +29918,10 @@ class ClaudeInstallProgressDialog(QDialog):
                 self.sub_lbl.setText(tr("Версия") + f" {ver_fmt}")
             else:
                 self.sub_lbl.setText("")
-            if self._product == "Claude Code":
-                status = tr(
-                    "Установка завершена успешно.\n"
-                    "Если команда claude не найдена — открой новое окно консоли\n"
-                    "(npm обычно сам прописывает её в PATH)."
-                )
-            elif "opencode" in self._product:
-                status = tr(
-                    "Установка завершена успешно.\n"
-                    "Нет команды opencode? Открой новую консоль."
-                )
-            else:
-                status = tr(
-                    "Установка завершена успешно.\n"
-                    "Если команда codex не найдена — открой новое окно консоли\n"
-                    "(npm обычно сам прописывает её в PATH)."
-                )
-            self.status_lbl.setText(status)
+            self.status_lbl.setText(tr(
+                "Установка завершена успешно.\n"
+                "Если PATH не находит команду — просто перезапустите приложение."
+            ))
         self.btn_ok.show()
 
     def mark_cancelled(self):
@@ -33146,6 +33257,15 @@ class ClaudeManager(QMainWindow):
         self.btn_uninstall_codex.hide()
         install_row.addWidget(self.btn_uninstall_codex)
 
+        # Добавить в PATH — как у Claude Code и opencode: прописывает папку
+        # с шимом codex в пользовательскую PATH, если её там нет.
+        self.btn_add_codex_to_path = StyledButton(tr("Добавить в PATH"))
+        self.btn_add_codex_to_path.setFixedHeight(34)
+        self.btn_add_codex_to_path.set_hover_color(120, 180, 230)
+        self.btn_add_codex_to_path.clicked.connect(self._on_add_codex_to_path_clicked)
+        self.btn_add_codex_to_path.hide()
+        install_row.addWidget(self.btn_add_codex_to_path)
+
         # Кнопки вкладки Custom URL — установка/удаление/обновление opencode CLI.
         # Показываются только в режиме customurl (в _apply_app_mode), остальные
         # кнопки тогда прячутся.
@@ -34356,6 +34476,8 @@ class ClaudeManager(QMainWindow):
                 self.btn_claude.setText(label)
             if hasattr(self, "btn_uninstall_codex"):
                 self.btn_uninstall_codex.setText(tr("Удалить Codex CLI"))
+            if hasattr(self, "btn_add_codex_to_path"):
+                self.btn_add_codex_to_path.setText(tr("Добавить в PATH"))
             if hasattr(self, "btn_install_oc"):
                 self.btn_install_oc.setText(tr("Установить opencode"))
             if hasattr(self, "btn_uninstall_oc"):
@@ -35758,7 +35880,7 @@ class ClaudeManager(QMainWindow):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setVisible(not is_openai and not is_customurl)
-        for attr in ("btn_install_codex", "btn_uninstall_codex"):
+        for attr in ("btn_install_codex", "btn_uninstall_codex", "btn_add_codex_to_path"):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setVisible(is_openai)
@@ -36344,44 +36466,54 @@ class ClaudeManager(QMainWindow):
 
     def _detect_codex_install_dirs(self):
         """П  пки, где может лежать codex (ставится только через npm)."""
-        candidates = [
-            os.path.join(os.environ.get("APPDATA", ""), "npm"),
-            os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
-        ]
-        return [d for d in candidates if os.path.isdir(d)]
+        # Все реальные npm-префиксы пользователя + стандартные места:
+        # кастомный prefix (env/~/.npmrc/`npm prefix -g`) тоже находим.
+        return _cli_bin_dirs(("codex",))
 
     def _is_codex_installed(self):
+        """True, если codex найден в PATH или в любой npm-папке
+        (включая кастомные префиксы вроде ~\\npm-global)."""
+        try:
+            if _which_cli("codex"):
+                return True
+        except Exception:
+            pass
         for d in self._detect_codex_install_dirs():
             for name in ("codex.exe", "codex.cmd", "codex.bat", "codex.ps1", "codex"):
                 if os.path.isfile(os.path.join(d, name)):
                     return True
         return False
 
+    def _find_codex_bin_dir(self):
+        """Папка с шимом codex (обычно %APPDATA%\\npm) или пустая строка."""
+        for d in self._detect_codex_install_dirs():
+            for name in ("codex.exe", "codex.cmd", "codex.bat", "codex"):
+                if os.path.isfile(os.path.join(d, name)):
+                    return d
+        return ""
+
     def _get_installed_codex_version(self):
-        """Версия установленного codex или пустая строка."""
-        codex_path = None
+        """Версия установленного codex или пустая строка. Пробуем все
+        npm-папки (включая кастомные префиксы) и PATH — первая ответившая."""
+        candidates = []
         for d in self._detect_codex_install_dirs():
             for name in ("codex.exe", "codex.cmd", "codex.bat"):
                 p = os.path.join(d, name)
                 if os.path.isfile(p):
-                    codex_path = p
+                    candidates.append(p)
                     break
-            if codex_path:
-                break
-        if not codex_path:
-            return ""
         try:
-            result = subprocess.run(
-                [codex_path, "--version"],
-                capture_output=True, text=True, timeout=10,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            )
-            output = (result.stdout or "") + (result.stderr or "")
-            import re
-            m = re.search(r"(\d+\.\d+\.\d+)", output)
-            return m.group(1) if m else ""
+            wp = _which_cli("codex")
+            if wp and wp not in candidates:
+                candidates.append(wp)
         except Exception:
-            return ""
+            pass
+        for i, p in enumerate(candidates[:3]):
+            out = _run_cli_version(p, timeout=10 if i == 0 else 5)
+            m = re.search(r"(\d+\.\d+\.\d+)", out)
+            if m:
+                return m.group(1)
+        return ""
 
     def _check_codex_version(self):
         """Фоновая проверка: локальная и последняя npm-версия Codex CLI."""
@@ -36520,15 +36652,28 @@ class ClaudeManager(QMainWindow):
             product="Codex CLI",
         )
 
+        # Папки npm у этого пользователя (включая кастомные префиксы
+        # вроде ~\npm-global) — чистим временные шимы во всех.
+        try:
+            _pfx = "', '".join(d.replace("'", "''")
+                               for d in self._detect_codex_install_dirs())
+        except Exception:
+            _pfx = ""
+
         try:
             popen = spawn_setup_session(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
                 "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
-                "$npmBin = Join-Path $env:APPDATA 'npm'; "
-                "if (Test-Path $npmBin) { "
-                "  Get-ChildItem $npmBin -Force -Filter '.codex*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "$prefixes = @('" + _pfx + "'); "
+                "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
+                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
+                "foreach ($pfx in $prefixes) { "
+                "  if (Test-Path $pfx) { "
+                "    Get-ChildItem $pfx -Force -Filter '.codex*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  } "
                 "} "
                 "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
                 "npm uninstall -g @openai/codex 2>$null; "
@@ -36622,26 +36767,45 @@ class ClaudeManager(QMainWindow):
             product="Codex CLI",
         )
 
+        # Папки npm у этого пользователя (включая кастомные префиксы
+        # вроде ~\npm-global): удаляем и проверяем ВСЕ, не только APPDATA.
+        try:
+            _pfx = "', '".join(d.replace("'", "''")
+                               for d in self._detect_codex_install_dirs())
+        except Exception:
+            _pfx = ""
+
         try:
             popen = spawn_setup_session(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
+                # Все npm-папки пользователя: реальный префикс npm + кастомные места
+                "$prefixes = @('" + _pfx + "'); "
+                "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
+                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
                 "Write-Host '[2/3] Removing Codex CLI (npm)...' -ForegroundColor Cyan; "
                 "npm uninstall -g @openai/codex; "
-                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@openai\\codex'; "
-                "if (Test-Path $npmDir) { "
+                "$pkgRel = 'node_modules\\@openai\\codex'; "
+                "$any = $false; foreach ($pfx in $prefixes) { if (Test-Path (Join-Path $pfx $pkgRel)) { $any = $true } } "
+                "if ($any) { "
                 "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
                 "  npm uninstall -g @openai/codex; "
                 "} "
-                "if (Test-Path $npmDir) { "
-                "  Write-Host ''; Write-Host 'NPM could not remove — deleting folder directly...' -ForegroundColor Yellow; "
-                "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
-                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'codex*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "$left = $false; "
+                "foreach ($pfx in $prefixes) { "
+                "  $pkg = Join-Path $pfx $pkgRel; "
+                "  if (Test-Path $pkg) { "
+                "    Write-Host ''; Write-Host 'NPM could not remove — deleting folder directly...' -ForegroundColor Yellow; "
+                "    Remove-Item -Recurse -Force $pkg -ErrorAction SilentlyContinue; "
+                "    Get-ChildItem $pfx -Force -Filter 'codex*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  } "
+                "  if (Test-Path $pkg) { $left = $true } "
                 "} "
-                "if (Test-Path $npmDir) { "
+                "if ($left) { "
                 "  Write-Host ''; Write-Host '[3/3] Not everything was removed — close all Codex windows and try again.' -ForegroundColor Red; "
                 "} else { "
                 "  Write-Host ''; Write-Host '[3/3] Codex CLI fully removed.' -ForegroundColor Green; "
@@ -36701,6 +36865,22 @@ class ClaudeManager(QMainWindow):
         is_update = ctx.get("is_update", False)
         old_local = ctx.get("old_local", "")
 
+        # Авто-PATH: codex на месте, но папки нет в PATH процесса (типично
+        # после установки в кастомный npm-префикс) — прописываем молча, без
+        # диалога: команда станет видна новым терминалам.
+        if installed_now and not is_uninstall:
+            try:
+                if not shutil.which("codex"):
+                    _cd_dir = self._find_codex_bin_dir()
+                    if _cd_dir:
+                        _ok, _err = _write_user_path_entry(_cd_dir)
+                        if _ok:
+                            self.log(tr("Добавил в PATH: {}").format(_cd_dir), "success")
+                        else:
+                            self.log(tr("Не удалось добавить npm в PATH автоматически: {}").format(_err), "warning")
+            except Exception:
+                pass
+
         progress_dlg = getattr(self, "_codex_install_dlg", None)
         dlg_alive = False
         if progress_dlg is not None:
@@ -36744,15 +36924,100 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
 
+    def _on_add_codex_to_path_clicked(self):
+        """Как «Добавить в PATH» у Claude Code и opencode: прописывает папку
+        с шимом codex (обычно %APPDATA%\\npm) в пользовательскую PATH."""
+        target = self._find_codex_bin_dir()
+        if not target:
+            dlg = ConfirmActionDialog(
+                title=tr("Codex CLI не найден"),
+                message=tr(
+                    "Не нашёл папку с установленным Codex CLI. "
+                    "Сначала установи Codex кнопкой выше, потом жми «Добавить в PATH»."
+                ),
+                detail="",
+                confirm_text=tr("Понятно"),
+                icon="!",
+                icon_color=(235, 150, 90),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
+            return
+
+        entries = self._get_user_path_entries()
+        norm_target = os.path.normcase(os.path.normpath(target))
+        already_present = any(
+            os.path.normcase(os.path.normpath(p)) == norm_target for p in entries
+        )
+        if already_present:
+            dlg = ConfirmActionDialog(
+                title=tr("Уже в PATH"),
+                message=tr("Папка с Codex CLI уже прописана в пользовательской PATH."),
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="✓",
+                icon_color=(52, 211, 153),
+                parent=self
+            )
+            dlg.cancel_btn.hide()
+            dlg.exec()
+            return
+
+        dlg = ConfirmActionDialog(
+            title=tr("Добавить в PATH"),
+            message=tr(
+                "Добавит папку с Codex CLI в пользовательскую PATH, чтобы "
+                "команду «codex» можно было запускать из любой консоли. "
+                "Если PATH не находит команду — просто перезапустите приложение."
+            ),
+            detail=target,
+            confirm_text=tr("Добавить"),
+            icon="↑",
+            icon_color=(120, 180, 230),
+            parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        ok, err = _write_user_path_entry(target)
+        if ok:
+            self.log(tr("Добавил в PATH: {}").format(target), "success")
+            done = ConfirmActionDialog(
+                title=tr("Добавлено в PATH"),
+                message=tr(
+                    "Папка с Codex CLI добавлена в пользовательскую PATH. "
+                    "Если PATH не находит команду — просто перезапустите приложение."
+                ),
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="✓",
+                icon_color=(52, 211, 153),
+                parent=self
+            )
+            done.cancel_btn.hide()
+            done.exec()
+        else:
+            self.log(tr("Не удалось добавить в PATH: {}").format(err), "error")
+            err_dlg = ConfirmActionDialog(
+                title=tr("Не удалось добавить в PATH"),
+                message=tr("Что-то пошло не так при записи в реестр:") + f"\n{err}",
+                detail=target,
+                confirm_text=tr("Ок"),
+                icon="!",
+                icon_color=(235, 90, 90),
+                parent=self
+            )
+            err_dlg.cancel_btn.hide()
+            err_dlg.exec()
+
     # ── opencode CLI: установка / удаление / версии / запуск (вкладка Custom URL) ──
 
     def _detect_oc_install_dirs(self):
         """Папки, где может лежать opencode (ставится только через npm)."""
-        candidates = [
-            os.path.join(os.environ.get("APPDATA", ""), "npm"),
-            os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
-        ]
-        return [d for d in candidates if os.path.isdir(d)]
+        # Все реальные npm-префиксы пользователя + стандартные места:
+        # кастомный prefix (env/~/.npmrc/`npm prefix -g`) тоже находим.
+        return _cli_bin_dirs(("opencode",))
 
     def _is_oc_installed(self):
         try:
@@ -37274,15 +37539,28 @@ class ClaudeManager(QMainWindow):
             product="opencode CLI",
         )
 
+        # Папки npm у этого пользователя (включая кастомные префиксы
+        # вроде ~\npm-global) — чистим временные шимы во всех.
+        try:
+            _pfx = "', '".join(d.replace("'", "''")
+                               for d in self._detect_oc_install_dirs())
+        except Exception:
+            _pfx = ""
+
         try:
             popen = spawn_setup_session(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running opencode processes...' -ForegroundColor Cyan; "
                 "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
                 "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
-                "$npmBin = Join-Path $env:APPDATA 'npm'; "
-                "if (Test-Path $npmBin) { "
-                "  Get-ChildItem $npmBin -Force -Filter '.opencode*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "$prefixes = @('" + _pfx + "'); "
+                "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
+                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
+                "foreach ($pfx in $prefixes) { "
+                "  if (Test-Path $pfx) { "
+                "    Get-ChildItem $pfx -Force -Filter '.opencode*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  } "
                 "} "
                 "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
                 "npm uninstall -g opencode-ai 2>$null; "
@@ -37377,30 +37655,50 @@ class ClaudeManager(QMainWindow):
             product="opencode CLI",
         )
 
+        # Папки npm у этого пользователя (включая кастомные префиксы
+        # вроде ~\npm-global): удаляем и проверяем ВСЕ, не только APPDATA.
+        try:
+            _pfx = "', '".join(d.replace("'", "''")
+                               for d in self._detect_oc_install_dirs())
+        except Exception:
+            _pfx = ""
+
         try:
             popen = spawn_setup_session(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running opencode processes...' -ForegroundColor Cyan; "
                 "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
+                # Все npm-папки пользователя: реальный префикс npm + кастомные места
+                "$prefixes = @('" + _pfx + "'); "
+                "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
+                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
                 "Write-Host '[2/3] Removing opencode (npm)...' -ForegroundColor Cyan; "
                 "npm uninstall -g @opencode/cli 2>$null; "
                 "npm uninstall -g opencode-ai 2>$null; "
-                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@opencode\\cli'; "
-                "$npmDirLegacy = Join-Path $env:APPDATA 'npm\\node_modules\\opencode-ai'; "
-                "if ((Test-Path $npmDir) -or (Test-Path $npmDirLegacy)) { "
+                "$pkgRel = 'node_modules\\@opencode\\cli'; "
+                "$pkgRelLegacy = 'node_modules\\opencode-ai'; "
+                "$any = $false; foreach ($pfx in $prefixes) { if ((Test-Path (Join-Path $pfx $pkgRel)) -or (Test-Path (Join-Path $pfx $pkgRelLegacy))) { $any = $true } } "
+                "if ($any) { "
                 "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
                 "  npm uninstall -g @opencode/cli 2>$null; "
                 "  npm uninstall -g opencode-ai 2>$null; "
                 "} "
-                "if ((Test-Path $npmDir) -or (Test-Path $npmDirLegacy)) { "
-                "  Write-Host ''; Write-Host 'NPM could not remove — deleting folders directly...' -ForegroundColor Yellow; "
-                "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
-                "  Remove-Item -Recurse -Force $npmDirLegacy -ErrorAction SilentlyContinue; "
-                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Filter 'opencode*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "$left = $false; "
+                "foreach ($pfx in $prefixes) { "
+                "  $pkg = Join-Path $pfx $pkgRel; "
+                "  $pkgLegacy = Join-Path $pfx $pkgRelLegacy; "
+                "  if ((Test-Path $pkg) -or (Test-Path $pkgLegacy)) { "
+                "    Write-Host ''; Write-Host 'NPM could not remove — deleting folders directly...' -ForegroundColor Yellow; "
+                "    Remove-Item -Recurse -Force $pkg -ErrorAction SilentlyContinue; "
+                "    Remove-Item -Recurse -Force $pkgLegacy -ErrorAction SilentlyContinue; "
+                "    Get-ChildItem $pfx -Force -Filter 'opencode*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  } "
+                "  if ((Test-Path $pkg) -or (Test-Path $pkgLegacy)) { $left = $true } "
                 "} "
-                "if ((Test-Path $npmDir) -or (Test-Path $npmDirLegacy)) { "
+                "if ($left) { "
                 "  Write-Host ''; Write-Host '[3/3] Not everything was removed — close all opencode windows and try again.' -ForegroundColor Red; "
                 "} else { "
                 "  Write-Host ''; Write-Host '[3/3] opencode fully removed.' -ForegroundColor Green; "
@@ -37611,7 +37909,6 @@ class ClaudeManager(QMainWindow):
                     if installed_now and new_local:
                         progress_dlg.mark_finished(actual_version=new_local)
                         self.log(tr("opencode установлен (v{v})").format(v=new_local), "success")
-                        self._offer_restart_after_oc_install()
                     else:
                         progress_dlg.mark_cancelled()
             except Exception:
@@ -37631,27 +37928,6 @@ class ClaudeManager(QMainWindow):
             pass
         try:
             threading.Thread(target=self._check_oc_version, daemon=True).start()
-        except Exception:
-            pass
-
-    def _offer_restart_after_oc_install(self):
-        """После установки opencode — информационная табличка: для применения
-        новой команды и PATH программу нужно перезапустить вручную."""
-        try:
-            dlg = ConfirmActionDialog(
-                title=tr("Перезапустите программу"),
-                message=tr(
-                    "opencode установлен. Перезапусти программу, чтобы она "
-                    "увидела новую команду и обновлённый PATH."
-                ),
-                detail="opencode --version",
-                confirm_text=tr("Ок"),
-                icon="↻",
-                icon_color=(52, 211, 153),
-                parent=self
-            )
-            dlg.cancel_btn.hide()
-            dlg.exec()
         except Exception:
             pass
 
@@ -38762,6 +39038,14 @@ class ClaudeManager(QMainWindow):
         )
         self._claude_install_dlg = progress_dlg
 
+        # Папки npm у этого пользователя (включая кастомные префиксы
+        # вроде ~\npm-global) — чистим временные шимы во всех.
+        try:
+            _pfx = "', '".join(d.replace("'", "''")
+                               for d in self._detect_claude_install_dirs())
+        except Exception:
+            _pfx = ""
+
         try:
             popen = spawn_setup_session(
                 # 1) Kill running claude.exe — locked file breaks npm
@@ -38770,9 +39054,14 @@ class ClaudeManager(QMainWindow):
                 "Start-Sleep -Milliseconds 600; "
                 # 1b) Broken npm temp shims — like the safe installer
                 "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
-                "$npmBin = Join-Path $env:APPDATA 'npm'; "
-                "if (Test-Path $npmBin) { "
-                "  Get-ChildItem $npmBin -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "$prefixes = @('" + _pfx + "'); "
+                "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
+                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
+                "foreach ($pfx in $prefixes) { "
+                "  if (Test-Path $pfx) { "
+                "    Get-ChildItem $pfx -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  } "
                 "} "
                 # 2) Remove old version via npm
                 "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
@@ -38850,6 +39139,22 @@ class ClaudeManager(QMainWindow):
         new_local = ctx.get("new_local", "") or ""
         installed_now = bool(ctx.get("installed_now", False))
         returncode = ctx.get("returncode")
+
+        # Авто-PATH: claude на месте, но папки нет в PATH процесса (типично
+        # после установки в кастомный npm-префикс) — прописываем молча, без
+        # диалога: команда станет видна новым терминалам.
+        if installed_now:
+            try:
+                if not shutil.which("claude"):
+                    _cl_dir = self._find_claude_bin_dir()
+                    if _cl_dir:
+                        _ok, _err = _write_user_path_entry(_cl_dir)
+                        if _ok:
+                            self.log(tr("Добавил в PATH: {}").format(_cl_dir), "success")
+                        else:
+                            self.log(tr("Не удалось добавить npm в PATH автоматически: {}").format(_err), "warning")
+            except Exception:
+                pass
 
         progress_dlg = None
         try:
@@ -39029,16 +39334,20 @@ class ClaudeManager(QMainWindow):
 
     def _detect_claude_install_dirs(self):
         """Возвращает список существующих папок где может лежать claude"""
-        candidates = [
-            os.path.join(os.environ.get("USERPROFILE", ""), ".local", "bin"),
-            os.path.join(os.environ.get("APPDATA", ""), "npm"),
-        ]
-        return [d for d in candidates if os.path.isdir(d)]
+        # Все реальные npm-префиксы пользователя + стандартные места:
+        # кастомный prefix (env/~/.npmrc/`npm prefix -g`) тоже находим.
+        return _cli_bin_dirs(("claude",))
 
     def _is_claude_installed(self):
-        """True если есть claude в %USERPROFILE%\\.local\\bin или %APPDATA%\\npm"""
+        """True если claude найден в PATH или в любой npm-папке (включая
+        кастомные префиксы вроде ~\\npm-global) / ~\\.local\\bin."""
+        try:
+            if _which_cli("claude"):
+                return True
+        except Exception:
+            pass
         for d in self._detect_claude_install_dirs():
-            for name in ("claude.exe", "claude.cmd", "claude.bat", "claude"):
+            for name in ("claude.exe", "claude.cmd", "claude.bat", "claude.ps1", "claude"):
                 if os.path.isfile(os.path.join(d, name)):
                     return True
         return False
@@ -39111,7 +39420,7 @@ class ClaudeManager(QMainWindow):
             message=tr(
                 "Добавит папку с Claude Code в пользовательскую PATH, чтобы "
                 "команду «claude» можно было запускать из любой консоли. "
-                "После этого перезапусти терминал."
+                "Если PATH не находит команду — просто перезапустите приложение."
             ),
             detail=target,
             confirm_text=tr("Добавить"),
@@ -39152,7 +39461,7 @@ class ClaudeManager(QMainWindow):
                 title=tr("Добавлено в PATH"),
                 message=tr(
                     "Папка с Claude Code добавлена в пользовательскую PATH. "
-                    "Открой новую консоль и проверь: claude --version."
+                    "Если PATH не находит команду — просто перезапустите приложение."
                 ),
                 detail=target,
                 confirm_text=tr("Ок"),
@@ -39221,7 +39530,7 @@ class ClaudeManager(QMainWindow):
             message=tr(
                 "Добавит папку с opencode в пользовательскую PATH, чтобы "
                 "команду «opencode» можно было запускать из любой консоли. "
-                "После этого перезапусти терминал."
+                "Если PATH не находит команду — просто перезапустите приложение."
             ),
             detail=target,
             confirm_text=tr("Добавить"),
@@ -39239,7 +39548,7 @@ class ClaudeManager(QMainWindow):
                 title=tr("Добавлено в PATH"),
                 message=tr(
                     "Папка с opencode добавлена в пользовательскую PATH. "
-                    "Открой новую консоль и проверь: opencode --version."
+                    "Если PATH не находит команду — просто перезапустите приложение."
                 ),
                 detail=target,
                 confirm_text=tr("Ок"),
@@ -39336,32 +39645,28 @@ class ClaudeManager(QMainWindow):
             return iso_date
 
     def _get_installed_claude_version(self):
-        """Возвращает строку версии установленного claude или пустую строку"""
-        # Сначала ищем сам claude в наших стандартных папках
-        claude_path = None
+        """Возвращает строку версии установленного claude или пустую строку.
+        Пробуем все npm-папки (включая кастомные префиксы) и PATH —
+        первая ответившая версия."""
+        candidates = []
         for d in self._detect_claude_install_dirs():
             for name in ("claude.exe", "claude.cmd", "claude.bat", "claude"):
                 p = os.path.join(d, name)
                 if os.path.isfile(p):
-                    claude_path = p
+                    candidates.append(p)
                     break
-            if claude_path:
-                break
-        if not claude_path:
-            return ""
         try:
-            result = subprocess.run(
-                [claude_path, "--version"],
-                capture_output=True, text=True, timeout=5,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            )
-            output = (result.stdout or "") + (result.stderr or "")
-            # Формат: "1.2.3 (Claude Code)"
-            import re
-            m = re.search(r"(\d+\.\d+\.\d+)", output)
-            return m.group(1) if m else ""
+            wp = _which_cli("claude")
+            if wp and wp not in candidates:
+                candidates.append(wp)
         except Exception:
-            return ""
+            pass
+        for i, p in enumerate(candidates[:3]):
+            out = _run_cli_version(p, timeout=10 if i == 0 else 5)
+            m = re.search(r"(\d+\.\d+\.\d+)", out)
+            if m:
+                return m.group(1)
+        return ""
 
     def _compute_claude_binary_signature(self):
         """Сигнатура установленного claude (путь + mtime + size). Меняется при
@@ -39490,30 +39795,49 @@ class ClaudeManager(QMainWindow):
             parent=self,
         )
 
+        # Папки npm у этого пользователя (включая кастомные префиксы
+        # вроде ~\npm-global): удаляем и проверяем ВСЕ, не только APPDATA.
+        try:
+            _pfx = "', '".join(d.replace("'", "''")
+                               for d in self._detect_claude_install_dirs())
+        except Exception:
+            _pfx = ""
+
         try:
             popen = spawn_setup_session(
                 # 1) Kill running claude.exe / node locking the binary — else npm fails with EBUSY
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/5] Stopping running claude processes...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
-                # 2) Main npm removal attempt
+                # 2) Все npm-папки пользователя: реальный префикс npm + кастомные места
+                "$prefixes = @('" + _pfx + "'); "
+                "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
+                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
+                # 3) Main npm removal attempt
                 "Write-Host '[2/5] Removing Claude Code (npm)...' -ForegroundColor Cyan;"
                 "npm uninstall -g @anthropic-ai/claude-code; "
-                # 3) If the file is still locked — retry after a pause
-                "$npmDir = Join-Path $env:APPDATA 'npm\\node_modules\\@anthropic-ai\\claude-code'; "
-                "if (Test-Path $npmDir) { "
+                # 4) If the file is still locked — retry after a pause
+                "$pkgRel = 'node_modules\\@anthropic-ai\\claude-code'; "
+                "$any = $false; foreach ($pfx in $prefixes) { if (Test-Path (Join-Path $pfx $pkgRel)) { $any = $true } } "
+                "if ($any) { "
                 "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
                 "  npm uninstall -g @anthropic-ai/claude-code; "
                 "} "
-                "if (Test-Path $npmDir) { "
-                "  Write-Host ''; Write-Host 'NPM could not remove — deleting folder directly...' -ForegroundColor Yellow; "
-                "  Remove-Item -Recurse -Force $npmDir -ErrorAction SilentlyContinue; "
-                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
-                "  Get-ChildItem (Join-Path $env:APPDATA 'npm') -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "$leftNpm = $false; "
+                "foreach ($pfx in $prefixes) { "
+                "  $pkg = Join-Path $pfx $pkgRel; "
+                "  if (Test-Path $pkg) { "
+                "    Write-Host ''; Write-Host 'NPM could not remove — deleting folder directly...' -ForegroundColor Yellow; "
+                "    Remove-Item -Recurse -Force $pkg -ErrorAction SilentlyContinue; "
+                "    Get-ChildItem $pfx -Force -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "    Get-ChildItem $pfx -Force -Filter '.claude*-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; "
+                "  } "
+                "  if (Test-Path $pkg) { $leftNpm = $true } "
                 "} "
-                # 4) Remove install.ps1 setup (~/.local/bin + ~/.claude/local)
+                # 5) Remove install.ps1 setup (~/.local/bin + ~/.claude/local)
                 "Write-Host ''; Write-Host '[3/5] Removing Claude Code (install.ps1)...' -ForegroundColor Cyan; "
                 "$localBin = Join-Path $env:USERPROFILE '.local\\bin'; "
                 "if (Test-Path $localBin) { "
@@ -39523,9 +39847,8 @@ class ClaudeManager(QMainWindow):
                 "if (Test-Path $claudeLocal) { "
                 "  Remove-Item -Recurse -Force $claudeLocal -ErrorAction SilentlyContinue; "
                 "} "
-                # 5) Final check
+                # 6) Final check
                 "Write-Host '[4/5] Verifying removal...' -ForegroundColor Cyan; "
-                "$leftNpm = Test-Path $npmDir; "
                 "$leftLocal = (Test-Path $claudeLocal) -or (Test-Path (Join-Path $localBin 'claude.exe')); "
                 "if ($leftNpm -or $leftLocal) { "
                 "  Write-Host ''; Write-Host '[5/5] Not everything was removed — close all Claude Code windows and try again.' -ForegroundColor Red; "
