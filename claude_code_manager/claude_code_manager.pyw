@@ -29,7 +29,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QRect, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "6.0.4"  # Для обновлений
+APP_VERSION = "6.0.5"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -1260,11 +1260,22 @@ TRANSLATIONS = {
     "Custom URL (opencode)": "Custom URL (opencode)",
     "Доступные модели": "Available Models",
     "Модели провайдера": "Provider Models",
+    "Бесплатные модели": "Free models",
+    "Бесплатная модель": "Free model",
     "Модели не найдены": "No models found",
+    "Проверьте Base URL и ключ доступа.": "Check the Base URL and access key.",
+    "Каталог opencode и модели вашего эндпоинта": "The opencode catalog and your endpoint models",
+    "Как сменить модель": "How to change the model",
+    "Введите /model в терминале opencode и выберите нужную модель. Список обновляется при запуске приложения; кнопка «Обновить» — вручную.": "Type /model in the opencode terminal and pick the model you need. The list refreshes at app startup; the Update button refreshes it manually.",
+    "Контекст": "Context",
+    "токенов": "tokens",
+    "Поддерживает изображения": "Supports images",
+    "Поддерживает effort": "Supports effort",
     "Как изменить модель": "How to change the model",
     "В терминале opencode введите /model и выберите нужную вам модель из списка.\n\nСписок обновляется автоматически при каждом открытии этого окна — если моделей добавили или убрали, здесь это отразится само.": "In the opencode terminal type /model and pick the model you need from the list.\n\nThe list refreshes automatically every time you open this window — if models were added or removed, it will be reflected here on its own.",
     "Какие модели доступны": "What models are available",
     "Обновляем модели": "Updating models",
+    "Обновляем провайдеров": "Updating providers",
     "Ошибка обновления моделей": "Failed to refresh models",
     "Модели:": "Models:",
     "моделей": "models",
@@ -1330,6 +1341,7 @@ TRANSLATIONS = {
     "Доступные провайдеры": "Available providers",
     "Подключить": "Connect",
     "Поиск провайдера": "Search provider",
+    "Поиск по моделям": "Search models",
     "Название провайдера": "Provider name",
     "Редактировать провайдера": "Edit provider",
     "подключён": "connected",
@@ -1340,7 +1352,7 @@ TRANSLATIONS = {
     "Подключение провайдера": "Connect provider",
     "Ключ сохранится в конфигурацию opencode.": "The key will be saved to the opencode configuration.",
     "аккаунт opencode": "opencode account",
-    "Сверху — подключённые провайдеры, ниже — доступные из каталога opencode. Клик по доступному подключает его по API-ключу. Список обновляется при открытии окна.": "Connected providers on top, available ones from the opencode catalog below. Click an available provider to connect it with an API key. The list refreshes when the window opens.",
+    "Сверху — подключённые провайдеры, ниже — доступные из каталога opencode. Клик по доступному подключает его по API-ключу. Каталог обновляется при запуске приложения; кнопка «Обновить» — вручную.": "Connected providers on top, available ones from the opencode catalog below. Click an available provider to connect it with an API key. The catalog refreshes at app startup; the Update button refreshes it manually.",
     "Без Base URL и кредов": "No Base URL or credentials",
     "Вы уверены, что хотите удалить провайдера? Будут удалены креда (auth.json), аккаунт opencode и определение из конфига.": "Are you sure you want to delete this provider? The credential (auth.json), the opencode account, and the config definition will be removed.",
     # ── главное окно: подписи статусов
@@ -2101,15 +2113,48 @@ def _npm_prefix_cached():
     return val
 
 
+# Кэш поиска шимов по PATH: shutil.which — ~9 мс на вызов, а при переключении
+# вкладок _is_*_installed дёргается 4–5 раз подряд. Без кэша это давало
+# 35–50 мс синхронной работы в UI-потоке — анимации заметно дёргались.
+# Положительный результат живёт, пока существует сам файл: удаление CLI
+# ловится мгновенно проверкой isfile, а повторных сканов PATH при кликах нет
+# вовсе. Отрицательный — с коротким TTL (установку всё равно ловит скан
+# папок в _is_*_installed; плюс явный сброс после установки/удаления).
+_WHICH_CLI_CACHE = {}
+_WHICH_CLI_TTL = 8.0  # только для отрицательного результата
+
+
+def _which_cli_invalidate():
+    """Сбросить кэш поиска шимов (после установки/удаления CLI)."""
+    try:
+        _WHICH_CLI_CACHE.clear()
+    except Exception:
+        pass
+
+
 def _which_cli(name):
     """Путь к шиму CLI с явным .exe/.cmd/.bat. which() без расширения может
     вернуть bash-скрипт `claude` (без .cmd) — его Windows не запускает."""
     try:
+        now = time.monotonic()
+        hit = _WHICH_CLI_CACHE.get(name)
+        if hit is not None:
+            val = hit[1]
+            if val:
+                if os.path.isfile(val):
+                    return val
+            elif (now - hit[0]) < _WHICH_CLI_TTL:
+                return ""
+        val = ""
         for ext in (".exe", ".cmd", ".bat"):
             p = shutil.which(name + ext)
             if p:
-                return p
-        return shutil.which(name) or ""
+                val = p
+                break
+        if not val:
+            val = shutil.which(name) or ""
+        _WHICH_CLI_CACHE[name] = (now, val)
+        return val
     except Exception:
         return ""
 
@@ -3253,12 +3298,59 @@ def enable_pixel_ripple(button, color, inset=(3, 3, 3, 3), radius=8):
         pass
 
 
+# ── Скорость «загорания» при наведении ──────────────────────────
+# Шаг задан под таймер 20 мс (линейно, без разгона и замедления), но
+# Windows «склеивает» мелкие таймеры: почти все кнопки реально тикают
+# раз в ~31 мс, и загорание занимает ~280 мс — так во всём приложении и
+# во вкладке opencode. Чтобы кнопки с «честными» 20 мс не загорались
+# быстрее остальных, их шаг масштабируется по фактическому времени между
+# тиками (см. _hover_step). Карточки, слайдеры и тумблеры — таймер 16 мс
+# (HOVER_STEP_16); вкладки сайдбара чуть медленнее (NAV_HOVER_STEP) — так
+# попросили.
+HOVER_STEP_20 = 0.12    # номинальный шаг, таймер 20 мс
+HOVER_STEP_16 = 0.095   # линейный шаг, таймер 16 мс (~176 мс)
+NAV_HOVER_STEP = 0.08   # вкладки сайдбара, таймер 16 мс (~208 мс)
+
+
+def _hover_move(cur, d, step=HOVER_STEP_16):
+    """Один шаг линейного «загорания» к цели (как у кнопок, таймер 16 мс).
+    d — оставшееся расстояние (target - cur); шаг не перелетает цель."""
+    if abs(d) <= step:
+        return cur + d
+    return cur + (step if d > 0 else -step)
+
+
+# Фактический темп тиков у кнопок на Windows: планировщик объединяет мелкие
+# таймеры, и почти все кнопки получают тики ~31 мс вместо заданных 20 мс.
+# Кнопкам, которым достаются «честные» ~20 мс, шаг уменьшаем по реальному
+# времени — тогда скорость загорания у всех кнопок одинаковая.
+HOVER_TICK_MS = 31.25
+
+
+def _hover_step(owner, step=HOVER_STEP_20, attr="_hover_tick_t"):
+    """Шаг «загорания» кнопки с поправкой на реальный интервал между тиками.
+
+    Измеряем фактическое время с прошлого тика: при редких тиках (~31 мс)
+    шаг полный, при частых (~20 мс) — пропорционально меньше. Итоговая
+    длительность загорания у всех кнопок одинаковая (как в opencode)."""
+    now = time.perf_counter()
+    last = getattr(owner, attr, None)
+    setattr(owner, attr, now)
+    if last is None:
+        return step
+    dt = (now - last) * 1000.0
+    if dt <= 1.0 or dt > 125.0:
+        return step
+    return step * min(max(dt / HOVER_TICK_MS, 0.2), 3.0)
+
+
 class StyledButton(QPushButton):
     def __init__(self, text, parent=None, compact=False):
         super().__init__(text, parent)
         enable_pixel_ripple(self, lambda b: tuple(b._hover_color))
-        # compact: для низких кнопок (28-30px) — меньше шрифт и паддинги,
-        # иначе текст обрезается.
+        # compact: для низких кнопок (28-30px) — меньше шрифт. Вертикальный
+        # паддинг у всех кнопок 2px: высоту даёт сама кнопка (layout),
+        # большие паддинги резали хвосты букв (у, р, д) при высотах ниже 40.
         self._compact = bool(compact)
         self.setFont(QFont("Segoe UI", 9 if self._compact else 10, QFont.Bold))
         self.setMinimumHeight(0 if self._compact else 40)
@@ -3293,18 +3385,19 @@ class StyledButton(QPushButton):
         super().leaveEvent(event)
 
     def _animate_hover(self):
+        hs = _hover_step(self)
         if self._is_hovered and self.isEnabled():
             if self._hover_progress < 1.0:
-                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._hover_progress = min(1.0, self._hover_progress + hs)
                 self._update_style()
         else:
             if self._hover_progress > 0.0:
-                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._hover_progress = max(0.0, self._hover_progress - hs)
                 self._update_style()
         lt = 1.0 if getattr(self, "_lit", False) else 0.0
         lp = getattr(self, "_lit_progress", 0.0)
         if abs(lp - lt) > 0.004:
-            self._lit_progress = min(1.0, max(0.0, lp + (0.1 if lt > lp else -0.1)))
+            self._lit_progress = min(1.0, max(0.0, lp + (hs if lt > lp else -hs)))
             self._update_style()
         elif lp != lt:
             self._lit_progress = lt
@@ -3318,7 +3411,9 @@ class StyledButton(QPushButton):
         r = int(base_r + (hover_r - base_r) * k)
         g = int(base_g + (hover_g - base_g) * k)
         b = int(base_b + (hover_b - base_b) * k)
-        pad_v = 2 if self._compact else 8
+        pad_v = 2  # высоту кнопке задаёт высота, не паддинг — иначе QSS-рамка
+        # контента резала нижние строки букв с «хвостами» (у, р, д) при
+        # setFixedHeight(30-36); по центру текст и так стоял.
         pad_l = getattr(self, "_pad_l", 12)
 
         self.setStyleSheet(f"""
@@ -3335,6 +3430,61 @@ class StyledButton(QPushButton):
                 border: 2px solid rgb(40, 40, 45);
             }}
         """)
+
+class _FadeHoverButton(QPushButton):
+    """Компактная кнопка с плавным «загоранием» в едином темпе приложения
+    (линейно ~180 мс, как у StyledButton). Цвет текста, фон и рамка линейно
+    переходят от обычных к hover-цветам. Нужна маленьким служебным кнопкам
+    (карандаш у ключа, «+/−» спиннера), которым QSS-ховер давал вспышку."""
+
+    def __init__(self, text, base, hover, parent=None, border_w=1.5,
+                 radius=8):
+        # base/hover: (текст_rgb, фон_rgba, рамка_rgb)
+        super().__init__(text, parent)
+        self._c0 = base
+        self._c1 = hover
+        self._border_w = border_w
+        self._radius = radius
+        self._hover_progress = 0.0
+        self._is_hovered = False
+        self.setMouseTracking(True)
+        self._hover_timer = QTimer(self)
+        self._hover_timer.timeout.connect(self._animate_hover)
+        self._hover_timer.start(20)  # тик как у кнопок приложения
+        self._apply_style()
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        super().leaveEvent(event)
+
+    def _animate_hover(self):
+        if self._is_hovered and self.isEnabled():
+            if self._hover_progress < 1.0:
+                self._hover_progress = min(1.0, self._hover_progress + HOVER_STEP_20)
+                self._apply_style()
+        elif self._hover_progress > 0.0:
+            self._hover_progress = max(0.0, self._hover_progress - HOVER_STEP_20)
+            self._apply_style()
+
+    @staticmethod
+    def _mix(a, b, t):
+        return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(len(a)))
+
+    def _apply_style(self):
+        t = self._hover_progress
+        r, g, b = self._mix(self._c0[0], self._c1[0], t)
+        br, bg, bb, ba = self._mix(self._c0[1], self._c1[1], t)
+        rr, rg, rb = self._mix(self._c0[2], self._c1[2], t)
+        border = ("none" if not self._border_w else
+                  f"{self._border_w}px solid rgb({rr}, {rg}, {rb})")
+        self.setStyleSheet(
+            f"QPushButton{{color: rgb({r}, {g}, {b});"
+            f" background: rgba({br}, {bg}, {bb}, {ba});"
+            f" border: {border}; border-radius: {self._radius}px;}}")
 
 class _GlyphButton(StyledButton):
     """StyledButton с рисованной векторной иконкой слева внутри
@@ -3379,10 +3529,11 @@ class _GlyphButton(StyledButton):
             pass
 
     def _glyph_tick(self):
+        hs = _hover_step(self, attr="_glyph_tick_t")
         tgt = getattr(self, "_glyph_target", 0.0)
         cur = getattr(self, "_glyph_progress", 0.0)
         if abs(cur - tgt) > 0.01:
-            cur = min(1.0, max(0.0, cur + (0.1 if tgt > cur else -0.1)))
+            cur = min(1.0, max(0.0, cur + (hs if tgt > cur else -hs)))
             self._glyph_progress = cur
             d = self.GLYPH_DIM
             li = tuple(getattr(self, "_hover_color", self.GLYPH_LIT))
@@ -3478,6 +3629,65 @@ class OcSpinner(QWidget):
         p.end()
 
 
+class _BusyOverlay(QWidget):
+    """Затемнение со спиннером поверх содержимого окна: показывается, пока
+    идёт фоновое обновление данных (модели/провайдеры). Клики по списку под
+    оверлеем не проходят, Esc и крестик продолжают работать. Геометрию
+    оверлей повторяет за родителем (eventFilter по Resize), рисуется
+    скруглённым прямоугольником в тон рамки окна."""
+
+    def __init__(self, parent, radius=16.0, spin_color=(190, 190, 195)):
+        super().__init__(parent)
+        self._radius = float(radius)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addStretch(1)
+        self._spinner = OcSpinner(self, 30)
+        try:
+            self._spinner.set_color(*spin_color)
+        except Exception:
+            pass
+        lay.addWidget(self._spinner, 0, Qt.AlignHCenter)
+        lay.addSpacing(12)
+        self._label = QLabel("")
+        self._label.setFont(QFont("Segoe UI", 10))
+        self._label.setAlignment(Qt.AlignCenter)
+        self._label.setStyleSheet(
+            "color: rgb(216, 216, 224); background: transparent; border: none;")
+        self._label.setTextFormat(Qt.PlainText)
+        lay.addWidget(self._label, 0, Qt.AlignHCenter)
+        lay.addStretch(1)
+        self.hide()
+        if parent is not None:
+            parent.installEventFilter(self)
+            self.setGeometry(parent.rect())
+
+    def set_text(self, text):
+        """Текст под спиннером («Обновляем модели…» и т.п.)."""
+        self._label.setText(text or "")
+
+    def eventFilter(self, obj, event):
+        try:
+            if obj is self.parent() and event.type() in (QEvent.Resize,
+                                                         QEvent.Show):
+                self.setGeometry(obj.rect())
+                if self.isVisible():
+                    self.raise_()
+        except Exception:
+            pass
+        return False
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(9, 9, 13, 178))
+        p.drawRoundedRect(QRectF(self.rect()), self._radius, self._radius)
+        p.end()
+
+
 class OcModelInfoButton(StyledButton):
     """Кнопка «Какие модели доступны» со встроенным спиннером загрузки.
 
@@ -3545,13 +3755,14 @@ class GreenButton(QPushButton):
         super().leaveEvent(event)
 
     def _animate_hover(self):
+        hs = _hover_step(self)
         if self._is_hovered and self.isEnabled():
             if self._hover_progress < 1.0:
-                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._hover_progress = min(1.0, self._hover_progress + hs)
                 self._update_style()
         else:
             if self._hover_progress > 0.0:
-                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._hover_progress = max(0.0, self._hover_progress - hs)
                 self._update_style()
 
     def _update_style(self):
@@ -3568,7 +3779,7 @@ class GreenButton(QPushButton):
                 color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 8px;
-                padding: 8px 12px;
+                padding: 2px 12px;
             }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
@@ -3627,13 +3838,14 @@ class PrimaryActionButton(QPushButton):
         super().leaveEvent(event)
 
     def _animate_hover(self):
+        hs = _hover_step(self)
         if self._is_hovered and self.isEnabled():
             if self._hover_progress < 1.0:
-                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._hover_progress = min(1.0, self._hover_progress + hs)
                 self._update_style()
         else:
             if self._hover_progress > 0.0:
-                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._hover_progress = max(0.0, self._hover_progress - hs)
                 self._update_style()
 
     @staticmethod
@@ -3660,7 +3872,7 @@ class PrimaryActionButton(QPushButton):
                 color: rgb({text[0]}, {text[1]}, {text[2]});
                 border: 2px solid rgba({border[0]}, {border[1]}, {border[2]}, {border_alpha});
                 border-radius: 8px;
-                padding: 9px 16px;
+                padding: 2px 16px;
             }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
@@ -3700,13 +3912,14 @@ class BlueButton(QPushButton):
         super().leaveEvent(event)
 
     def _animate_hover(self):
+        hs = _hover_step(self)
         if self._is_hovered and self.isEnabled():
             if self._hover_progress < 1.0:
-                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._hover_progress = min(1.0, self._hover_progress + hs)
                 self._update_style()
         else:
             if self._hover_progress > 0.0:
-                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._hover_progress = max(0.0, self._hover_progress - hs)
                 self._update_style()
 
     def _update_style(self):
@@ -3723,7 +3936,7 @@ class BlueButton(QPushButton):
                 color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 8px;
-                padding: 8px 12px;
+                padding: 2px 12px;
             }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
@@ -3761,13 +3974,14 @@ class RedButton(QPushButton):
         super().leaveEvent(event)
 
     def _animate_hover(self):
+        hs = _hover_step(self)
         if self._is_hovered and self.isEnabled():
             if self._hover_progress < 1.0:
-                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._hover_progress = min(1.0, self._hover_progress + hs)
                 self._update_style()
         else:
             if self._hover_progress > 0.0:
-                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._hover_progress = max(0.0, self._hover_progress - hs)
                 self._update_style()
 
     def _update_style(self):
@@ -3784,7 +3998,7 @@ class RedButton(QPushButton):
                 color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 8px;
-                padding: 8px 12px;
+                padding: 2px 12px;
             }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
@@ -3819,13 +4033,14 @@ class YellowButton(QPushButton):
         super().leaveEvent(event)
 
     def _animate_hover(self):
+        hs = _hover_step(self)
         if self._is_hovered and self.isEnabled():
             if self._hover_progress < 1.0:
-                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._hover_progress = min(1.0, self._hover_progress + hs)
                 self._update_style()
         else:
             if self._hover_progress > 0.0:
-                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._hover_progress = max(0.0, self._hover_progress - hs)
                 self._update_style()
 
     def _update_style(self):
@@ -3842,7 +4057,7 @@ class YellowButton(QPushButton):
                 color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 8px;
-                padding: 8px 12px;
+                padding: 2px 12px;
             }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
@@ -3877,13 +4092,14 @@ class OrangeButton(QPushButton):
         super().leaveEvent(event)
 
     def _animate_hover(self):
+        hs = _hover_step(self)
         if self._is_hovered and self.isEnabled():
             if self._hover_progress < 1.0:
-                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._hover_progress = min(1.0, self._hover_progress + hs)
                 self._update_style()
         else:
             if self._hover_progress > 0.0:
-                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._hover_progress = max(0.0, self._hover_progress - hs)
                 self._update_style()
 
     def _update_style(self):
@@ -3900,7 +4116,7 @@ class OrangeButton(QPushButton):
                 color: #d6d6de;
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 8px;
-                padding: 8px 12px;
+                padding: 2px 12px;
             }}
             QPushButton:disabled {{
                 background-color: rgba(20, 20, 26, 200);
@@ -3966,9 +4182,10 @@ class EyeToggleButton(QPushButton):
         super().leaveEvent(e)
 
     def _animate_hover(self):
+        hs = _hover_step(self)
         target = 1.0 if (self._is_hovered and self.isEnabled()) else 0.0
         if self._hover_progress != target:
-            step = 0.1 if target > self._hover_progress else -0.1
+            step = hs if target > self._hover_progress else -hs
             self._hover_progress = max(0.0, min(1.0, self._hover_progress + step))
             self.update()
 
@@ -4097,11 +4314,11 @@ class StyledComboBox(QComboBox):
             return
         if self._is_hovered:
             if self._hover_progress < 1.0:
-                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._hover_progress = min(1.0, self._hover_progress + HOVER_STEP_20)
                 self._update_style()
         else:
             if self._hover_progress > 0.0:
-                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._hover_progress = max(0.0, self._hover_progress - HOVER_STEP_20)
                 self._update_style()
 
     def _update_style(self):
@@ -4242,9 +4459,14 @@ class PickerCard(QPushButton):
     def _animate_hover(self):
         target = 1.0 if (self._is_hovered or self._is_current) else 0.0
         if abs(self._hover_progress - target) < 0.005:
+            # Дошли: фиксируем ровно target (иначе из-за дробных шагов
+            # прогресс замирает на 0.9999… и не равен цели).
+            if self._hover_progress != target:
+                self._hover_progress = target
+                self._update_style()
             return
-        # Плавно — около 200мс к цели
-        step = 0.08
+        # Плавно — около 176 мс к цели (HOVER_STEP_16)
+        step = HOVER_STEP_16
         if self._hover_progress < target:
             self._hover_progress = min(target, self._hover_progress + step)
         else:
@@ -4265,7 +4487,7 @@ class PickerCard(QPushButton):
                 color: {self._text_color_str};
                 border: 2px solid rgb({r}, {g}, {b});
                 border-radius: 8px;
-                padding: 7px 10px;
+                padding: 2px 10px;
             }}
         """)
 
@@ -6174,14 +6396,14 @@ class ModeToggle(QWidget):
         elif self._sub_progress != self._sub_target:
             self._sub_progress = self._sub_target
             changed = True
-        # Hover-fade каждой ячейки: подтягиваем _hover_alpha к _hover_target
-        # шагом 0.09 (~250 мс до 1.0), даёт мягкий «прогрев» цвета букв.
+        # Hover-fade каждой ячейки: линейный шаг, как у кнопок приложения
+        # (~180 мс до 1.0), без разгона в начале.
         for i in range(len(self.MODES)):
             cur = self._hover_alpha[i]
             tgt = self._hover_target[i]
             d = tgt - cur
             if abs(d) > 0.003:
-                self._hover_alpha[i] = cur + d * 0.09
+                self._hover_alpha[i] = _hover_move(cur, d)
                 changed = True
             elif cur != tgt:
                 self._hover_alpha[i] = tgt
@@ -6191,7 +6413,7 @@ class ModeToggle(QWidget):
             tgt = self._sub_hover_target[i]
             d = tgt - cur
             if abs(d) > 0.003:
-                self._sub_hover_alpha[i] = cur + d * 0.09
+                self._sub_hover_alpha[i] = _hover_move(cur, d)
                 changed = True
             elif cur != tgt:
                 self._sub_hover_alpha[i] = tgt
@@ -6475,16 +6697,14 @@ class LanguageToggle(QWidget):
         elif self._progress != self._target:
             self._progress = self._target
             changed = True
-        # Hover-fade каждой половины (мягко 0↔1).
-        # Низкий коэффициент = более медленный, плавный «прогрев» цвета.
-        # 0.07 даёт ~250-300 мс на полный переход — мягко, как у спокойного
-        # easing-in/out, без рывка в конце.
+        # Hover-fade каждой половины (мягко 0↔1): линейный шаг, как у
+        # кнопок приложения — ~180 мс на полный переход.
         for name in ("_hover_ru", "_hover_en"):
             cur = getattr(self, name)
             tgt = getattr(self, name + "_target")
             d = tgt - cur
             if abs(d) > 0.003:
-                setattr(self, name, cur + d * 0.07)
+                setattr(self, name, _hover_move(cur, d))
                 changed = True
             elif cur != tgt:
                 setattr(self, name, tgt)
@@ -7026,7 +7246,7 @@ class EffortSlider(QWidget):
             tgt = self._hover_target[i]
             d = tgt - cur
             if abs(d) > 0.003:
-                self._hover_alpha[i] = cur + d * 0.09
+                self._hover_alpha[i] = _hover_move(cur, d)
                 changed = True
             elif cur != tgt:
                 self._hover_alpha[i] = tgt
@@ -7035,7 +7255,7 @@ class EffortSlider(QWidget):
             changed = True
         d = self._ultra_hover_target - self._ultra_hover
         if abs(d) > 0.003:
-            self._ultra_hover += d * 0.09
+            self._ultra_hover = _hover_move(self._ultra_hover, d)
             changed = True
         elif self._ultra_hover != self._ultra_hover_target:
             self._ultra_hover = self._ultra_hover_target
@@ -7656,7 +7876,7 @@ class ModelSlider(QWidget):
             tgt = self._hover_target[i]
             d = tgt - cur
             if abs(d) > 0.003:
-                self._hover_alpha[i] = cur + d * 0.09
+                self._hover_alpha[i] = _hover_move(cur, d)
                 changed = True
             elif cur != tgt:
                 self._hover_alpha[i] = tgt
@@ -8858,7 +9078,7 @@ class OptionSlider(QWidget):
             tgt = self._hover_target[i]
             d = tgt - cur
             if abs(d) > 0.003:
-                self._hover_alpha[i] = cur + d * 0.09
+                self._hover_alpha[i] = _hover_move(cur, d)
                 changed = True
             elif cur != tgt:
                 self._hover_alpha[i] = tgt
@@ -9085,27 +9305,768 @@ def _oc_vendor_color(name):
     return _oc_model_color(name)
 
 
-class _OcInfoRow(QWidget):
-    """Строка-карточка с моделью в информационном окне. Вид 1-в-1 как у
-    карточек провайдера (PickerCard: фон, рамка 2px, hover), но некликабельная.
-    Цвет карточки — по компании модели (одинаковый у всех моделей вендора)."""
+# ── Метаданные моделей: контекст и vision ──────────────────────
+# opencode держит каталог models.dev в ~/.cache/opencode/models.json.
+# Локальный файл читаем всегда (это быстро), а свежий models.dev —
+# только если для какой-то модели не хватает полей. Сеть и разбор
+# большого JSON идут в фоновом потоке загрузчика, не в UI.
 
-    def __init__(self, model_name, color, parent=None, is_free=False):
+_OC_CATALOG_LOCAL = {"mtime": None, "index": None}
+_OC_CATALOG_REMOTE = {"last_ok": 0.0, "last_try": 0.0, "index": None}
+_OC_CATALOG_REMOTE_TTL = 6 * 3600
+_OC_CATALOG_REMOTE_RETRY = 10 * 60
+
+
+def _oc_parse_token_count(value):
+    """Приводит '200k', '1M', 128000 к числу токенов."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            n = int(value)
+        except Exception:
+            return None
+        return n if n > 0 else None
+    s = str(value).strip().lower().replace(",", "").replace("_", "")
+    s = s.replace(" ", "")
+    if not s:
+        return None
+    m = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([kmg]?)", s)
+    if not m:
+        return None
+    try:
+        num = float(m.group(1))
+        mult = {"": 1, "k": 1000, "m": 1000000, "g": 1000000000}[m.group(2)]
+        n = int(num * mult)
+    except Exception:
+        return None
+    return n if n > 0 else None
+
+
+def _oc_context_value(meta):
+    """Контекст из моделей models.dev или ответа /models разных шлюзов."""
+    if not isinstance(meta, dict):
+        return None
+    candidates = []
+    for key in ("context", "context_length", "context_window",
+                "max_context_length", "max_input_tokens",
+                "max_context_tokens", "n_ctx"):
+        candidates.append(meta.get(key))
+    limit = meta.get("limit")
+    if isinstance(limit, dict):
+        candidates.extend([limit.get("context"), limit.get("input")])
+    top = meta.get("top_provider")
+    if isinstance(top, dict):
+        candidates.append(top.get("context_length"))
+    for nest_key in ("meta", "spec", "details"):
+        nested = meta.get(nest_key)
+        if isinstance(nested, dict):
+            for key in ("context", "context_length", "context_window",
+                        "max_context_length", "max_input_tokens"):
+                candidates.append(nested.get(key))
+    for value in candidates:
+        n = _oc_parse_token_count(value)
+        if n:
+            return n
+    return None
+
+
+def _oc_modality_has_image(value):
+    if isinstance(value, str):
+        return "image" in value.lower()
+    if isinstance(value, (list, tuple, set)):
+        return any(_oc_modality_has_image(x) for x in value)
+    if isinstance(value, dict):
+        for key in ("type", "modality", "name", "input", "modalities"):
+            if key in value and _oc_modality_has_image(value.get(key)):
+                return True
+    return False
+
+
+def _oc_vision_value(meta):
+    """True/False, если поддержка изображений известна, иначе None."""
+    if not isinstance(meta, dict):
+        return None
+    for key in ("vision", "supports_vision", "image_input", "images"):
+        value = meta.get(key)
+        if isinstance(value, bool):
+            return value
+    caps = meta.get("capabilities")
+    if isinstance(caps, dict):
+        for key in ("vision", "image", "image_input", "images"):
+            value = caps.get(key)
+            if isinstance(value, bool):
+                return value
+    if isinstance(meta.get("attachment"), bool):
+        return bool(meta.get("attachment"))
+    arch = meta.get("architecture")
+    if isinstance(arch, dict):
+        for key in ("input_modalities", "modalities", "modality"):
+            if key in arch:
+                return _oc_modality_has_image(arch.get(key))
+    modalities = meta.get("modalities")
+    if isinstance(modalities, dict) and "input" in modalities:
+        return _oc_modality_has_image(modalities.get("input"))
+    if "input_modalities" in meta:
+        return _oc_modality_has_image(meta.get("input_modalities"))
+    kind = str(meta.get("type") or "").strip().lower()
+    if kind in ("vision", "multimodal", "image"):
+        return True
+    return None
+
+
+def _oc_reasoning_value(meta):
+    if not isinstance(meta, dict):
+        return None
+    if isinstance(meta.get("reasoning"), bool):
+        return bool(meta.get("reasoning"))
+    caps = meta.get("capabilities")
+    if isinstance(caps, dict) and isinstance(caps.get("reasoning"), bool):
+        return bool(caps.get("reasoning"))
+    return None
+
+
+def _oc_effort_value(meta):
+    """Уровни effort, если модель их поддерживает, иначе None.
+
+    models.dev отдаёт их в reasoning_options: [{"type": "effort",
+    "values": ["low", "medium", "high"]}]. Пустой список означает, что
+    effort есть, но конкретные уровни неизвестны."""
+    if not isinstance(meta, dict):
+        return None
+    sources = [meta.get("reasoning_options")]
+    caps = meta.get("capabilities")
+    if isinstance(caps, dict):
+        sources.append(caps.get("reasoning_options"))
+    for options in sources:
+        if not isinstance(options, (list, tuple)):
+            continue
+        has_effort = False
+        levels = []
+        for item in options:
+            if isinstance(item, str):
+                if item.strip().lower() == "effort":
+                    has_effort = True
+                continue
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "").strip().lower() != "effort":
+                continue
+            has_effort = True
+            values = item.get("values") or item.get("levels") or []
+            if isinstance(values, (list, tuple)):
+                for value in values:
+                    level = str(value).strip().lower()
+                    if level and level not in levels:
+                        levels.append(level)
+        if has_effort:
+            return levels
+    for key in ("effort_levels", "reasoning_effort_levels"):
+        values = meta.get(key)
+        if isinstance(values, (list, tuple)):
+            levels = []
+            for value in values:
+                level = str(value).strip().lower()
+                if level and level not in levels:
+                    levels.append(level)
+            return levels
+    for key in ("effort", "reasoning_effort"):
+        value = meta.get(key)
+        if isinstance(value, (list, tuple)):
+            levels = []
+            for level in value:
+                text = str(level).strip().lower()
+                if text and text not in levels:
+                    levels.append(text)
+            return levels
+        if value is True:
+            return []
+        if isinstance(value, str) and value.strip():
+            text = value.strip().lower()
+            if text in ("true", "yes", "on"):
+                return []
+            return [part.strip() for part in text.split(",") if part.strip()]
+    return None
+
+
+def _oc_meta_from_catalog_item(mid, item):
+    if not isinstance(item, dict):
+        return {}
+    meta = {
+        "context": _oc_context_value(item),
+        "vision": _oc_vision_value(item),
+        "reasoning": _oc_reasoning_value(item),
+        "effort": _oc_effort_value(item),
+        "name": str(item.get("name") or "").strip() or None,
+        "family": str(item.get("family") or "").strip() or None,
+    }
+    return {k: v for k, v in meta.items()
+            if v is not None and v != ""}
+
+
+def _oc_price_zero(value):
+    """Ценовое значение равно нулю (строка или число)?"""
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return float(value) == 0.0
+    text = str(value).strip().replace(",", ".")
+    if not text:
+        return False
+    try:
+        return float(text) == 0.0
+    except ValueError:
+        return False
+
+
+def _oc_endpoint_free(item):
+    """Сообщает ли ответ эндпоинта добавленного провайдера о бесплатности
+    модели (нулевые цены). Понимаем ходовые форматы шлюзов:
+    pricing{prompt/completion|input/output} (OpenRouter и т.п.),
+    cost{input/output} (как в каталоге models.dev) или число,
+    input/output_cost_per_token (прокси litellm) и явные флаги.
+    Бесплатно считаем только если обе цены нулевые; пустых данных
+    не достаточно — бейдж не выдумывается.
+    ВНИМАНИЕ: сейчас никто не вызывает — бейдж FREE решает только
+    название модели (суффикс -free/:free в _OcInfoRow); парсер оставлен
+    на случай быстрого возврата к ценовой логике."""
+    if not isinstance(item, dict):
+        return False
+    if item.get("free") is True or item.get("is_free") is True:
+        return True
+    prices = item.get("pricing")
+    if isinstance(prices, dict):
+        inn = prices.get("prompt", prices.get("input"))
+        out = prices.get("completion", prices.get("output"))
+        if inn is not None and out is not None:
+            if _oc_price_zero(inn) and _oc_price_zero(out):
+                return True
+    else:
+        cost = item.get("cost")
+        if isinstance(cost, dict):
+            inn = cost.get("input", cost.get("prompt"))
+            out = cost.get("output", cost.get("completion"))
+            if inn is not None and out is not None:
+                if _oc_price_zero(inn) and _oc_price_zero(out):
+                    return True
+        elif _oc_price_zero(cost):
+            return True
+    inn = item.get("input_cost_per_token", item.get("input_cost"))
+    out = item.get("output_cost_per_token", item.get("output_cost"))
+    if inn is not None and out is not None:
+        if _oc_price_zero(inn) and _oc_price_zero(out):
+            return True
+    return False
+
+
+def _oc_meta_from_endpoint_item(item):
+    if not isinstance(item, dict):
+        return {}
+    meta = {
+        "context": _oc_context_value(item),
+        "vision": _oc_vision_value(item),
+        "reasoning": _oc_reasoning_value(item),
+        "effort": _oc_effort_value(item),
+        "name": str(item.get("name") or item.get("display_name")
+                    or "").strip() or None,
+        "family": str(item.get("family") or "").strip() or None,
+    }
+    return {k: v for k, v in meta.items()
+            if v is not None and v != ""}
+
+
+def _oc_merge_meta(base, extra):
+    """Дополняет метаданные, не затирая известные значения пустыми."""
+    out = dict(base or {})
+    for key, value in (extra or {}).items():
+        if value is None or value == "":
+            continue
+        out[key] = value
+    return out
+
+
+def _oc_build_catalog_index(data):
+    by_provider = {}
+    by_id = {}
+    if not isinstance(data, dict):
+        return {"by_provider": by_provider, "by_id": by_id}
+    for provider, pdata in data.items():
+        if not isinstance(pdata, dict):
+            continue
+        models = pdata.get("models")
+        if not isinstance(models, dict):
+            continue
+        prov_low = str(provider or "").strip().lower()
+        for mid, item in models.items():
+            meta = _oc_meta_from_catalog_item(mid, item)
+            if not meta:
+                continue
+            mid_low = str(mid or "").strip().lower()
+            if not mid_low:
+                continue
+            by_provider[(prov_low, mid_low)] = meta
+            by_id.setdefault(mid_low, meta)
+    return {"by_provider": by_provider, "by_id": by_id}
+
+
+def _oc_local_catalog_path():
+    home = os.path.expanduser("~")
+    candidates = []
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg:
+        candidates.append(os.path.join(xdg, "opencode", "models.json"))
+    candidates.append(os.path.join(home, ".cache", "opencode", "models.json"))
+    if sys.platform == "darwin":
+        candidates.append(os.path.join(
+            home, "Library", "Caches", "opencode", "models.json"))
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidates.append(os.path.join(local, "opencode", "models.json"))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return candidates[0] if candidates else ""
+
+
+def _oc_local_catalog_index():
+    path = _oc_local_catalog_path()
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        return {}
+    if (_OC_CATALOG_LOCAL.get("index") is not None
+            and _OC_CATALOG_LOCAL.get("mtime") == mtime):
+        return _OC_CATALOG_LOCAL["index"] or {}
+    index = {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            index = _oc_build_catalog_index(json.load(fh))
+    except Exception:
+        index = {}
+    _OC_CATALOG_LOCAL["mtime"] = mtime
+    _OC_CATALOG_LOCAL["index"] = index
+    return index
+
+
+def _oc_remote_catalog_index():
+    """Свежий models.dev. Вызывается только из фонового загрузчика."""
+    now = time.time()
+    index = _OC_CATALOG_REMOTE.get("index")
+    if index is not None and (now - _OC_CATALOG_REMOTE.get("last_ok", 0)
+                              < _OC_CATALOG_REMOTE_TTL):
+        return index
+    if now - _OC_CATALOG_REMOTE.get("last_try", 0) < _OC_CATALOG_REMOTE_RETRY:
+        return index or {}
+    _OC_CATALOG_REMOTE["last_try"] = now
+    try:
+        req = Request("https://models.dev/api.json",
+                      headers={"User-Agent": "ClaudeManager/%s" % APP_VERSION})
+        with urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        index = _oc_build_catalog_index(data)
+        _OC_CATALOG_REMOTE["index"] = index
+        _OC_CATALOG_REMOTE["last_ok"] = now
+    except Exception:
+        if _OC_CATALOG_REMOTE.get("index") is None:
+            _OC_CATALOG_REMOTE["index"] = {}
+        index = _OC_CATALOG_REMOTE["index"]
+    return index or {}
+
+
+def _oc_model_id_variants(model_id):
+    """Варианты ID для поиска в каталоге: с провайдером, без него,
+    без ':free', '@version' и хвостовой даты."""
+    raw = str(model_id or "").strip().lower()
+    if not raw:
+        return []
+    out = [raw]
+    base = raw.rsplit("/", 1)[-1].strip()
+    if base and base not in out:
+        out.append(base)
+    for value in list(out):
+        if ":" in value:
+            out.append(value.split(":", 1)[0])
+        if "@" in value:
+            out.append(value.split("@", 1)[0])
+        trimmed = re.sub(r"-(20\d{2}-\d{2}-\d{2})$", "", value)
+        trimmed = re.sub(r"-(20\d{6})$", "", trimmed)
+        if trimmed != value:
+            out.append(trimmed)
+    seen = set()
+    result = []
+    for value in out:
+        value = value.strip()
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _oc_catalog_lookup(index, model_id, provider=None):
+    if not index:
+        return {}
+    by_provider = index.get("by_provider") or {}
+    by_id = index.get("by_id") or {}
+    prov_low = str(provider or "").strip().lower()
+    for variant in _oc_model_id_variants(model_id):
+        if prov_low and (prov_low, variant) in by_provider:
+            return dict(by_provider[(prov_low, variant)])
+        if "/" in variant:
+            prov2, _, short = variant.partition("/")
+            if (prov2, short) in by_provider:
+                return dict(by_provider[(prov2, short)])
+            if short in by_id:
+                return dict(by_id[short])
+        if variant in by_id:
+            return dict(by_id[variant])
+    return {}
+
+
+def _oc_model_group_key(model_id):
+    """Ключ группировки карточек секции «Модели провайдера»: первые два
+    слова ID — база модели со своей версией (mimo-v2.5, deepseek-v3.1),
+    чтобы варианты pro/flash/:free одного блока шли подряд. Первое слово
+    честно оставляем с цифрами версии (qwen3, o3) — соседние семейства
+    всё равно образуют сплошной алфавитный блок по общему префиксу."""
+    s = str(model_id or "").strip().lower()
+    if not s:
+        return ""
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1].strip()
+    parts = re.split(r"[-_:@ ]", s)
+    if len(parts) == 1:
+        token = parts[0]
+        core = re.sub(r"[0-9.]+$", "", token)
+        return core if len(core) >= 2 else token
+    return "%s-%s" % (parts[0], parts[1])
+
+
+def _oc_model_color_key(model_id):
+    """Семейство модели для вендорного цвета карточки: первое слово ID
+    без цифровых хвостов (qwen3 -> qwen). Известным вендорам не мешает
+    (claude/gpt/mimo... матчатся по префиксу), а варианты одного
+    семейства (mimo-v2.5-pro, mimo-v2.5:free...) красятся в один цвет."""
+    s = str(model_id or "").strip().lower()
+    if not s:
+        return ""
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1].strip()
+    token = re.split(r"[-_:@ ]", s, maxsplit=1)[0]
+    core = re.sub(r"[0-9.]+$", "", token)
+    if len(core) >= 2:
+        return core
+    return token
+
+
+def _oc_model_meta_for_ids(model_ids, base_meta=None, provider=None,
+                           free=False):
+    """Дополняет метаданные моделей из локального, затем сетевого каталога.
+    Ответ эндпоинта имеет приоритет над каталогом."""
+    result = {}
+    for key, value in (base_meta or {}).items():
+        if isinstance(value, dict):
+            result[str(key)] = dict(value)
+        elif isinstance(value, bool):
+            result[str(key)] = {"reasoning": value}
+    local = _oc_local_catalog_index()
+    remote = None
+    for mid in (model_ids or []):
+        mid = str(mid)
+        current = result.get(mid) or {}
+        catalog_provider = "opencode" if free else provider
+        merged = _oc_merge_meta(
+            _oc_catalog_lookup(local, mid, catalog_provider), current)
+        need_more = (merged.get("context") is None
+                     or merged.get("vision") is None
+                     or not merged.get("name"))
+        if need_more:
+            if remote is None:
+                remote = _oc_remote_catalog_index()
+            merged = _oc_merge_meta(
+                _oc_merge_meta(
+                    _oc_catalog_lookup(local, mid, catalog_provider),
+                    _oc_catalog_lookup(remote, mid, catalog_provider)),
+                current)
+        if merged:
+            result[mid] = merged
+    return result
+
+
+def _oc_normalize_meta_map(raw):
+    """Совместимость со старым форматом {model: reasoning_bool}."""
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for mid, value in raw.items():
+        if isinstance(value, dict):
+            out[str(mid)] = dict(value)
+        elif isinstance(value, bool):
+            out[str(mid)] = {"reasoning": value}
+    return out
+
+
+def _oc_format_context(tokens):
+    n = _oc_parse_token_count(tokens)
+    if not n:
+        return ""
+    if n >= 1000000:
+        text = ("%.1f" % (n / 1000000.0)).rstrip("0").rstrip(".")
+        return text + "M"
+    if n >= 1000:
+        return "%dK" % int(round(n / 1000.0))
+    return str(n)
+
+
+def _oc_format_tokens_full(tokens):
+    n = _oc_parse_token_count(tokens)
+    if not n:
+        return ""
+    return ("{:,}".format(n)).replace(",", " ")
+
+
+def _oc_reveal_smooth(widget, duration=140):
+    """Плавное появление списка после порционной сборки: контейнер весь
+    список строит скрытым, затем показывaeтся один раз и за ~0.15 с
+    набирает прозрачность 0→1 — карточки не «выпадают» пачками и не
+    дёргают раскладку. Эффект снимается по завершении, чтобы не держать
+    виджет в растре."""
+    if widget is None:
+        return
+    widget.show()
+    try:
+        eff = QGraphicsOpacityEffect(widget)
+        eff.setOpacity(0.0)
+        widget.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", widget)
+        anim.setDuration(duration)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        def _done(w=widget):
+            try:
+                w.setGraphicsEffect(None)
+            except RuntimeError:
+                pass
+
+        anim.finished.connect(_done)
+        widget._oc_reveal_anim = anim  # держим ссылку до завершения
+        anim.start()
+    except Exception:
+        widget.show()
+        widget.setGraphicsEffect(None)
+
+
+class _OcInfoRow(QFrame):
+    """Карточка модели: название, ID, контекст, бейджи EFFORT и VISION.
+
+    Не кнопка: строка только показывает данные. Название выкрашено в цвет
+    вендора по семейству модели (первое слово ID — все варианты семейства
+    в один цвет; у бесплатных opencode-моделей — зелёный), он же — цвет
+    левой акцентной полоски (она статична и всегда в полный цвет). Карточка
+    рисуется в paintEvent, поэтому палочка сверху и снизу скругляется
+    одинаково. Рамка покоя — серая 2px, как у провайдеров в окне
+    «Провайдеры opencode». При наведении строка никак не выделяется — так
+    попросили, чтобы список не «загорался» под курсором."""
+
+    # Серая рамка покоя: та же, что у кнопок (rgb(60, 60, 65), 2px).
+    BASE_BORDER = (60, 60, 65)
+
+    def __init__(self, model_name, color=None, parent=None, is_free=False,
+                 meta=None):
         super().__init__(parent)
-        self._name = model_name
-        if is_free:
-            rgb = _OC_FREE_COLOR
-        else:
-            rgb = _oc_vendor_color(model_name)
-        self._card = PickerCard(
-            _oc_short_label(model_name),
-            color=QColor(*rgb),
-            clickable=False,
-        )
+        self._name = str(model_name)
+        self._meta = dict(meta or {})
+        # Зелёная окраска (is_free) приходит только из секции «Бесплатные
+        # модели» opencode. Бейдж FREE — отдельная вещь: только у строк
+        # провайдера (добавленных через API/эндпоинт) и только по названию
+        # (суффикс -free/:free). У секции «Бесплатные модели» бейджей нет
+        # вовсе — её статус показывают UNLIMIT в шапке и зелёная окраска.
+        self._is_free = bool(is_free)
+        name_low = self._name.strip().lower()
+        self._badge_free = (not self._is_free and (
+            name_low.endswith(":free") or name_low.endswith("-free")))
+        self._rgb = tuple(color) if color is not None else (
+            _OC_FREE_COLOR if is_free else _oc_vendor_color(
+                _oc_model_color_key(self._name)))
+        r, g, b = self._rgb
+        self.setObjectName("ocModelRow")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setCursor(Qt.ArrowCursor)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._update_style()
+
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addWidget(self._card)
+        lay.setContentsMargins(12, 8, 10, 8)
+        lay.setSpacing(10)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(1)
+        display_name = (str(self._meta.get("name") or self._name).strip()
+                        or self._name)
+        name_lbl = _ElidingLabel(display_name, Qt.ElideRight)
+        name_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        name_lbl.setStyleSheet(
+            "color: rgb(%d, %d, %d); background: transparent; border: none;"
+            % (r, g, b))
+        name_lbl.setTextFormat(Qt.PlainText)
+        name_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        text_col.addWidget(name_lbl)
+        if display_name.lower() != self._name.lower():
+            sub_lbl = _ElidingLabel(self._name, Qt.ElideMiddle)
+            sub_lbl.setFont(QFont("Consolas", 8))
+            sub_lbl.setStyleSheet(
+                "color: rgb(126, 128, 140); background: transparent; border: none;")
+            sub_lbl.setTextFormat(Qt.PlainText)
+            sub_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            text_col.addWidget(sub_lbl)
+        lay.addLayout(text_col, 1)
+
+        chips = QHBoxLayout()
+        chips.setContentsMargins(0, 0, 0, 0)
+        chips.setSpacing(6)
+        if self._badge_free:
+            # Бейдж бесплатной модели по названию (суффикс -free/:free):
+            # тот же зелёный, что у UNLIMIT-бейджа шапки «Бесплатные
+            # модели»; стоит в ряду бейджей первым — сразу после названия.
+            # Окраску самой строки (название/полоска) не трогает.
+            free_chip = QLabel("FREE")
+            free_chip.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            free_chip.setAlignment(Qt.AlignCenter)
+            free_chip.setStyleSheet(
+                "color: rgb(140, 220, 150);"
+                " background: rgba(140, 220, 150, 18);"
+                " border: 2px solid rgba(140, 220, 150, 90);"
+                " border-radius: 9px; padding: 2px 8px;")
+            free_chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            chips.addWidget(free_chip, 0, Qt.AlignVCenter)
+        ctx = _oc_context_value(self._meta)
+        ctx_text = _oc_format_context(ctx)
+        if ctx_text:
+            chip = QLabel(ctx_text)
+            chip.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            chip.setAlignment(Qt.AlignCenter)
+            chip.setMinimumWidth(46)
+            chip.setStyleSheet(
+                "color: rgb(178, 198, 224);"
+                " background: rgba(84, 112, 150, 0.16);"
+                " border: 2px solid rgba(105, 145, 190, 0.45);"
+                " border-radius: 9px; padding: 2px 8px;")
+            chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            chips.addWidget(chip, 0, Qt.AlignVCenter)
+        effort = _oc_effort_value(self._meta)
+        if effort is not None:
+            ef = QFrame()
+            ef.setObjectName("ocEffortChip")
+            ef.setStyleSheet(
+                "QFrame#ocEffortChip {"
+                " background: rgba(226, 168, 82, 0.13);"
+                " border: 2px solid rgba(236, 180, 96, 0.47);"
+                " border-radius: 9px; }")
+            ef.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            elay = QHBoxLayout(ef)
+            elay.setContentsMargins(6, 2, 7, 2)
+            elay.setSpacing(4)
+            eicon = QLabel()
+            eicon.setFixedSize(12, 12)
+            try:
+                eicon.setPixmap(
+                    _paint_update_glyph("Gauge", 12, (242, 197, 126)))
+            except Exception:
+                pass
+            eicon.setStyleSheet("background: transparent; border: none;")
+            eicon.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            etext = QLabel("EFFORT")
+            etext.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            etext.setStyleSheet(
+                "color: rgb(242, 197, 126);"
+                " background: transparent; border: none;")
+            etext.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            elay.addWidget(eicon)
+            elay.addWidget(etext)
+            chips.addWidget(ef, 0, Qt.AlignVCenter)
+        vision = _oc_vision_value(self._meta)
+        if vision is True:
+            vframe = QFrame()
+            vframe.setObjectName("ocVisionChip")
+            vframe.setStyleSheet(
+                "QFrame#ocVisionChip {"
+                " background: rgba(176, 140, 245, 0.13);"
+                " border: 2px solid rgba(183, 148, 255, 0.45);"
+                " border-radius: 9px; }")
+            vframe.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            vlay = QHBoxLayout(vframe)
+            vlay.setContentsMargins(6, 2, 7, 2)
+            vlay.setSpacing(4)
+            vicon = QLabel()
+            vicon.setFixedSize(12, 12)
+            try:
+                vicon.setPixmap(_paint_update_glyph(
+                    "Image", 12, (196, 168, 255)))
+            except Exception:
+                pass
+            vicon.setStyleSheet("background: transparent; border: none;")
+            vicon.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            vtext = QLabel("VISION")
+            vtext.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            vtext.setStyleSheet(
+                "color: rgb(202, 178, 255);"
+                " background: transparent; border: none;")
+            vtext.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            vlay.addWidget(vicon)
+            vlay.addWidget(vtext)
+            chips.addWidget(vframe, 0, Qt.AlignVCenter)
+        if chips.count():
+            lay.addLayout(chips)
+
+        tip = [self._name]
+        if self._badge_free:
+            tip.append(tr("Бесплатная модель"))
+        if ctx_text:
+            tip.append("%s: %s %s" % (
+                tr("Контекст"), _oc_format_tokens_full(ctx), tr("токенов")))
+        if vision is True:
+            tip.append(tr("Поддерживает изображения"))
+        if effort is not None:
+            if effort:
+                tip.append("EFFORT: " + " / ".join(effort))
+            else:
+                tip.append(tr("Поддерживает effort"))
+        self.setToolTip("\n".join(tip))
+
+    def paintEvent(self, event):
+        """Карточка целиком: градиент, серая рамка и цветная палочка.
+
+        Палочку клипаем по внешнему скруглению карточки, поэтому сверху она
+        закругляется так же, как снизу, и не срезается диагональю на стыке
+        border-left и border-top (именно это и было видно в QSS-варианте)."""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(self.rect())
+        outer = QPainterPath()
+        outer.addRoundedRect(rect, 10.0, 10.0)
+        grad = QLinearGradient(0.0, 0.0, rect.width(), 0.0)
+        grad.setColorAt(0.0, QColor(34, 34, 42, 235))
+        grad.setColorAt(1.0, QColor(28, 28, 35, 210))
+        p.fillPath(outer, QBrush(grad))
+        border = QPainterPath()
+        border.addRoundedRect(rect.adjusted(1.0, 1.0, -1.0, -1.0), 9.0, 9.0)
+        p.setPen(QPen(QColor(*self.BASE_BORDER), 2.0))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(border)
+        p.save()
+        p.setClipPath(outer)
+        p.fillRect(QRectF(0.0, 0.0, 3.0, rect.height()), QColor(*self._rgb))
+        p.restore()
+        p.end()
+
+    def _update_style(self):
+        # Фон, рамку и палочку рисует paintEvent: QSS-рамка с border-left
+        # давала диагональный срез палочки в верхнем левом углу.
+        self.setStyleSheet("QFrame#ocModelRow { background: transparent;"
+                           " border: none; }")
 
     @property
     def model_name(self):
@@ -20430,7 +21391,7 @@ class _PlayButton(QPushButton):
     def _tick(self):
         d = self._hp_target - self._hp
         if abs(d) > 0.004:
-            self._hp += d * 0.18
+            self._hp = _hover_move(self._hp, d)
             self.update()
         elif self._hp != self._hp_target:
             self._hp = self._hp_target
@@ -24213,7 +25174,7 @@ class OcSettingsDialog(QDialog):
                 cur = card._hover_progress
                 tgt = card._hover_target
                 if abs(cur - tgt) > 0.01:
-                    cur = min(1.0, max(0.0, cur + (0.12 if tgt > cur else -0.12)))
+                    cur = min(1.0, max(0.0, cur + (HOVER_STEP_20 if tgt > cur else -HOVER_STEP_20)))
                     card._hover_progress = cur
                     _apply_border(cur)
                 else:
@@ -24325,113 +25286,180 @@ class OcSettingsDialog(QDialog):
 class OcModelDialog(QDialog):
     """Информационное окно для вкладки Custom URL (opencode).
 
-    Показывает, какие модели доступны:
-    - секция «Для вашего провайдера доступны модели» — модели эндпоинта
-      ({base_url}/models), названия подсвечены цветом;
-    - секция «UNLIMIT MODELS» — бесплатные модели opencode;
-    - внизу блок-инструкция: как сменить модель (через /model в opencode) и
-      что список обновляется автоматически при каждом открытии.
+    Показывает доступные модели эндпоинта и бесплатный каталог opencode.
+    У каждой модели видны название, ID, размер контекста, бейдж EFFORT
+    и метка VISION.
+    Подсказка про /model стоит сверху, сразу под заголовком, а сам список
+    прокручивается и не растягивает окно за экран."""
 
-    Чисто информационное: выбора моделей и effort'а нет. Кастомный тёмный
-    фон, контент в прокручиваемой области (при большом списке окно
-    расширяется и скроллится, а не убегает за экран)."""
+    MAX_W = 720
+    MAX_H = 700
+    MIN_W = 420
 
-    MAX_W = 680
-    MAX_H = 660
-    MIN_W = 380
-
-    def __init__(self, endpoint_models, free_models, reasoning_map, provider_name="", parent=None):
+    def __init__(self, endpoint_models, free_models, model_meta=None,
+                 provider_name="", parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(True)
         self._endpoint = list(endpoint_models or [])
+        # Модели, попавшие и в эндпоинт, из «Бесплатных» убираются,
+        # чтобы не показывать их дважды.
         self._free = [m for m in (free_models or []) if m not in self._endpoint]
         self._provider_name = provider_name
+        self._meta = _oc_normalize_meta_map(model_meta)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)
 
-        container = DottedFrame()
+        container = DottedFrame(clip_radius=16.0)
         container.setObjectName("ocModelDialogContainer")
         container.setStyleSheet("""
             QFrame#ocModelDialogContainer {
-                background-color: rgb(20, 20, 25);
+                background-color: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgb(23, 23, 29),
+                    stop:1 rgb(18, 18, 23));
                 border: 2px solid rgb(60, 60, 65);
-                border-radius: 16px;
+                border-radius: 18px;
             }
         """)
         outer.addWidget(container)
+        self._container = container  # контейнер для оверлея загрузки
 
         shadow = QGraphicsDropShadowEffect(container)
-        shadow.setColor(QColor(0, 0, 0, 200))
-        shadow.setBlurRadius(40)
-        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(0, 0, 0, 210))
+        shadow.setBlurRadius(44)
+        shadow.setOffset(0, 8)
         container.setGraphicsEffect(shadow)
 
         inner = QVBoxLayout(container)
-        inner.setContentsMargins(18, 12, 18, 16)
+        inner.setContentsMargins(20, 14, 20, 18)
         inner.setSpacing(10)
 
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
-        head.addSpacing(22)
-        head.addStretch()
+        head.setSpacing(12)
+        # Симметричная пустышка слева, чтобы заголовок стоял ровно по центру
+        # окна (как в «Провайдеры opencode»), несмотря на крестик справа.
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(26, 26)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        head.addWidget(left_spacer, 0, Qt.AlignTop)
+
+        title_col = QVBoxLayout()
+        title_col.setContentsMargins(0, 1, 0, 0)
+        title_col.setSpacing(1)
         title = QLabel(tr("Доступные модели"))
-        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        title.setStyleSheet("color: rgb(225, 225, 235); background: transparent; border: none;")
+        title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        title.setStyleSheet(
+            "color: #CCCCCC; background: transparent; border: none;")
         title.setTextFormat(Qt.PlainText)
         title.setAlignment(Qt.AlignCenter)
-        head.addWidget(title)
-        head.addStretch()
+        title_col.addWidget(title)
+        subtitle = QLabel(tr("Каталог opencode и модели вашего эндпоинта"))
+        subtitle.setFont(QFont("Segoe UI", 9))
+        subtitle.setStyleSheet(
+            "color: rgb(140, 140, 152); background: transparent; border: none;")
+        subtitle.setTextFormat(Qt.PlainText)
+        subtitle.setAlignment(Qt.AlignCenter)
+        title_col.addWidget(subtitle)
+        head.addLayout(title_col, 1)
+
         self.close_btn = _CloseButton(parent=container)
-        self.close_btn.setFixedSize(24, 24)
+        self.close_btn.setFixedSize(26, 26)
         self.close_btn.clicked.connect(self.close)
-        head.addWidget(self.close_btn)
+        head.addWidget(self.close_btn, 0, Qt.AlignTop)
         inner.addLayout(head)
+
+        self._build_hint(inner)
+
+        # Живой поиск по моделям + кнопка «Обновить»: фильтр работает прямо
+        # при вводе, а обновление списка — вручную (данные подтягиваются при
+        # запуске приложения; кнопка затемняет окно и тянет свежие данные).
+        # Если моделей нет вовсе, поле прячется — искать нечего, кнопка
+        # остаётся: ей и лечится пустой список.
+        search_row = QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.setSpacing(8)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText(tr("Поиск по моделям"))
+        self.search_edit.setFont(QFont("Segoe UI", 9))
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: #0f0f14;
+                color: #ececf1;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        self.search_edit.textChanged.connect(self._apply_filter)
+        search_row.addWidget(self.search_edit, 1)
+        self.refresh_btn = StyledButton(tr("Обновить"))
+        self.refresh_btn.setFixedHeight(36)
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
+        search_row.addWidget(self.refresh_btn)
+        inner.addLayout(search_row)
 
         self._cards_host = QWidget()
         self._cards_host.setStyleSheet("background: transparent; border: none;")
         self._cards_layout = QVBoxLayout(self._cards_host)
-        self._cards_layout.setContentsMargins(0, 0, 4, 0)
+        self._cards_layout.setContentsMargins(8, 8, 10, 8)
         self._cards_layout.setSpacing(6)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setWidget(self._cards_host)
         self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll.setObjectName("ocModelScroll")
         self._scroll.setStyleSheet("""
-            QScrollArea { background: transparent; border: none; }
+            QScrollArea {
+                background: transparent;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 10px;
+            }
             QScrollArea > QWidget > QWidget { background: transparent; }
             QScrollBar:vertical {
-                width: 4px;
+                width: 5px;
                 background: transparent;
                 border-radius: 2px;
                 margin: 0;
             }
             QScrollBar::handle:vertical {
-                background: rgba(140, 140, 145, 160);
+                background: rgba(140, 140, 148, 150);
                 border-radius: 2px;
-                min-height: 28px;
+                min-height: 32px;
             }
-            QScrollBar::handle:vertical:hover { background: rgba(170, 170, 175, 200); }
+            QScrollBar::handle:vertical:hover { background: rgba(175, 175, 182, 195); }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
         """)
         inner.addWidget(self._scroll, 1)
 
+        # Оверлей загрузки: затемнение со спиннером, пока идёт обновление
+        # (кнопкой «Обновить» или фоновым событием главного окна).
+        self._loading = False
+        self._overlay = _BusyOverlay(container, radius=16.0)
+
         self._build_sections()
-        self._build_instruction()
 
         # Авто-подстройка размера: растёт под контент, но ограничен максимумами
         # (при множестве моделей дальше работает скролл).
         self.setMaximumWidth(self.MAX_W)
         self.setMaximumHeight(self.MAX_H)
         self.setMinimumWidth(self.MIN_W)
-        self._scroll.setMaximumHeight(self.MAX_H - 170)
+        self._scroll.setMaximumHeight(self.MAX_H - 231)
         self.adjustSize()
+        self._apply_preferred_size()
+
+        if parent is not None and getattr(parent, "_oc_models_loading", False):
+            # Данные ещё грузятся (фоновая загрузка при старте) — сразу
+            # показываем затемнение со спиннером.
+            self.set_loading(True)
 
         self.setWindowOpacity(0.0)
         self._fade_in = QPropertyAnimation(self, b"windowOpacity", self)
@@ -24441,133 +25469,486 @@ class OcModelDialog(QDialog):
         self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
         self._closing = False
 
-    def _add_section_block(self, title, provider_name=None, margin=False):
-        """Заголовок секции в карточке-обводке. Если задан provider_name —
-        внутри карточки под заголовком идут разделительная линия и крупное
-        цветное имя провайдера. Блок отделён отступами от списка моделей,
-        чтобы не выглядеть его частью."""
+    def _apply_preferred_size(self):
+        """adjustSize() у QScrollArea часто выбирает минимальную ширину:
+        задаём комфортную ширину и высоту под число моделей, но не
+        вылезаем за доступный экран."""
+        try:
+            rows = len(self._endpoint) + len(self._free)
+            target_w = 660
+            if rows > 8:
+                target_h = 640
+            elif rows > 4:
+                target_h = 560
+            else:
+                target_h = 440
+            screen = QGuiApplication.primaryScreen()
+            if screen is not None:
+                avail = screen.availableGeometry()
+                target_w = min(target_w, max(self.MIN_W, avail.width() - 80))
+                target_h = min(target_h, max(420, avail.height() - 80))
+            self.resize(target_w, min(target_h, self.MAX_H))
+        except Exception:
+            pass
+
+    def _build_hint(self, inner):
+        """Компактная подсказка сверху: как сменить модель и что список
+        обновляется сам. Заголовок с иконкой и текст — по центру плашки,
+        в один столбик, как центрированный заголовок окна."""
         frame = QFrame()
-        frame.setObjectName("ocSectionBlock")
+        frame.setObjectName("ocModelHint")
         frame.setStyleSheet(
-            "QFrame#ocSectionBlock {"
-            "background-color: #18181f;"
-            "border: 2px solid rgb(60, 60, 65);"
-            "border-radius: 8px; }"
-        )
+            "QFrame#ocModelHint {"
+            " background: rgba(217, 119, 87, 0.065);"
+            " border: 2px solid rgba(217, 119, 87, 0.26);"
+            " border-radius: 11px; }")
         lay = QVBoxLayout(frame)
-        lay.setContentsMargins(12, 7, 12, 9)
-        lay.setSpacing(7)
+        lay.setContentsMargins(14, 9, 14, 10)
+        lay.setSpacing(3)
 
-        lbl = QLabel(title)
-        lbl.setWordWrap(True)
-        lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        lbl.setStyleSheet("color: rgb(170, 170, 182); background: transparent; border: none;")
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(7)
+        title_row.addStretch(1)
+        icon = QLabel()
+        icon.setFixedSize(18, 18)
+        icon.setAlignment(Qt.AlignCenter)
+        try:
+            icon.setPixmap(_paint_update_glyph(
+                "Terminal", 16, (217, 119, 87)))
+        except Exception:
+            pass
+        icon.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(icon, 0, Qt.AlignVCenter)
+
+        tip_title = QLabel(tr("Как сменить модель"))
+        tip_title.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        tip_title.setStyleSheet(
+            "color: #CCCCCC; background: transparent; border: none;")
+        tip_title.setTextFormat(Qt.PlainText)
+        title_row.addWidget(tip_title, 0, Qt.AlignVCenter)
+        title_row.addStretch(1)
+        lay.addLayout(title_row)
+
+        tip_text = QLabel(tr(
+            "Введите /model в терминале opencode и выберите нужную модель. "
+            "Список обновляется при запуске приложения; кнопка «Обновить» — вручную."))
+        tip_text.setWordWrap(True)
+        tip_text.setAlignment(Qt.AlignCenter)
+        tip_text.setFont(QFont("Segoe UI", 9))
+        tip_text.setStyleSheet(
+            "color: rgb(172, 172, 184); background: transparent; border: none;")
+        tip_text.setTextFormat(Qt.PlainText)
+        lay.addWidget(tip_text)
+        inner.addWidget(frame)
+
+    def _add_section_header(self, title, count, provider="", badge=""):
+        """Лёгкая шапка секции: название, счётчик, бейдж и провайдер.
+        Не карточка — поэтому список не выглядит набором одинаковых рамок."""
+        host = QWidget()
+        host.setStyleSheet("background: transparent; border: none;")
+        box = QVBoxLayout(host)
+        box.setContentsMargins(4, 10, 4, 0)
+        box.setSpacing(5)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        lbl = QLabel(title.upper())
+        lbl.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        lbl.setStyleSheet(
+            "color: rgb(146, 146, 158); background: transparent; border: none;")
         lbl.setTextFormat(Qt.PlainText)
-        lay.addWidget(lbl)
+        row.addWidget(lbl)
 
-        if provider_name:
-            sep = QFrame()
-            sep.setFrameShape(QFrame.HLine)
-            sep.setStyleSheet(
-                "color: rgba(90, 90, 98, 0.55); background: rgba(90, 90, 98, 0.55);"
-                "border: none; max-height: 1px;"
-            )
-            lay.addWidget(sep)
+        cnt = QLabel(str(count))
+        cnt.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        cnt.setAlignment(Qt.AlignCenter)
+        cnt.setStyleSheet(
+            "color: rgb(176, 176, 188);"
+            " background: rgba(255, 255, 255, 0.055);"
+            " border: 2px solid rgba(255, 255, 255, 0.16);"
+            " border-radius: 8px; padding: 1px 6px;")
+        if badge:
+            b = QLabel(badge.upper())
+            b.setFont(QFont("Segoe UI", 7, QFont.Bold))
+            b.setAlignment(Qt.AlignCenter)
+            b.setStyleSheet(
+                "color: rgb(140, 220, 150);"
+                " background: rgba(140, 220, 150, 18);"
+                " border: 2px solid rgba(140, 220, 150, 90);"
+                " border-radius: 8px; padding: 1px 7px;")
+            row.addWidget(b)
 
-            pr, pg, pb = assign_provider_color(provider_name)
-            pname = QLabel(provider_name)
-            pname.setFont(QFont("Segoe UI", 12, QFont.Bold))
-            pname.setAlignment(Qt.AlignCenter)
-            pname.setStyleSheet(
-                "color: rgb(%d, %d, %d); background: transparent; border: none;"
-                % (pr, pg, pb)
-            )
-            pname.setTextFormat(Qt.PlainText)
-            lay.addWidget(pname)
+        if provider:
+            pr, pg, pb = assign_provider_color(provider)
+            pill = QLabel(provider)
+            pill.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            pill.setStyleSheet(
+                "color: rgb(%d, %d, %d);"
+                " background: rgba(%d, %d, %d, 18);"
+                " border: 2px solid rgba(%d, %d, %d, 95);"
+                " border-radius: 9px; padding: 2px 8px;"
+                % (pr, pg, pb, pr, pg, pb, pr, pg, pb))
+            pill.setTextFormat(Qt.PlainText)
+            row.addWidget(pill)
 
-        if margin:
-            self._cards_layout.addSpacing(8)
-        self._cards_layout.addWidget(frame)
-        # Зазор между блоком заголовка и первой моделью — блок читается
-        # как «шапка» секции, а не как строка списка.
-        self._cards_layout.addSpacing(6)
+        # Порядок слева: надпись → бейдж (UNLIMIT/пилюля провайдера) →
+        # количество моделей. Растяжка последняя — правый край пустой.
+        row.addWidget(cnt)
+        row.addStretch(1)
+        box.addLayout(row)
 
-    def _add_row(self, name, color, is_free=False):
-        row = _OcInfoRow(name, _oc_model_color(name), is_free=is_free)
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet(
+            "color: rgba(72, 72, 82, 110);"
+            " background: rgba(72, 72, 82, 110);"
+            " border: none; max-height: 1px;")
+        box.addWidget(line)
+        self._cards_layout.addWidget(host)
+        self._cards_layout.addSpacing(3)
+        # Секция помнит свою шапку и строки — для живого поиска:
+        # _apply_filter прячет несовпавшие строки и опустевшие шапки.
+        self._filter_sections.append(
+            {"host": host, "count": cnt, "rows": [], "subs": []})
+
+    def _add_family_header(self, title, count):
+        """Явный подзаголовок семейства внутри «Моделей провайдера»:
+        цветная точка (тот же цвет, что у карточек семейства), имя и
+        счётчик. Живой поиск прячет подзаголовок вместе с его строками."""
+        host = QWidget()
+        host.setStyleSheet("background: transparent; border: none;")
+        box = QHBoxLayout(host)
+        box.setContentsMargins(4, 9, 4, 0)
+        box.setSpacing(6)
+        rgb = _oc_vendor_color(_oc_model_color_key(title))
+        dot = QLabel()
+        dot.setFixedSize(8, 8)
+        dot.setStyleSheet(
+            "background: rgb(%d, %d, %d);"
+            " border: none; border-radius: 4px;"
+            % (rgb[0], rgb[1], rgb[2]))
+        box.addWidget(dot, 0, Qt.AlignVCenter)
+        lbl = QLabel(str(title).upper())
+        lbl.setFont(QFont("Segoe UI", 7, QFont.Bold))
+        lbl.setStyleSheet(
+            "color: rgb(126, 126, 138);"
+            " background: transparent; border: none;")
+        lbl.setTextFormat(Qt.PlainText)
+        box.addWidget(lbl, 0, Qt.AlignVCenter)
+        cnt = QLabel(str(count))
+        cnt.setFont(QFont("Segoe UI", 7, QFont.Bold))
+        cnt.setAlignment(Qt.AlignCenter)
+        cnt.setStyleSheet(
+            "color: rgb(150, 150, 162);"
+            " background: rgba(255, 255, 255, 0.05);"
+            " border: 2px solid rgba(255, 255, 255, 0.14);"
+            " border-radius: 7px; padding: 0px 5px;")
+        box.addWidget(cnt, 0, Qt.AlignVCenter)
+        box.addStretch(1)
+        self._cards_layout.addWidget(host)
+        if self._filter_sections:
+            self._filter_sections[-1]["subs"].append(
+                {"host": host, "count": cnt, "rows": []})
+
+    def _add_row(self, name, is_free=False):
+        meta = self._meta.get(str(name)) or {}
+        # Бейдж FREE рисует только название строки провайдера (суффикс
+        # -free/:free, см. _OcInfoRow); у секции «Бесплатные модели»
+        # бейджей нет вовсе. Окраска задаётся секцией (is_free → зелёный)
+        # и не меняется.
+        row = _OcInfoRow(name, is_free=bool(is_free), meta=meta)
         self._cards_layout.addWidget(row)
+        # Для поиска: и по ID, и по отображаемому имени модели.
+        display = str(meta.get("name") or "")
+        haystack = ("%s %s" % (name, display)).strip().lower()
+        if self._filter_sections:
+            last = self._filter_sections[-1]
+            if last.get("subs"):
+                last["subs"][-1]["rows"].append((row, haystack))
+            else:
+                last["rows"].append((row, haystack))
 
-    def update_models(self, endpoint_models, free_models, provider_name=""):
+    def update_models(self, endpoint_models, free_models, provider_name="",
+                      model_meta=None):
         """Перестраивает карточки моделей, когда фоновый loader принёс свежие
-        данные (установка/удаление/обновление opencode и т.п.). Старые рядки
-        удаляются, затем секции строятся заново."""
+        данные (установка/удаление/обновление opencode и т.п.)."""
         self._endpoint = list(endpoint_models or [])
         self._free = [m for m in (free_models or []) if m not in self._endpoint]
         self._provider_name = provider_name or ""
+        if model_meta is not None:
+            self._meta = _oc_normalize_meta_map(model_meta)
         while self._cards_layout.count():
             item = self._cards_layout.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
         self._build_sections()
-        self._build_instruction()
-        self.adjustSize()
+        self._scroll.setMaximumHeight(self.MAX_H - 231)
+        self._apply_preferred_size()
+
+    def _add_empty_state(self):
+        frame = QFrame()
+        frame.setObjectName("ocModelEmpty")
+        frame.setStyleSheet(
+            "QFrame#ocModelEmpty {"
+            " background: rgba(31, 31, 38, 150);"
+            " border: 2px dashed rgba(78, 78, 88, 190);"
+            " border-radius: 12px; }")
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(20, 26, 20, 26)
+        lay.setSpacing(7)
+        icon = QLabel()
+        icon.setAlignment(Qt.AlignCenter)
+        try:
+            icon.setPixmap(_paint_update_glyph(
+                "Bot", 24, (105, 105, 118)))
+        except Exception:
+            pass
+        icon.setStyleSheet("background: transparent; border: none;")
+        lay.addWidget(icon)
+        lbl = QLabel(tr("Модели не найдены"))
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        lbl.setStyleSheet(
+            "color: rgb(150, 150, 162); background: transparent; border: none;")
+        lay.addWidget(lbl)
+        sub = QLabel(tr("Проверьте Base URL и ключ доступа."))
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setWordWrap(True)
+        sub.setFont(QFont("Segoe UI", 9))
+        sub.setStyleSheet(
+            "color: rgb(112, 112, 124); background: transparent; border: none;")
+        lay.addWidget(sub)
+        self._cards_layout.addWidget(frame)
+
+    # Порционное построение: списки до BUILD_SYNC_MAX элементов собираются
+    # сразу (маленькие — как раньше), крупные — порциями по времени, чтобы
+    # открытие и перестройка окна не морозили интерфейс.
+    BUILD_SYNC_MAX = 30
+    BUILD_SLICE_MS = 12.0
 
     def _build_sections(self):
         combined = self._endpoint + self._free
-        if self._endpoint:
-            self._add_section_block(
-                tr("Модели провайдера"),
-                provider_name=self._provider_name,
-                margin=True,
-            )
-            for m in self._endpoint:
-                self._add_row(m, _oc_model_color(m))
+        # Коллекции живого поиска пересобираются вместе со списком:
+        # _add_section_header кладёт шапку, _add_row — строки секции.
+        self._filter_sections = []
+        self._build_epoch = getattr(self, "_build_epoch", 0) + 1
+        self._no_results = None
+        # Сначала собираем план (очередь), затем строим его порциями:
+        # бесплатные — всегда сверху, это самый ходовой выбор.
+        queue = []
         if self._free:
-            self._add_section_block("UNLIMIT MODELS", margin=self._endpoint is not None)
-            for m in self._free:
-                self._add_row(m, _oc_model_color(m), is_free=True)
+            queue.append(("header", (tr("Бесплатные модели"),
+                                     len(self._free), "", "UNLIMIT")))
+            queue.extend(("row", (m, True)) for m in self._free)
+        if self._endpoint:
+            queue.append(("header", (tr("Модели провайдера"),
+                                     len(self._endpoint),
+                                     self._provider_name, "")))
+            # Все строки провайдера — вендорного цвета; зелёная окраска
+            # только у секции «Бесплатные модели». Явная
+            # группировка: базовое имя модели (первые два слова ID)
+            # задаёт блок по алфавиту, внутри блока — порядок эндпоинта;
+            # каждое семейство получает свой подзаголовок с точкой.
+            grouped = sorted(self._endpoint, key=_oc_model_group_key)
+            i = 0
+            while i < len(grouped):
+                fam = _oc_model_color_key(grouped[i])
+                j = i + 1
+                while (j < len(grouped)
+                       and _oc_model_color_key(grouped[j]) == fam):
+                    j += 1
+                if fam:
+                    queue.append(("subheader", (fam, j - i)))
+                queue.extend(("row", (m, False)) for m in grouped[i:j])
+                i = j
         if not combined:
-            lbl = QLabel(tr("Модели не найдены"))
-            lbl.setStyleSheet("color: rgb(120, 120, 130); background: transparent; border: none;")
-            lbl.setAlignment(Qt.AlignCenter)
-            self._cards_layout.addWidget(lbl)
+            queue.append(("empty", None))
+        self._build_queue = queue
+        self._build_combined = bool(combined)
+        self._build_pending = True
+        if len(queue) <= self.BUILD_SYNC_MAX:
+            self._build_tick(10 ** 9)
+        else:
+            # Крупный список: порции собираются за скрытым контейнером,
+            # в конце — одно мягкое появление (см. _finish_build).
+            self._cards_host.hide()
+            self._build_tick(self.BUILD_SLICE_MS)
+
+    def _build_tick(self, budget_ms=12.0):
+        """Очередная порция списка: строим элементы, пока не вышли из
+        бюджета времени; остаток — следующим тиком цикла событий."""
+        epoch = getattr(self, "_build_epoch", 0)
+        t0 = time.perf_counter()
+        while self._build_queue:
+            if (time.perf_counter() - t0) * 1000.0 > budget_ms:
+                QTimer.singleShot(
+                    0, lambda e=epoch: self._build_tick_resume(e))
+                return
+            kind, payload = self._build_queue.pop(0)
+            try:
+                if kind == "header":
+                    self._add_section_header(*payload)
+                elif kind == "subheader":
+                    self._add_family_header(*payload)
+                elif kind == "row":
+                    self._add_row(payload[0], is_free=payload[1])
+                elif kind == "empty":
+                    self._add_empty_state()
+            except Exception:
+                pass
+        try:
+            self._finish_build()
+        except RuntimeError:
+            # Окно успели закрыть/удалить — достраивать нечего.
+            pass
+
+    def _build_tick_resume(self, epoch):
+        if epoch != getattr(self, "_build_epoch", 0):
+            return
+        try:
+            self._build_tick(self.BUILD_SLICE_MS)
+        except RuntimeError:
+            pass
+
+    def _finish_build(self):
+        """Хвост списка: отступ, плашка «Нет совпадений», видимость поиска
+        и применение текущего фильтра."""
         self._cards_layout.addSpacing(6)
+        # Плашка «Нет совпадений» для поиска: в непустом списке при пустом
+        # результате все секции схлопываются, и она встаёт на их место.
+        empty = QLabel(tr("Нет совпадений"))
+        empty.setAlignment(Qt.AlignCenter)
+        empty.setFont(QFont("Segoe UI", 9))
+        empty.setStyleSheet(
+            "color: rgb(126, 128, 140); background: transparent; border: none;")
+        empty.setTextFormat(Qt.PlainText)
+        empty.hide()
+        self._cards_layout.addWidget(empty)
+        self._no_results = empty
+        # Порционную сборку крупного списка показываем одним появлением.
+        if self._cards_host.isHidden():
+            _oc_reveal_smooth(self._cards_host)
+        # Поле поиска видно, только когда есть что искать; фильтр сразу
+        # применяется к свежепостроенному списку (например, после update).
+        self.search_edit.setVisible(self._build_combined)
+        self._build_pending = False
+        self._apply_filter(self.search_edit.text())
 
-    def _build_instruction(self):
-        """Блок-инструкция внизу: как сменить модель и что список авто-обновляется."""
-        frame = QFrame()
-        frame.setObjectName("ocInfoTip")
-        frame.setStyleSheet(
-            "QFrame#ocInfoTip { background-color: rgba(30, 30, 36, 200); "
-            "border: 1px solid rgb(60, 60, 68); border-radius: 10px; }"
-        )
-        lay = QVBoxLayout(frame)
-        lay.setContentsMargins(12, 10, 12, 10)
-        lay.setSpacing(5)
+    def _apply_filter(self, text):
+        """Живой поиск: прячет строки, не совпавшие с запросом, подзаголовки
+        семейств и шапки секций, где не осталось ни одной строки; если не
+        совпало ничего, показывает плашку «Нет совпадений»."""
+        query = (text or "").strip().lower()
+        any_visible = False
+        for section in getattr(self, "_filter_sections", []):
+            visible = 0
+            for sub in section.get("subs", []):
+                sub_visible = 0
+                for row, haystack in sub["rows"]:
+                    match = (not query) or (query in haystack)
+                    row.setVisible(match)
+                    if match:
+                        sub_visible += 1
+                sub["count"].setText(str(sub_visible))
+                sub["host"].setVisible(sub_visible > 0)
+                visible += sub_visible
+            for row, haystack in section["rows"]:
+                match = (not query) or (query in haystack)
+                row.setVisible(match)
+                if match:
+                    visible += 1
+            section["count"].setText(str(visible))
+            section["host"].setVisible(visible > 0)
+            if visible:
+                any_visible = True
+        label = getattr(self, "_no_results", None)
+        if label is not None:
+            try:
+                label.setVisible(
+                    bool(getattr(self, "_filter_sections", []))
+                    and not any_visible)
+            except RuntimeError:
+                pass
 
-        tip_lbl = QLabel(tr("Как изменить модель"))
-        tip_lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        tip_lbl.setTextFormat(Qt.PlainText)
-        tip_lbl.setStyleSheet("color: rgb(225, 225, 235); background: transparent; border: none;")
-        lay.addWidget(tip_lbl)
+    def set_loading(self, loading):
+        """Оверлей «Обновляем модели…»: окно затемнено, спиннер крутится,
+        клики по списку не проходят, пока идут фоновые данные."""
+        loading = bool(loading)
+        self._loading = loading
+        ov = getattr(self, "_overlay", None)
+        if ov is None:
+            return
+        if loading:
+            ov.set_text(tr("Обновляем модели") + "…")
+            try:
+                ov.setGeometry(0, 0, self._container.width(),
+                               self._container.height())
+            except Exception:
+                pass
+            ov.raise_()
+            ov.show()
+        else:
+            ov.hide()
 
-        text = QLabel(
-            tr("В терминале opencode введите /model и выберите нужную вам модель "
-               "из списка.\n\n"
-               "Список обновляется автоматически при каждом открытии этого "
-               "окна — если моделей добавили или убрали, здесь это отразится "
-               "само.")
-        )
-        text.setWordWrap(True)
-        text.setFont(QFont("Segoe UI", 10))
-        text.setStyleSheet("color: rgb(180, 180, 192); background: transparent; border: none;")
-        lay.addWidget(text)
-        self._cards_layout.addWidget(frame)
+    def _on_refresh_clicked(self):
+        """Кнопка «Обновить»: запускаем фоновое обновление через главное
+        окно и затемняем окно спиннером до прихода свежих данных."""
+        p = self.parent()
+        if p is None or not hasattr(p, "_oc_refresh_models"):
+            return
+        try:
+            if hasattr(p, "_is_oc_installed") and not p._is_oc_installed():
+                return
+        except Exception:
+            return
+        self.set_loading(True)
+        try:
+            p._oc_refresh_models()
+        except Exception:
+            self.set_loading(False)
+            return
+        QTimer.singleShot(700, self._loading_watchdog)
+
+    def _loading_watchdog(self):
+        """Страховка: если загрузка уже не идёт, а спиннер остался — снять."""
+        if not getattr(self, "_loading", False):
+            return
+        p = self.parent()
+        busy = False
+        try:
+            busy = bool(getattr(p, "_oc_models_loading", False))
+            loader = getattr(p, "_oc_models_loader", None)
+            if loader is not None and loader.isRunning():
+                busy = True
+        except Exception:
+            busy = False
+        if not busy:
+            self.set_loading(False)
 
     def showEvent(self, event):
         super().showEvent(event)
         if hasattr(self, "_fade_in"):
             self._fade_in.start()
+
+    def closeEvent(self, event):
+        """Плавное закрытие, как у остальных окон: окно сначала тает
+        (~220 мс), и только потом закрывается — без резкого исчезновения."""
+        if getattr(self, "_closing", False):
+            super().closeEvent(event)
+            return
+        self._closing = True
+        event.ignore()
+        fade = QPropertyAnimation(self, b"windowOpacity", self)
+        fade.setDuration(220)
+        fade.setStartValue(self.windowOpacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(self.close)
+        fade.start()
+        self._fade_out = fade
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -24578,12 +25959,13 @@ class OcModelDialog(QDialog):
 
 class _OcModelsLoader(QThread):
     """Фоновая загрузка моделей вкладки Custom URL без блокировки UI:
-    HTTP {base_url}/models (список ID) + opencode models (v1 --verbose:
-    capabilities.reasoning для эндпоинта и для бесплатных моделей opencode;
-    v2 — плоский список, reasoning неизвестен).
+    HTTP {base_url}/models (ID + контекст/vision, если шлюз их отдаёт)
+    и бесплатный каталог opencode. Недостающие поля добираются из
+    локального models.json, при необходимости — из свежего models.dev.
     Методы owner не трогают GUI, поэтому их вызов из потока безопасен."""
 
-    loaded = Signal(list, dict, list, dict)  # endpoint_ids, endpoint_reasoning, free_ids, free_reasoning
+    # endpoint_ids, endpoint_meta, free_ids, free_meta
+    loaded = Signal(list, dict, list, dict)
 
     def __init__(self, owner, base_url, api_key, provider):
         super().__init__()
@@ -24594,26 +25976,39 @@ class _OcModelsLoader(QThread):
 
     def run(self):
         model_ids = []
-        reasoning = {}
+        endpoint_meta = {}
         if self._base_url:
             try:
-                model_ids = self._owner._oc_fetch_models(self._base_url, self._api_key)
+                model_ids, endpoint_meta = self._owner._oc_fetch_models_data(
+                    self._base_url, self._api_key)
             except Exception:
-                model_ids = []
+                model_ids, endpoint_meta = [], {}
             if model_ids:
                 try:
                     cfg_path = self._owner._write_oc_provider_config(
                         self._base_url, self._api_key, list(model_ids)
                     )
-                    reasoning = self._owner._oc_fetch_capabilities(self._provider, cfg_path)
+                    caps = self._owner._oc_fetch_capabilities(
+                        self._provider, cfg_path)
                 except Exception:
-                    reasoning = {}
-        free_ids, free_reasoning = [], {}
+                    caps = {}
+                for mid in model_ids:
+                    extra = caps.get(mid) or caps.get(_oc_short_label(mid))
+                    merged = _oc_merge_meta(extra, endpoint_meta.get(mid))
+                    if merged:
+                        endpoint_meta[mid] = merged
+                try:
+                    endpoint_meta = self._owner._oc_model_meta_for_ids(
+                        model_ids, endpoint_meta, provider=self._provider)
+                except Exception:
+                    pass
+        free_ids, free_meta = [], {}
         try:
-            free_ids, free_reasoning = self._owner._oc_fetch_free_catalog()
+            free_ids, free_meta = self._owner._oc_fetch_free_catalog()
         except Exception:
             pass
-        self.loaded.emit(list(model_ids), reasoning, list(free_ids), free_reasoning)
+        self.loaded.emit(list(model_ids), endpoint_meta,
+                         list(free_ids), free_meta)
 
 
 class OpenAIModelDialog(QDialog):
@@ -24925,7 +26320,7 @@ class KeyToggle(QWidget):
             tgt = getattr(self, name + "_target")
             d = tgt - cur
             if abs(d) > 0.003:
-                setattr(self, name, cur + d * 0.07)
+                setattr(self, name, _hover_move(cur, d))
                 changed = True
             elif cur != tgt:
                 setattr(self, name, tgt)
@@ -25155,15 +26550,15 @@ class KeyCard(QFrame):
         name_row = QHBoxLayout()
         name_row.setContentsMargins(0, 0, 0, 0)
         name_row.setSpacing(6)
-        self.edit_btn = QPushButton("🖉")
+        self.edit_btn = _FadeHoverButton(
+            "🖉",
+            ((150, 150, 158), (0, 0, 0, 0), (0, 0, 0)),
+            ((120, 160, 235), (120, 160, 235, 35), (0, 0, 0)),
+            border_w=0, radius=5)
         self.edit_btn.setCursor(Qt.PointingHandCursor)
         self.edit_btn.setFixedSize(20, 20)
         self.edit_btn.setFont(QFont("Segoe UI Symbol", 11))
         self.edit_btn.setToolTip(tr("Изменить ключ"))
-        self.edit_btn.setStyleSheet(
-            "QPushButton{color: rgb(150,150,158); background: transparent;"
-            "border: none; border-radius: 5px;}"
-            "QPushButton:hover{color: rgb(120,160,235); background: rgba(120,160,235,35);}")
         self.edit_btn.clicked.connect(self._on_edit_clicked)
         name_row.addWidget(self.edit_btn, 0, Qt.AlignVCenter)
         self.name_lbl = _ElidingLabel(key.get("name", "Ключ"))
@@ -25586,7 +26981,7 @@ class _LimitTypeCard(QPushButton):
     def _tick(self):
         d = self._hover_target - self._hover
         if abs(d) > 0.005:
-            self._hover += d * 0.15
+            self._hover = _hover_move(self._hover, d)
             self.update()
         elif self._hover != self._hover_target:
             self._hover = self._hover_target
@@ -25815,11 +27210,13 @@ class _NumberSpinner(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
 
-        self.btn_dec = QPushButton("−")
+        self.btn_dec = _FadeHoverButton(
+            "−",
+            ((210, 210, 215), (30, 30, 35, 255), (70, 70, 80)),
+            ((210, 210, 215), (46, 46, 55, 255), (120, 120, 130)))
         self.btn_dec.setFixedSize(30, 44)
         self.btn_dec.setCursor(Qt.PointingHandCursor)
         self.btn_dec.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        self.btn_dec.setStyleSheet(self._btn_css())
         self.btn_dec.clicked.connect(lambda: self.set_value(self._value - 1))
         enable_pixel_ripple(self.btn_dec, (130, 130, 140))
         lay.addWidget(self.btn_dec)
@@ -25833,22 +27230,16 @@ class _NumberSpinner(QWidget):
         self.num_lbl.setFixedSize(48, 44)
         lay.addWidget(self.num_lbl)
 
-        self.btn_inc = QPushButton("+")
+        self.btn_inc = _FadeHoverButton(
+            "+",
+            ((210, 210, 215), (30, 30, 35, 255), (70, 70, 80)),
+            ((210, 210, 215), (46, 46, 55, 255), (120, 120, 130)))
         self.btn_inc.setFixedSize(30, 44)
         self.btn_inc.setCursor(Qt.PointingHandCursor)
         self.btn_inc.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        self.btn_inc.setStyleSheet(self._btn_css())
         self.btn_inc.clicked.connect(lambda: self.set_value(self._value + 1))
         enable_pixel_ripple(self.btn_inc, (130, 130, 140))
         lay.addWidget(self.btn_inc)
-
-    @staticmethod
-    def _btn_css():
-        return (
-            "QPushButton{color: rgb(210,210,215); background: rgb(30,30,35);"
-            "border: 1.5px solid rgb(70,70,80); border-radius: 8px;}"
-            "QPushButton:hover{background: rgb(46,46,55); border-color: rgb(120,120,130);}"
-        )
 
     def value(self):
         return self._value
@@ -26184,7 +27575,7 @@ class MonthPillSelector(QWidget):
             cur = self._hover_alpha[i]
             d = self._hover_target[i] - cur
             if abs(d) > 0.003:
-                self._hover_alpha[i] = cur + d * 0.12
+                self._hover_alpha[i] = _hover_move(cur, d)
                 changed = True
             elif cur != self._hover_target[i]:
                 self._hover_alpha[i] = self._hover_target[i]
@@ -27262,11 +28653,11 @@ class AnimatedComboBox(QComboBox):
     def _animate_hover(self):
         if self._is_hovered:
             if self._hover_progress < 1.0:
-                self._hover_progress = min(1.0, self._hover_progress + 0.1)
+                self._hover_progress = min(1.0, self._hover_progress + HOVER_STEP_20)
                 self._apply_style()
         else:
             if self._hover_progress > 0.0:
-                self._hover_progress = max(0.0, self._hover_progress - 0.1)
+                self._hover_progress = max(0.0, self._hover_progress - HOVER_STEP_20)
                 self._apply_style()
 
     def _apply_style(self):
@@ -27331,7 +28722,7 @@ class _CloseButton(QPushButton):
     def _tick(self):
         target = 1.0 if self._is_hovered else 0.0
         if abs(self._progress - target) > 0.01:
-            self._progress += 0.1 if target > self._progress else -0.1
+            self._progress += HOVER_STEP_20 if target > self._progress else -HOVER_STEP_20
             self._progress = max(0.0, min(1.0, self._progress))
             self.update()
         # Плавное затемнение при нажатии (вместо пиксельной волны).
@@ -28241,6 +29632,64 @@ class _OcClickFrame(QFrame):
         super().mouseReleaseEvent(event)
 
 
+class _HoverGlowFrame(_OcClickFrame):
+    """Кликабельная строка с плавным «загоранием» рамки при наведении —
+    точно как у кнопок приложения (StyledButton): серая 2px плавно
+    перетекает в цвет акцента за HOVER_STEP_20, фон не меняется.
+    Используется строками «Доступных провайдеров»."""
+
+    BASE_BORDER = (60, 60, 65)
+
+    def __init__(self, hover_rgb=(120, 160, 235), radius=8, parent=None):
+        super().__init__(parent)
+        self._hover_rgb = tuple(hover_rgb)
+        self._radius = int(radius)
+        self._progress = 0.0
+        self._is_hovered = False
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._apply_style()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        # Таймер тикает только пока прогресс не догнал цель.
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        if not self._timer.isActive():
+            self._timer.start(20)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        if not self._timer.isActive():
+            self._timer.start(20)
+        super().leaveEvent(event)
+
+    def _tick(self):
+        target = 1.0 if self._is_hovered else 0.0
+        if abs(self._progress - target) <= HOVER_STEP_20:
+            self._progress = target
+            self._apply_style()
+            self._timer.stop()
+            return
+        if self._progress < target:
+            self._progress = min(target, self._progress + HOVER_STEP_20)
+        else:
+            self._progress = max(target, self._progress - HOVER_STEP_20)
+        self._apply_style()
+
+    def _apply_style(self):
+        r, g, b = self._hover_rgb
+        base_r, base_g, base_b = self.BASE_BORDER
+        p = max(0.0, min(1.0, self._progress))
+        br = int(base_r + (r - base_r) * p)
+        bg = int(base_g + (g - base_g) * p)
+        bb = int(base_b + (b - base_b) * p)
+        self.setStyleSheet(
+            "QFrame { background-color: rgba(30, 30, 35, 130);"
+            " border: 2px solid rgb(%d, %d, %d); border-radius: %dpx; }"
+            % (br, bg, bb, self._radius))
+
+
 class _OcCatalogLoader(QThread):
     """Фоновая загрузка глобального каталога провайдеров opencode
     (~/.cache/opencode/models.json — кэш каталога models.dev). Если файла
@@ -28500,9 +29949,11 @@ class OpencodeProvidersDialog(QDialog):
     после «ОК» провайдер реально подключается — креда пишется в auth.json
     (тот же механизм, что у `opencode auth login`).
 
-    Списки обновляются при каждом открытии окна: _OcCatalogLoader грузит
-    каталог в фоне, так что если opencode сам добавил/убрал провайдеров —
-    при следующем открытии это сразу видно."""
+    Внутри главного окна списки берутся из его кэша (наполняется при запуске
+    приложения) — окно открывается мгновенно, без загрузки при каждом
+    заходе; кнопка «Обновить» внутри запускает фоновую загрузку заново.
+    Самостоятельное окно (без родителя) грузит каталог своим
+    _OcCatalogLoader, как раньше."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -28524,13 +29975,31 @@ class OpencodeProvidersDialog(QDialog):
             os.path.expanduser("~"), ".cache", "opencode", "models.json"
         )
 
-        # Фоновая загрузка каталога провайдеров (список «доступные»).
-        # Окно пересоздаётся при каждом открытии, поэтому каталог и списки
-        # обновляются при каждом открытии окна.
+        # Внутри главного окна списки приходят из его кэша (наполняется при
+        # старте приложения): окно открывается мгновенно, без загрузки при
+        # каждом заходе; обновление — кнопкой «Обновить» (затемнение +
+        # спиннер). Без родителя (автономное окно) — свой фоновый загрузчик.
         self._catalog = {}
         self._v2_accounts = {}  # аккаунты v2 (SQLite): {id: {name, creds}}
         self._catalog_loader = None
-        self._start_catalog_load()
+        self._busy = False
+        self._build_queue = []
+        self._refresh_epoch = 0
+        self._standalone_seen = 0
+        parent = self.parent()
+        self._cache_owner = (
+            parent
+            if callable(getattr(parent, "_oc_start_catalog_load", None))
+            else None)
+        if self._cache_owner is not None:
+            cache = getattr(self._cache_owner, "_oc_catalog", None)
+            if isinstance(cache, dict):
+                self._catalog = cache
+            accounts = getattr(self._cache_owner, "_oc_catalog_accounts", None)
+            if isinstance(accounts, dict):
+                self._v2_accounts = accounts
+        else:
+            self._start_catalog_load()
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -28544,6 +30013,7 @@ class OpencodeProvidersDialog(QDialog):
                 border-radius: 16px;
             }
         """)
+        self._container = container  # контейнер для оверлея загрузки
 
         layout = QVBoxLayout(container)
         layout.setContentsMargins(26, 18, 26, 22)
@@ -28567,7 +30037,7 @@ class OpencodeProvidersDialog(QDialog):
         title_row.addWidget(_close)
         layout.addLayout(title_row)
 
-        info = QLabel(tr("Сверху — подключённые провайдеры, ниже — доступные из каталога opencode. Клик по доступному подключает его по API-ключу. Список обновляется при открытии окна."))
+        info = QLabel(tr("Сверху — подключённые провайдеры, ниже — доступные из каталога opencode. Клик по доступному подключает его по API-ключу. Каталог обновляется при запуске приложения; кнопка «Обновить» — вручную."))
         info.setFont(QFont("Segoe UI", 9))
         info.setAlignment(Qt.AlignCenter)
         info.setWordWrap(True)
@@ -28591,7 +30061,17 @@ class OpencodeProvidersDialog(QDialog):
             }
         """)
         self.search_edit.textChanged.connect(self._on_search)
-        layout.addWidget(self.search_edit)
+        # Поиск + кнопка «Обновить»: каталог обновляется при запуске
+        # приложения, кнопка — ручное обновление (затемнение + спиннер).
+        search_row = QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.setSpacing(8)
+        search_row.addWidget(self.search_edit, 1)
+        self.refresh_btn = StyledButton(tr("Обновить"))
+        self.refresh_btn.setFixedHeight(36)
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
+        search_row.addWidget(self.refresh_btn)
+        layout.addLayout(search_row)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -28635,6 +30115,20 @@ class OpencodeProvidersDialog(QDialog):
         self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self.refresh()
+
+        # Оверлей загрузки (затемнение + спиннер). Если данных ещё нет (кэш
+        # главного окна не успел загрузиться при старте) — показываем его
+        # сразу и просим главное окно догрузить каталог в фоне.
+        self._overlay = _BusyOverlay(container, radius=16.0,
+                                     spin_color=(120, 160, 235))
+        if (self._cache_owner is not None
+                and getattr(self._cache_owner, "_oc_catalog", None) is None):
+            self._set_busy(True)
+            try:
+                self._cache_owner._oc_start_catalog_load()
+            except Exception:
+                self._set_busy(False)
+            QTimer.singleShot(1500, self._busy_watchdog)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -28716,12 +30210,102 @@ class OpencodeProvidersDialog(QDialog):
 
     def _on_catalog_loaded(self, slim):
         self._catalog = slim or {}
+        self._standalone_seen = getattr(self, "_standalone_seen", 0) + 1
         self.refresh()
+        self._maybe_hide_busy()
 
     def _on_accounts_loaded(self, accounts):
         """Аккаунты opencode v2 из фонового потока: {id: {name, creds}}."""
         self._v2_accounts = accounts if isinstance(accounts, dict) else {}
+        self._standalone_seen = getattr(self, "_standalone_seen", 0) + 1
         self.refresh()
+        self._maybe_hide_busy()
+
+    def apply_cache(self, catalog, accounts):
+        """Свежие данные из кэша главного окна (фоновая загрузка завершилась):
+        перестраиваем списки и снимаем затемнение, если оно было."""
+        changed = False
+        if isinstance(catalog, dict) and catalog is not self._catalog:
+            self._catalog = catalog
+            changed = True
+        if isinstance(accounts, dict) and accounts is not self._v2_accounts:
+            self._v2_accounts = accounts
+            changed = True
+        if changed:
+            self.refresh()
+        self._maybe_hide_busy()
+
+    def _set_busy(self, on):
+        """Показать/скрыть затемнение со спиннером, пока идут фоновые данные."""
+        self._busy = bool(on)
+        ov = getattr(self, "_overlay", None)
+        if ov is None:
+            return
+        if on:
+            ov.set_text(tr("Обновляем провайдеров") + "…")
+            try:
+                ov.setGeometry(0, 0, self._container.width(),
+                               self._container.height())
+            except Exception:
+                pass
+            ov.raise_()
+            ov.show()
+        else:
+            ov.hide()
+
+    def _maybe_hide_busy(self):
+        """Снять затемнение, когда фоновая загрузка закончилась (в главном
+        окне — по его флагу, автономно — по обоим колбэкам загрузчика)."""
+        if not getattr(self, "_busy", False):
+            return
+        owner = self._cache_owner
+        try:
+            if owner is not None:
+                if getattr(owner, "_oc_catalog_loading", False):
+                    return
+            else:
+                loader = getattr(self, "_catalog_loader", None)
+                if loader is not None and loader.isRunning():
+                    return
+                if getattr(self, "_standalone_seen", 0) < 2:
+                    return
+        except Exception:
+            pass
+        self._set_busy(False)
+
+    def _busy_watchdog(self):
+        """Страховка: загрузка уже не идёт, а спиннер остался — снять его."""
+        if not getattr(self, "_busy", False):
+            return
+        owner = self._cache_owner
+        try:
+            if owner is not None:
+                if getattr(owner, "_oc_catalog_loading", False):
+                    return
+            else:
+                loader = getattr(self, "_catalog_loader", None)
+                if loader is not None and loader.isRunning():
+                    return
+        except Exception:
+            pass
+        self._set_busy(False)
+
+    def _on_refresh_clicked(self):
+        """Кнопка «Обновить»: фоновое обновление каталога через главное окно
+        (или своим загрузчиком, если окно автономное). На время загрузки
+        окно затемняется спиннером «Обновляем провайдеров…»."""
+        owner = self._cache_owner
+        self._set_busy(True)
+        if owner is not None:
+            try:
+                owner._oc_start_catalog_load()
+            except Exception:
+                self._set_busy(False)
+                return
+        else:
+            self._standalone_seen = 0
+            self._start_catalog_load()
+        QTimer.singleShot(700, self._busy_watchdog)
 
     def _section_header(self, text, color):
         lbl = QLabel(text)
@@ -28740,7 +30324,15 @@ class OpencodeProvidersDialog(QDialog):
         hay = " ".join([str(pid)] + [t for t in texts if t]).lower()
         return q in hay
 
+    # Порционное построение: списки до BUILD_SYNC_MAX элементов собираются
+    # сразу, крупные — порциями по времени, чтобы поиск/обновление не
+    # морозили интерфейс (в каталоге opencode сотни провайдеров).
+    BUILD_SYNC_MAX = 30
+    BUILD_SLICE_MS = 12.0
+
     def refresh(self):
+        # Эпоха сборки: незавершённые порции прошлой перестройки отменяются.
+        self._refresh_epoch = getattr(self, "_refresh_epoch", 0) + 1
         while self.list_layout.count():
             item = self.list_layout.takeAt(0)
             w = item.widget()
@@ -28763,6 +30355,7 @@ class OpencodeProvidersDialog(QDialog):
 
         if not records and not self._catalog:
             # Каталог ещё грузится либо недоступен.
+            self._build_queue = []
             self.empty_label.show()
             self.scroll.hide()
             return
@@ -28771,85 +30364,110 @@ class OpencodeProvidersDialog(QDialog):
 
         no_match = bool(self._search.strip()) and not conn and not avail
 
+        # Очередь элементов: сначала план, затем порционная сборка.
+        queue = []
         # ── Секция 1: подключённые провайдеры ──
         if not no_match:
-            self.list_layout.addWidget(
-                self._section_header(tr("Подключённые провайдеры"), (52, 211, 153))
-            )
+            queue.append(("header", (tr("Подключённые провайдеры"),
+                                     (52, 211, 153))))
         if conn:
-            for pid in conn:
-                self.list_layout.addWidget(self._build_row(records[pid]))
+            queue.extend(("row", records[pid]) for pid in conn)
         elif not no_match:
-            none_lbl = QLabel(
+            queue.append(("label", (
                 tr("Нет совпадений") if self._search.strip()
-                else tr("Провайдеров не найдено")
-            )
-            none_lbl.setFont(QFont("Segoe UI", 9))
-            none_lbl.setAlignment(Qt.AlignCenter)
-            none_lbl.setStyleSheet(
-                "color: #6a6d78; background: transparent; border: none;"
-            )
-            self.list_layout.addWidget(none_lbl)
-
+                else tr("Провайдеров не найдено"), 9)))
         if not no_match:
-            self.list_layout.addSpacing(14)
+            queue.append(("spacing", 14))
 
         # ── Секция 2: доступные провайдеры (клик = подключить) ──
         if not no_match:
-            self.list_layout.addWidget(
-                self._section_header(tr("Доступные провайдеры"), (120, 160, 235))
-            )
+            queue.append(("header", (tr("Доступные провайдеры"),
+                                     (120, 160, 235))))
         if not self._catalog:
             if not no_match:
-                load_lbl = QLabel(tr("Каталог провайдеров загружается…"))
-                load_lbl.setFont(QFont("Segoe UI", 9))
-                load_lbl.setAlignment(Qt.AlignCenter)
-                load_lbl.setStyleSheet(
-                    "color: #6a6d78; background: transparent; border: none;"
-                )
-                self.list_layout.addWidget(load_lbl)
+                queue.append(
+                    ("label", (tr("Каталог провайдеров загружается…"), 9)))
         elif not avail:
             if not no_match:
-                all_lbl = QLabel(
+                queue.append(("label", (
                     tr("Нет совпадений") if self._search.strip()
-                    else tr("Все провайдеры каталога уже подключены")
-                )
-                all_lbl.setFont(QFont("Segoe UI", 9))
-                all_lbl.setAlignment(Qt.AlignCenter)
-                all_lbl.setStyleSheet(
-                    "color: #6a6d78; background: transparent; border: none;"
-                )
-                self.list_layout.addWidget(all_lbl)
+                    else tr("Все провайдеры каталога уже подключены"), 9)))
         else:
-            for pid in avail:
-                self.list_layout.addWidget(
-                    self._build_available_row(pid, self._catalog[pid])
-                )
+            queue.extend(("avail", pid) for pid in avail)
         if no_match:
-            nm_lbl = QLabel(tr("Нет совпадений"))
-            nm_lbl.setFont(QFont("Segoe UI", 10))
-            nm_lbl.setAlignment(Qt.AlignCenter)
-            nm_lbl.setStyleSheet(
-                "color: #6a6d78; background: transparent; border: none;"
-            )
-            self.list_layout.addWidget(nm_lbl)
-        self.list_layout.addStretch(1)
+            queue.append(("label", (tr("Нет совпадений"), 10)))
+        queue.append(("stretch", None))
+        self._build_queue = queue
+        if len(queue) <= self.BUILD_SYNC_MAX:
+            self._build_tick(10 ** 9)
+        else:
+            # Крупный список строится за скрытым контейнером и показывается
+            # одним плавным появлением — без построчного дёргания.
+            self.list_widget.hide()
+            self._build_tick(self.BUILD_SLICE_MS)
+
+    def _build_tick(self, budget_ms=12.0):
+        """Очередная порция списка: строим элементы, пока не вышли из
+        бюджета времени; остаток — следующим тиком цикла событий. Свежий
+        refresh отменяет незавершённую порцию (по эпохе сборки)."""
+        epoch = getattr(self, "_refresh_epoch", 0)
+        t0 = time.perf_counter()
+        while self._build_queue:
+            if (time.perf_counter() - t0) * 1000.0 > budget_ms:
+                QTimer.singleShot(
+                    0, lambda e=epoch: self._build_tick_resume(e))
+                return
+            kind, payload = self._build_queue.pop(0)
+            try:
+                if kind == "header":
+                    self.list_layout.addWidget(
+                        self._section_header(payload[0], payload[1]))
+                elif kind == "label":
+                    lbl = QLabel(payload[0])
+                    lbl.setFont(QFont("Segoe UI", payload[1]))
+                    lbl.setAlignment(Qt.AlignCenter)
+                    lbl.setStyleSheet(
+                        "color: #6a6d78; background: transparent; border: none;")
+                    self.list_layout.addWidget(lbl)
+                elif kind == "row":
+                    self.list_layout.addWidget(self._build_row(payload))
+                elif kind == "avail":
+                    self.list_layout.addWidget(
+                        self._build_available_row(payload,
+                                                  self._catalog[payload]))
+                elif kind == "spacing":
+                    self.list_layout.addSpacing(int(payload))
+                elif kind == "stretch":
+                    self.list_layout.addStretch(1)
+            except Exception:
+                pass
+        # Список собран целиком: показать одним плавным появлением, если
+        # строили за скрытым контейнером (крупный список).
+        try:
+            if self.list_widget.isHidden():
+                _oc_reveal_smooth(self.list_widget)
+        except RuntimeError:
+            return
+
+    def _build_tick_resume(self, epoch):
+        if epoch != getattr(self, "_refresh_epoch", 0):
+            return
+        try:
+            self._build_tick(self.BUILD_SLICE_MS)
+        except RuntimeError:
+            # Окно закрыли/удалили — достраивать нечего.
+            pass
 
     def _on_search(self, text):
         self._search = text
         self.refresh()
 
     def _build_available_row(self, pid, meta):
-        """Строка каталога: клик по ней — диалог ввода API-ключа."""
-        row = _OcClickFrame()
+        """Строка каталога: клик по ней — диалог ввода API-ключа.
+        Ховер плавный, как у кнопок: рамка серая 2px → голубая."""
+        row = _HoverGlowFrame(hover_rgb=(120, 160, 235))
         row.setCursor(Qt.PointingHandCursor)
         row.setToolTip(tr("Подключить"))
-        row.setStyleSheet("""
-            QFrame { background-color: rgba(30, 30, 35, 130);
-                     border: 1px solid rgb(55, 55, 60); border-radius: 8px; }
-            QFrame:hover { background-color: rgba(40, 40, 48, 200);
-                           border: 1px solid rgb(120, 160, 235); }
-        """)
         row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         lay = QHBoxLayout(row)
         lay.setContentsMargins(10, 7, 10, 7)
@@ -29615,8 +31233,10 @@ class GlowDialogButton(QPushButton):
         self.setStyleSheet("QPushButton { background: transparent; border: none; }")
 
         self._anim = QPropertyAnimation(self, b"progress", self)
-        self._anim.setDuration(140)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        # 180 мс и линейный ход — единая скорость и характер «загорания»,
+        # как у кнопок приложения (StyledButton).
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QEasingCurve.Linear)
 
     def _get_progress(self):
         return self._progress
@@ -31374,12 +32994,15 @@ class _NavItem(QPushButton):
 
     def _tick(self):
         moved = False
-        d = self._hover_target - self._hover
-        if abs(d) > 0.005:
-            self._hover += d * 0.2
-            moved = True
-        elif self._hover != self._hover_target:
-            self._hover = self._hover_target
+        target = self._hover_target
+        if self._hover != target:
+            # Чуть медленнее кнопок — так попросили: линейный шаг, ~208 мс
+            # до полного загорания при тике 16 мс.
+            step = NAV_HOVER_STEP
+            if self._hover < target:
+                self._hover = min(target, self._hover + step)
+            else:
+                self._hover = max(target, self._hover - step)
             moved = True
         da = self._active_target - self._active_t
         if abs(da) > 0.004:
@@ -31409,10 +33032,12 @@ class _NavItem(QPushButton):
         dot_x = 28.0
         cy = h / 2.0
 
-        # Подложка: яркая при наведении, плотная у активного (плавные прогрессы)
+        # Подложка: яркая при наведении, плотная у активного (плавные
+        # прогрессы). У активного пункта ховер НЕ добавляет вторую
+        # подсветку поверх выбранной — при aa >= ha остаётся ровно она.
         aa, ha = self._active_t, self._hover
         if aa > 0.01 or ha > 0.01:
-            alpha = max(int(40 * aa), int(46 * ha))
+            alpha = int(40 * aa) if aa >= ha else int(46 * ha)
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(r, g, b, alpha))
             p.drawRoundedRect(QRectF(8.0, 4.0, w - 14.0, h - 8.0), 9.0, 9.0)
@@ -31618,7 +33243,7 @@ class _LinkIconButton(QPushButton):
     def _animate_hover(self):
         target = 1.0 if self._is_hovered else 0.0
         if abs(target - self._t) > 0.001:
-            step = 0.12 if target > self._t else -0.12
+            step = HOVER_STEP_20 if target > self._t else -HOVER_STEP_20
             self._t = min(1.0, max(0.0, self._t + step))
             self._apply_icon()
 
@@ -31815,6 +33440,11 @@ def _paint_update_glyph(name, size, color):
             for y, x in ((7.0, 15.5), (12.0, 8.5), (17.0, 13.5)):
                 p.drawLine(QPointF(4.0, y), QPointF(20.0, y))
                 _dot(x, y, 2.4)
+        elif name == "Gauge":
+            # Спидометр: верхняя дуга + стрелка (бейдж EFFORT).
+            p.drawArc(QRectF(4.0, 6.0, 16.0, 16.0), 0, 180 * 16)
+            p.drawLine(QPointF(12.0, 14.0), QPointF(16.2, 9.8))
+            _dot(12.0, 14.0, 1.3)
         elif name == "Gear":
             p.drawEllipse(QRectF(5.5, 5.5, 13.0, 13.0))
             p.drawEllipse(QRectF(9.8, 9.8, 4.4, 4.4))
@@ -31864,6 +33494,39 @@ def _paint_update_glyph(name, size, color):
 _APP_UPDATES_CACHE = None
 
 
+def _normalize_update_optimizations(raw):
+    """Оптимизации в updates.json: список строк или групп {title, points}.
+
+    Возвращает список {title, points}. Плоский список строк собирается
+    в одну группу, чтобы в окне была одна фиолетовая панель «Оптимизация»,
+    а не отдельная панель на каждый пункт."""
+    groups = []
+    plain = []
+    try:
+        for item in (raw or []):
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    plain.append(text)
+                continue
+            if isinstance(item, dict):
+                if plain:
+                    groups.append({"title": "", "points": plain})
+                    plain = []
+                points = [str(x).strip() for x in (item.get("points") or [])
+                          if str(x).strip()]
+                if points:
+                    groups.append({
+                        "title": str(item.get("title") or "").strip(),
+                        "points": points,
+                    })
+        if plain:
+            groups.append({"title": "", "points": plain})
+    except Exception:
+        return []
+    return groups
+
+
 def load_app_updates(force=False):
     """Читает updates.json (кэш). Возвращает список валидных записей."""
     global _APP_UPDATES_CACHE
@@ -31891,6 +33554,8 @@ def load_app_updates(force=False):
                         "title": str(ru.get("title") or ""),
                         "features": [x for x in (ru.get("features") or [])
                                      if isinstance(x, dict)],
+                        "optimizations": _normalize_update_optimizations(
+                            ru.get("optimizations")),
                         "fixes": [str(x) for x in (ru.get("fixes") or [])],
                         "note": ru.get("note") if isinstance(
                             ru.get("note"), dict) else None,
@@ -31899,6 +33564,8 @@ def load_app_updates(force=False):
                         "title": str(en.get("title") or ""),
                         "features": [x for x in (en.get("features") or [])
                                      if isinstance(x, dict)],
+                        "optimizations": _normalize_update_optimizations(
+                            en.get("optimizations")),
                         "fixes": [str(x) for x in (en.get("fixes") or [])],
                         "note": en.get("note") if isinstance(
                             en.get("note"), dict) else None,
@@ -31988,7 +33655,8 @@ class _UpdatesBellButton(QPushButton):
     def _tick(self):
         target = 1.0 if (self._fresh or self._hovered) else 0.0
         if abs(target - self._appear) > 0.004:
-            step = 0.06 if target > self._appear else -0.06
+            # 0.17 за 30 мс — ~180 мс до полного загорания, как у кнопок.
+            step = 0.17 if target > self._appear else -0.17
             self._appear = min(1.0, max(0.0, self._appear + step))
             self.update()
         if self._fresh:
@@ -32079,7 +33747,7 @@ class _UpdateCard(QFrame):
     def _tick(self):
         target = 1.0 if self._hovered else 0.0
         if abs(target - self._t) > 0.004:
-            step = 0.09 if target > self._t else -0.09
+            step = HOVER_STEP_20 if target > self._t else -HOVER_STEP_20
             self._t = min(1.0, max(0.0, self._t + step))
             self.update()
 
@@ -32166,7 +33834,7 @@ class UpdatesDialog(QDialog):
         header.setWordWrap(True)
         header.setText(
             "<div style=\"font-size:11pt; font-weight:bold; "
-            "color:rgb(217, 119, 87);\">%s</div>"
+            "color:rgb(236, 236, 241);\">%s</div>"
             "<div style=\"font-size:9pt; color:rgb(154, 154, 166); "
             "margin-top:2px;\">%s</div>"
             % (tr("Обновления"), tr("Что нового в приложении.")))
@@ -32442,23 +34110,37 @@ class UpdatesDialog(QDialog):
         lay.addWidget(_AccentDot((217, 119, 87), 9, period=1.6), 0, Qt.AlignVCenter)
         return box
 
-    def _group_title(self, text, green=False):
+    def _group_title(self, text, green=False, purple=False):
         lbl = QLabel(text.upper())
         lbl.setFont(QFont("Segoe UI", 8, QFont.Bold))
-        color = "rgb(126, 192, 140)" if green else "rgb(217, 119, 87)"
+        if green:
+            color = "rgb(126, 192, 140)"
+        elif purple:
+            color = "rgb(183, 148, 255)"
+        else:
+            color = "rgb(217, 119, 87)"
         lbl.setStyleSheet(
             "color: %s; background: transparent; border: none; margin-top: 4px;"
             % color)
         return lbl
 
-    def _icon_box(self, name, green=False):
+    def _icon_box(self, name, green=False, purple=False):
         box = QLabel()
-        box.setObjectName("updFixIcon" if green else "updFeatIcon")
+        if purple:
+            box.setObjectName("updOptIcon")
+        else:
+            box.setObjectName("updFixIcon" if green else "updFeatIcon")
         box.setFixedSize(24, 24)
         box.setAlignment(Qt.AlignCenter)
-        glyph = "Check" if green else (
-            name if name in _UPDATE_ICON_NAMES else "Sparkles")
-        color = (126, 192, 140) if green else (217, 119, 87)
+        if green:
+            glyph = "Check"
+            color = (126, 192, 140)
+        elif purple:
+            glyph = name if name in _UPDATE_ICON_NAMES else "Check"
+            color = (183, 148, 255)
+        else:
+            glyph = name if name in _UPDATE_ICON_NAMES else "Sparkles"
+            color = (217, 119, 87)
         try:
             box.setPixmap(_paint_update_glyph(glyph, 15, color))
         except Exception:
@@ -32472,6 +34154,11 @@ class UpdatesDialog(QDialog):
             QLabel#updFixIcon {
                 background-color: rgba(126, 192, 140, 30);
                 border: 2px solid rgba(126, 192, 140, 76);
+                border-radius: 8px;
+            }
+            QLabel#updOptIcon {
+                background-color: rgba(183, 148, 255, 30);
+                border: 2px solid rgba(183, 148, 255, 76);
                 border-radius: 8px;
             }
         """)
@@ -32599,16 +34286,83 @@ class UpdatesDialog(QDialog):
                 row.addWidget(t, 1)
                 lay.addLayout(row)
 
+        optimizations = loc.get("optimizations") or []
+        for group in optimizations:
+            if not isinstance(group, dict):
+                continue
+            points = group.get("points") or []
+            if not points:
+                continue
+            # Отдельная фиолетовая панель: заголовок «Оптимизация»,
+            # мягкий градиент, рамка и лёгкие галочки без квадратных
+            # подложек — чтобы блок не выглядел как ещё один список
+            # исправлений и не спорил с терракотовой карточкой.
+            # Панель печатается ПОСЛЕ списка исправлений — так попросили.
+            panel = QFrame()
+            panel.setObjectName("updOptPanel")
+            panel.setAttribute(Qt.WA_StyledBackground, True)
+            panel.setStyleSheet(
+                "QFrame#updOptPanel {"
+                " background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+                " stop:0 rgba(96, 67, 152, 58),"
+                " stop:1 rgba(43, 33, 64, 30));"
+                " border: 2px solid rgba(183, 148, 255, 0.34);"
+                " border-radius: 12px; }")
+            play = QVBoxLayout(panel)
+            play.setContentsMargins(12, 10, 12, 10)
+            play.setSpacing(6)
+            head = QHBoxLayout()
+            head.setContentsMargins(0, 0, 0, 0)
+            head.setSpacing(8)
+            head.addWidget(self._icon_box("Cpu", purple=True))
+            title = QLabel((group.get("title") or tr("Оптимизация")).upper())
+            title.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            title.setStyleSheet(
+                "color: rgb(236, 236, 241);"
+                " background: transparent; border: none;")
+            head.addWidget(title, 1)
+            play.addLayout(head)
+            for text in points:
+                row = QHBoxLayout()
+                row.setContentsMargins(2, 0, 0, 0)
+                row.setSpacing(8)
+                check = QLabel()
+                check.setFixedSize(16, 16)
+                check.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+                try:
+                    check.setPixmap(_paint_update_glyph(
+                        "Check", 13, (183, 148, 255)))
+                except Exception:
+                    pass
+                check.setStyleSheet(
+                    "background: transparent; border: none;")
+                row.addWidget(check, 0, Qt.AlignTop)
+                t = QLabel(str(text))
+                t.setFont(QFont("Segoe UI", 10))
+                t.setStyleSheet(
+                    "color: rgb(216, 210, 230);"
+                    " background: transparent; border: none;")
+                t.setWordWrap(True)
+                row.addWidget(t, 1)
+                play.addLayout(row)
+            lay.addWidget(panel)
+
         note = loc.get("note")
         if isinstance(note, dict):
             # Блок-пояснение — как подсказка в Fix Claude. По умолчанию
             # спокойный зелёный; tone=red — красный (важные удаления).
             _red = str(note.get("tone") or "").strip().lower() == "red"
+            _purple = str(note.get("tone") or "").strip().lower() == "purple"
             if _red:
                 _nb = "stop:0 rgba(140, 50, 45, 40), stop:1 rgba(110, 40, 38, 40)"
                 _nc = "2px solid rgba(224, 90, 90, 0.4)"
                 _nt = "rgba(235, 150, 145, 0.95)"
                 _np = "rgb(225, 190, 185)"
+            elif _purple:
+                _nb = "stop:0 rgba(108, 76, 165, 40), stop:1 rgba(75, 52, 125, 40)"
+                _nc = "2px solid rgba(183, 148, 255, 0.4)"
+                _nt = "rgba(205, 180, 255, 0.95)"
+                _np = "rgb(218, 205, 245)"
             else:
                 _nb = "stop:0 rgba(52, 110, 80, 40), stop:1 rgba(40, 90, 66, 40)"
                 _nc = "2px solid rgba(110, 180, 135, 0.4)"
@@ -32855,7 +34609,7 @@ class _SessionChip(_OcClickFrame):
     def _animate_hover(self):
         want = 1.0 if (self._is_hovered and self._clickable) else 0.0
         if abs(self._hover_progress - want) > 0.004:
-            step = 0.1 if want > self._hover_progress else -0.1
+            step = HOVER_STEP_20 if want > self._hover_progress else -HOVER_STEP_20
             self._hover_progress = min(1.0, max(0.0, self._hover_progress + step))
             self._apply_style()
         elif self._hover_progress != want:
@@ -33034,6 +34788,20 @@ class PageHeader(QFrame):
                 "color: rgb(245, 180, 60); background: transparent; border: none;")
         except Exception:
             pass
+
+
+class _UrlMirrorField(QLineEdit):
+    """Read-only «зеркало» активного Base URL (вкладки Anthropic и OpenAI).
+
+    От обычного QLineEdit отличается одним: когда фокус приходит
+    клавиатурной навигацией (переключение вкладки, Tab), текст не
+    выделяется сам — строка остаётся спокойной. Мышью текст по-прежнему
+    можно выделить и скопировать, как в read-only поле opencode."""
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        if event.reason() != Qt.MouseFocusReason:
+            self.deselect()
 
 
 class ClaudeManager(QMainWindow):
@@ -33593,7 +35361,7 @@ class ClaudeManager(QMainWindow):
         fm_credentials_layout.setContentsMargins(0, 0, 0, 0)
         fm_credentials_layout.setSpacing(8)
 
-        # Base URL: label + combo + manage button
+        # Base URL: label + read-only поле + manage button
         url_row = QHBoxLayout()
         url_lbl = QLabel("Base URL:")
         url_lbl.setFont(QFont("Segoe UI", 10))
@@ -33604,18 +35372,26 @@ class ClaudeManager(QMainWindow):
         url_lbl.setFixedWidth(90)
         url_row.addWidget(url_lbl)
 
-        self.fm_url_combo = PickerComboBox()
-        self.fm_url_combo.setFont(QFont("Segoe UI", 9))
-        self.fm_url_combo.setMaxVisibleItems(4)
-        self.fm_url_combo.addItems(self.settings.get("custom_base_urls", []))
-        if self.settings.get("custom_base_url"):
-            self.fm_url_combo.setCurrentText(self.settings["custom_base_url"])
-        self.fm_url_combo.set_picker(title=tr("Выбор Base URL"))
-        self.fm_url_combo.currentTextChanged.connect(self._fm_url_changed)
-        # Только отображение: выбор — через «Управление», как в Custom URL.
-        # Disabled гасит клики (пикера нет) и затемняет поле.
-        self.fm_url_combo.setEnabled(False)
-        url_row.addWidget(self.fm_url_combo, 1)
+        # Активный Base URL — read-only поле (как во вкладке opencode):
+        # показывает выбранный адрес, а выбор/создание живут в окне
+        # «Управление». Поле вместо disabled-комбо: системный disabled
+        # затемнял строку, и она выбивалась из светлых полей вкладки.
+        # _UrlMirrorField — чтобы при смене вкладки текст не выделялся сам.
+        self.fm_url_input = _UrlMirrorField()
+        self.fm_url_input.setPlaceholderText(tr("Не задан — откройте «Управление»"))
+        self.fm_url_input.setText(self.settings.get("custom_base_url", ""))
+        self.fm_url_input.setFont(QFont("Segoe UI", 9))
+        self.fm_url_input.setReadOnly(True)
+        self.fm_url_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: #d6d6de;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        url_row.addWidget(self.fm_url_input, 1)
 
         self.fm_btn_manage = StyledButton(tr("Управление"))
         self.fm_btn_manage.setMinimumHeight(0)
@@ -33828,18 +35604,26 @@ class ClaudeManager(QMainWindow):
         oa_url_lbl.setFixedWidth(90)
         oa_url_row.addWidget(oa_url_lbl)
 
-        self.oa_url_combo = PickerComboBox()
-        self.oa_url_combo.setFont(QFont("Segoe UI", 9))
-        self.oa_url_combo.setMaxVisibleItems(4)
-        self.oa_url_combo.addItems(self.settings.get("openai_base_urls", []))
-        if self.settings.get("openai_base_url"):
-            self.oa_url_combo.setCurrentText(self.settings["openai_base_url"])
-        self.oa_url_combo.set_picker(title=tr("Выбор Base URL"))
-        self.oa_url_combo.currentTextChanged.connect(self._oa_url_changed)
-        # Только отображение: выбор — через «Управление», как в Custom URL.
-        # Disabled гасит клики (пикера нет) и затемняет поле.
-        self.oa_url_combo.setEnabled(False)
-        oa_url_row.addWidget(self.oa_url_combo, 1)
+        # Активный Base URL — read-only поле (как во вкладке opencode):
+        # показывает выбранный адрес, а выбор/создание живут в окне
+        # «Управление». Поле вместо disabled-комбо: системный disabled
+        # затемнял строку, и она выбивалась из светлых полей вкладки.
+        # _UrlMirrorField — чтобы при смене вкладки текст не выделялся сам.
+        self.oa_url_input = _UrlMirrorField()
+        self.oa_url_input.setPlaceholderText(tr("Не задан — откройте «Управление»"))
+        self.oa_url_input.setText(self.settings.get("openai_base_url", ""))
+        self.oa_url_input.setFont(QFont("Segoe UI", 9))
+        self.oa_url_input.setReadOnly(True)
+        self.oa_url_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(20, 20, 25, 200);
+                color: #d6d6de;
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        oa_url_row.addWidget(self.oa_url_input, 1)
 
         self.oa_btn_manage_urls = StyledButton(tr("Управление"))
         self.oa_btn_manage_urls.setMinimumHeight(0)
@@ -34142,7 +35926,7 @@ class ClaudeManager(QMainWindow):
         # Стартовая проверка codex — только если открыта вкладка OpenAI
         # (иначе лениво при первом входе на вкладку, см. _apply_app_mode)
         if self.settings.get("app_mode") == "openai":
-            self._codex_version_checked_once = True
+            self._codex_last_check_ts = time.time()
             threading.Thread(target=self._check_codex_version, daemon=True).start()
         # Периодическое обновление состояния codex-кнопок (детект внешних установок)
         self._update_codex_button_state()
@@ -34155,7 +35939,7 @@ class ClaudeManager(QMainWindow):
         # Стартовая проверка opencode — только если открыта вкладка Custom URL
         # (иначе лениво при первом входе на вкладку, см. _apply_app_mode)
         if self.settings.get("app_mode") == "customurl":
-            self._oc_version_checked_once = True
+            self._oc_last_check_ts = time.time()
             threading.Thread(target=self._check_oc_version, daemon=True).start()
         # Периодическое обновление состояния oc-кнопок (детект внешних установок)
         self._update_oc_button_state()
@@ -34200,6 +35984,7 @@ class ClaudeManager(QMainWindow):
 
         # Стартовая фоновая проверка версии + редкий backstop раз в час
         # (на случай если бинарь подменили без изменения mtime — крайне маловероятно)
+        self._claude_last_check_ts = time.time()
         threading.Thread(target=self._check_claude_version, daemon=True).start()
         self._claude_version_timer = QTimer(self)
         self._claude_version_timer.timeout.connect(
@@ -34221,6 +36006,16 @@ class ClaudeManager(QMainWindow):
             self._apply_app_mode()
         except Exception:
             pass
+
+        # Предзагрузка данных окон «Модели» и «Управление провайдерами»:
+        # оба набора обновляются фоном один раз при заходе в приложение,
+        # сами окна открываются мгновенно из кэша, а внутри окна есть
+        # кнопка «Обновить» для ручного обновления.
+        self._oc_catalog = None
+        self._oc_catalog_accounts = None
+        self._oc_catalog_loading = False
+        self._oc_providers_dlg = None
+        QTimer.singleShot(150, self._oc_startup_prefetch)
 
     def _check_nodejs_on_startup(self):
         """Однократная проверка npm при старте. Если npm нет — показывает окно
@@ -34492,8 +36287,9 @@ class ClaudeManager(QMainWindow):
                 self.oa_key_input.setPlaceholderText(tr("Ключи не добавлены — откройте «Управление»"))
             if hasattr(self, "oa_model_combo"):
                 self.oa_model_combo._pick_title = tr("Выбор модели")
-            if hasattr(self, "oa_url_combo"):
-                self.oa_url_combo._pick_title = tr("Выбор Base URL")
+            if hasattr(self, "oa_url_input"):
+                self.oa_url_input.setPlaceholderText(
+                    tr("Не задан — откройте «Управление»"))
             if hasattr(self, "oc_btn_manage_urls"):
                 self.oc_btn_manage_urls.setText(tr("Управление"))
             if hasattr(self, "oc_btn_settings"):
@@ -34517,12 +36313,14 @@ class ClaudeManager(QMainWindow):
             # Плейсхолдер поля активного ключа на главном экране (виден, когда ключей нет)
             if hasattr(self, "fm_key_input"):
                 self.fm_key_input.setPlaceholderText(tr("Ключи не добавлены — откройте «Управление»"))
-            # Заголовки picker-диалогов (модель / Base URL): _pick_title кэшируется в
-            # combobox'е, а не тянется через tr() при каждом открытии — переустанавливаем вручную.
+            # Заголовок picker-диалога модели: _pick_title кэшируется в
+            # combobox'е, а не тянется через tr() при каждом открытии —
+            # переустанавливаем вручную.
             if hasattr(self, "fm_model_combo"):
                 self.fm_model_combo._pick_title = tr("Выбор модели")
-            if hasattr(self, "fm_url_combo"):
-                self.fm_url_combo._pick_title = tr("Выбор Base URL")
+            if hasattr(self, "fm_url_input"):
+                self.fm_url_input.setPlaceholderText(
+                    tr("Не задан — откройте «Управление»"))
             if hasattr(self, "btn_configure_custom"):
                 self.btn_configure_custom.setText(tr("Настроить"))
             if hasattr(self, "dir_input"):
@@ -34598,16 +36396,6 @@ class ClaudeManager(QMainWindow):
                 widget.setToolTip(txt)
         except Exception:
             pass
-
-    def _fm_url_changed(self, new_url):
-        """Сохраняет выбранный Base URL"""
-        if new_url:
-            prev = self.settings.get("custom_base_url", "")
-            self.settings["custom_base_url"] = new_url
-            save_settings(self.settings)
-            if prev != new_url:
-                self.log(tr("Base URL {} сохранён").format(new_url), "success")
-            self._refresh_freemodel_brand_visibility()
 
     def _is_freemodel_endpoint(self, url):
         """True, если выбранный Base URL принадлежит сервису freemodel.dev."""
@@ -35062,7 +36850,7 @@ class ClaudeManager(QMainWindow):
         """Открывает окно управления Base URL. Изменения применяются сразу
         (сигнал changed — как у ключей), Escape их не теряет."""
         urls = self.settings.get("custom_base_urls", [])
-        current = self.fm_url_combo.currentText()
+        current = (self.settings.get("custom_base_url", "") or "").strip()
         dialog = BaseUrlManagerDialog(urls, current, self)
         dialog.exec()
         # Применяем при закрытии — как бы окно ни закрылось.
@@ -35070,22 +36858,17 @@ class ClaudeManager(QMainWindow):
 
     def _persist_fm_url_state(self, dlg):
         """Применяет результат окна Base URL после закрытия: пишет
-        custom_base_urls/custom_base_url в settings.json, обновляет комбо
-        и бейдж freemodel.dev."""
+        custom_base_urls/custom_base_url в settings.json, обновляет поле
+        вкладки и бейдж freemodel.dev."""
         try:
             new_urls, new_current = dlg.get_result()
             self.settings["custom_base_urls"] = list(new_urls)
             self.settings["custom_base_url"] = new_current
             save_settings(self.settings)
-            if hasattr(self, "fm_url_combo"):
-                self.fm_url_combo.blockSignals(True)
-                self.fm_url_combo.clear()
-                self.fm_url_combo.addItems(new_urls)
-                if new_current in new_urls:
-                    self.fm_url_combo.setCurrentText(new_current)
-                self.fm_url_combo.blockSignals(False)
-            # Сигналы комбо были заблокированы, поэтому _fm_url_changed не вызвался —
-            # вручную обновляем видимость бейджа freemodel.dev (если удалили текущий
+            if hasattr(self, "fm_url_input"):
+                if self.fm_url_input.text() != new_current:
+                    self.fm_url_input.setText(new_current)
+            # Обновляем видимость бейджа freemodel.dev (если удалили текущий
             # URL и фолбэкнулись на freemodel, бейдж должен вернуться).
             self._refresh_freemodel_brand_visibility()
         except Exception as e:
@@ -35093,21 +36876,11 @@ class ClaudeManager(QMainWindow):
 
     # ── Обработчики вкладки OpenAI ──────────────────────────────
 
-    def _oa_url_changed(self, new_url):
-        """Сохраняет выбранный Base URL вкладки OpenAI"""
-        if new_url:
-            prev = self.settings.get("openai_base_url", "")
-            self.settings["openai_base_url"] = new_url
-            save_settings(self.settings)
-            if prev != new_url:
-                self.log(tr("Base URL {} сохранён").format(new_url), "success")
-            self._refresh_freemodel_brand_visibility()
-
     def _oa_manage_urls(self):
         """Окно управления Base URL для вкладки OpenAI (отдельный список).
         Изменения применяются сразу (сигнал changed — как у ключей)."""
         urls = self.settings.get("openai_base_urls", [])
-        current = self.oa_url_combo.currentText()
+        current = (self.settings.get("openai_base_url", "") or "").strip()
         dialog = BaseUrlManagerDialog(urls, current, self,
                                       default_urls=("https://api.freemodel.dev",))
         dialog.exec()
@@ -35115,20 +36888,16 @@ class ClaudeManager(QMainWindow):
 
     def _persist_oa_url_state(self, dlg):
         """Применяет результат окна Base URL после закрытия: пишет
-        openai_base_urls/openai_base_url в settings.json, обновляет комбо
-        и бейдж freemodel.dev."""
+        openai_base_urls/openai_base_url в settings.json, обновляет поле
+        вкладки и бейдж freemodel.dev."""
         try:
             new_urls, new_current = dlg.get_result()
             self.settings["openai_base_urls"] = list(new_urls)
             self.settings["openai_base_url"] = new_current
             save_settings(self.settings)
-            if hasattr(self, "oa_url_combo"):
-                self.oa_url_combo.blockSignals(True)
-                self.oa_url_combo.clear()
-                self.oa_url_combo.addItems(new_urls)
-                if new_current in new_urls:
-                    self.oa_url_combo.setCurrentText(new_current)
-                self.oa_url_combo.blockSignals(False)
+            if hasattr(self, "oa_url_input"):
+                if self.oa_url_input.text() != new_current:
+                    self.oa_url_input.setText(new_current)
             self._refresh_freemodel_brand_visibility()
         except Exception as e:
             print(f"[_persist_oa_url_state] Не удалось сохранить: {e}")
@@ -35194,13 +36963,88 @@ class ClaudeManager(QMainWindow):
         dlg.exec()
         self._refresh_oc_header()
 
+    def _oc_startup_prefetch(self):
+        """Фоновая предзагрузка данных обоих окон при заходе в приложение:
+        модели (если кэш устарел) и каталог провайдеров opencode. Окна потом
+        открываются из кэша без загрузки при каждом заходе."""
+        try:
+            # Первичная подгрузка уже запущена здесь — вход на вкладку
+            # opencode повторно её не триггерит (флаг _oc_models_loaded_once).
+            self._oc_models_loaded_once = True
+            self._oc_maybe_refresh_catalog()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_oc_catalog", None) is None:
+                self._oc_start_catalog_load()
+        except Exception:
+            pass
+
+    def _oc_start_catalog_load(self):
+        """Фоновое обновление каталога провайдеров opencode (для окна
+        «Управление провайдерами»). Повторный вызов во время загрузки —
+        no-op; по завершении кэш улетает в открытое окно."""
+        loader = getattr(self, "_oc_catalog_loader", None)
+        if loader is not None:
+            try:
+                if loader.isRunning():
+                    return
+            except Exception:
+                pass
+        self._oc_catalog_loading = True
+        loader = _OcCatalogLoader(self)
+        loader.loaded.connect(self._on_oc_catalog_loaded)
+        loader.accounts_loaded.connect(self._on_oc_catalog_accounts)
+        loader.finished.connect(self._on_oc_catalog_finished)
+        self._oc_catalog_loader = loader
+        loader.start()
+
+    def _on_oc_catalog_loaded(self, slim):
+        self._oc_catalog = slim or {}
+        self._oc_notify_providers_dlg()
+
+    def _on_oc_catalog_accounts(self, accounts):
+        self._oc_catalog_accounts = (
+            accounts if isinstance(accounts, dict) else {})
+        self._oc_notify_providers_dlg()
+
+    def _on_oc_catalog_finished(self):
+        self._oc_catalog_loading = False
+        self._oc_notify_providers_dlg()
+
+    def _oc_notify_providers_dlg(self):
+        """Передать свежий кэш провайдеров открытому окну (если оно живо)."""
+        dlg = getattr(self, "_oc_providers_dlg", None)
+        if dlg is None:
+            return
+        try:
+            from shiboken6 import isValid
+            if not isValid(dlg):
+                self._oc_providers_dlg = None
+                return
+        except Exception:
+            pass
+        try:
+            dlg.apply_cache(getattr(self, "_oc_catalog", None),
+                            getattr(self, "_oc_catalog_accounts", None))
+        except Exception:
+            pass
+
     def _oc_manage_providers(self):
         """Окно управления провайдерами opencode: определения из конфига +
-        креды из auth.json, с возможностью удаления."""
+        креды из auth.json, с возможностью удаления. Открывается из кэша
+        (предзагрузка при старте); если кэша ещё нет — догружаем фоном,
+        окно покажет затемнение со спиннером."""
         if not self._is_oc_installed():
             return
+        if getattr(self, "_oc_catalog", None) is None:
+            self._oc_start_catalog_load()
         dialog = OpencodeProvidersDialog(self)
-        dialog.exec()
+        self._oc_providers_dlg = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._oc_providers_dlg = None
 
     def _oc_toggle_key(self):
         """Показать/скрыть API ключ вкладки Custom URL."""
@@ -35226,7 +37070,7 @@ class ClaudeManager(QMainWindow):
         if not hasattr(self, "_oc_model_ids"):
             self._oc_model_ids = []
             self._oc_free_ids = []
-            self._oc_reasoning = {}
+            self._oc_model_meta = {}
             self._oc_info_dlg = None
             self._oc_provider_name = ""
             self._oc_provider_display = ""
@@ -35251,6 +37095,8 @@ class ClaudeManager(QMainWindow):
         self._oc_key_models_loaded = api_key
         self._oc_models_loader = _OcModelsLoader(self, base_url, api_key, host)
         self._oc_models_loader.loaded.connect(self._on_oc_models_loaded)
+        self._oc_models_loader.finished.connect(
+            self._on_oc_models_loader_finished)
         self._oc_models_loader.start()
         # Новая попытка — прошлый провал забываем.
         try:
@@ -35260,12 +37106,26 @@ class ClaudeManager(QMainWindow):
         # Загрузка началась — блокируем кнопку моделей и показываем спиннер.
         self._oc_set_info_loading(True)
 
-    def _on_oc_models_loaded(self, model_ids, reasoning_map, free_ids, free_reasoning):
-        """Модели и capabilities пришли из фонового потока."""
+    def _on_oc_models_loaded(self, model_ids, endpoint_meta, free_ids, free_meta):
+        """Модели и их метаданные пришли из фонового потока."""
         if getattr(self, "_oc_loader_url", None) != (self.settings.get("oc_base_url", "") or "").strip():
             return
         self._oc_free_fetched_at = time.time()
-        self._oc_apply_models(model_ids, reasoning_map, free_ids, free_reasoning)
+        self._oc_apply_models(model_ids, endpoint_meta, free_ids, free_meta)
+        self._oc_set_info_loading(False)
+
+    def _on_oc_models_loader_finished(self):
+        """Страховка: поток завершился, а состояние «загрузка» зависло
+        (сигнал loaded не дошёл) — снимаем его, чтобы спиннеры кнопки и
+        открытого окна моделей не остались навсегда."""
+        if not getattr(self, "_oc_models_loading", False):
+            return
+        try:
+            ld = getattr(self, "_oc_models_loader", None)
+            if ld is not None and ld.isRunning():
+                return
+        except Exception:
+            return
         self._oc_set_info_loading(False)
 
     def _oc_set_info_loading(self, loading):
@@ -35302,6 +37162,21 @@ class ClaudeManager(QMainWindow):
             except Exception:
                 pass
         self._set_oc_manage_enabled(not loading)
+        # Открытое окно моделей тоже затемняется спиннером, пока идёт загрузка.
+        try:
+            dlg = getattr(self, "_oc_info_dlg", None)
+            if dlg is not None:
+                try:
+                    from shiboken6 import isValid
+                    alive = isValid(dlg)
+                except Exception:
+                    alive = True
+                if alive:
+                    dlg.set_loading(bool(loading))
+                else:
+                    self._oc_info_dlg = None
+        except Exception:
+            pass
 
     def _set_oc_manage_enabled(self, enabled):
         """Элементы управления вкладки opencode (эндпоинт, ключи, Base URL,
@@ -35325,15 +37200,15 @@ class ClaudeManager(QMainWindow):
             except Exception:
                 pass
 
-    def _oc_apply_models(self, model_ids, reasoning_map, free_ids, free_reasoning):
-        """Сохраняет списки моделей эндпоинта и бесплатных opencode для
-        информационного окна. Модель пользователь не выбирает — окно только
-        показывает доступное."""
+    def _oc_apply_models(self, model_ids, endpoint_meta, free_ids, free_meta):
+        """Сохраняет списки моделей эндпоинта и бесплатных opencode вместе
+        с контекстом/vision для информационного окна. Модель пользователь
+        не выбирает — окно только показывает доступное."""
         self._oc_model_ids = list(model_ids)
         self._oc_free_ids = list(free_ids)
-        reasoning = dict(reasoning_map)
-        reasoning.update(free_reasoning)
-        self._oc_reasoning = reasoning
+        meta = _oc_normalize_meta_map(endpoint_meta)
+        meta.update(_oc_normalize_meta_map(free_meta))
+        self._oc_model_meta = meta
         if hasattr(self, "oc_info_btn"):
             self._oc_refresh_info_button_text()
         # Эндпоинт задан, но ничего не отдал (и бесплатных нет) — это провал
@@ -35373,9 +37248,11 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
         try:
-            dlg.update_models(list(self._oc_model_ids or []),
-                              list(self._oc_free_ids or []),
-                              getattr(self, "_oc_provider_display", "") or "")
+            dlg.update_models(
+                list(self._oc_model_ids or []),
+                list(self._oc_free_ids or []),
+                getattr(self, "_oc_provider_display", "") or "",
+                model_meta=dict(getattr(self, "_oc_model_meta", {}) or {}))
         except Exception:
             pass
 
@@ -35446,26 +37323,26 @@ class ClaudeManager(QMainWindow):
 
     def _oc_show_info(self):
         """Открывает информационное окно доступных моделей (клик по кнопке
-        «Какие модели доступны»). Названия моделей подсвечены цветом, текст
-        пояснений обычный; список авто-обновляется при каждом открытии."""
-        self._oc_maybe_refresh_catalog()
+        «Какие модели доступны»). В карточках видны контекст, EFFORT
+        и VISION.
+        Окно строится из кэша мгновенно, без загрузки при открытии (данные
+        обновляются при старте приложения и кнопкой «Обновить» в окне)."""
         endpoint = list(getattr(self, "_oc_model_ids", []) or [])
         free = list(getattr(self, "_oc_free_ids", []) or [])
-        reasoning = dict(getattr(self, "_oc_reasoning", {}) or {})
+        meta = dict(getattr(self, "_oc_model_meta", {}) or {})
         provider_name = getattr(self, "_oc_provider_display", "") or ""
-        dlg = OcModelDialog(endpoint, free, reasoning,
+        dlg = OcModelDialog(endpoint, free, meta,
                             provider_name=provider_name, parent=self)
-        dlg.destroyed.connect(self._on_oc_info_destroyed)
+        dlg.destroyed.connect(lambda *_: self._on_oc_info_destroyed(dlg))
         self._oc_info_dlg = dlg
-        # Окно строится из кэша мгновенно, а фоновый refresh (если запущен)
-        # дообновит его через _oc_refresh_open_info, как только свежие данные
-        # придут. Чтобы окно всегда было максимально свежим, принудительно
-        # запускаем refresh при каждом открытии (300с-кэш не блокирует).
-        self._oc_refresh_models()
+        # Если фоновая загрузка (старт приложения или смена URL/ключа) ещё
+        # идёт — окно уже открыто с затемнением, а свежие данные дообновят
+        # его через _oc_refresh_open_info, как только придут.
 
         def _show_and_position():
             dlg.show()
-            dlg.adjustSize()
+            # Размер уже подобран в конструкторе/update_models: повторный
+            # adjustSize() сжимал окно до минимальной ширины QScrollArea.
             dw, dh = dlg.width(), dlg.height()
             try:
                 pg = self.frameGeometry()
@@ -35476,8 +37353,11 @@ class ClaudeManager(QMainWindow):
 
         QTimer.singleShot(0, _show_and_position)
 
-    def _on_oc_info_destroyed(self):
-        if getattr(self, "_oc_info_dlg", None) is not None:
+    def _on_oc_info_destroyed(self, dlg=None):
+        """Сбрасывает ссылку на закрытое окно моделей. Сравнение по объекту:
+        к моменту удаления старого окна в _oc_info_dlg уже может стоять
+        НОВОЕ (быстро закрыли → сразу открыли) — тогда ссылку не затираем."""
+        if dlg is None or getattr(self, "_oc_info_dlg", None) is dlg:
             self._oc_info_dlg = None
 
     def _oc_parse_plain_models(self, out):
@@ -35595,10 +37475,11 @@ class ClaudeManager(QMainWindow):
         return out
 
     def _parse_verbose_sections(self, out):
-        """Делит вывод `opencode models --verbose` на секции и возвращает список
-        (provider, short_name, reasoning, is_free). «Слоёный» текст: каждая модель
+        """Делит вывод `opencode models --verbose` на секции и возвращает
+        (provider, short_name, meta, is_free). «Слоёный» текст: каждая модель
         начинается неотступленной строкой 'provider/name', за которой идёт
         JSON-объект, и всё подряд (без пустых строк между блоками).
+        meta — контекст/vision/reasoning/имя из JSON.
         is_free = цена модели нулевая (cost.input == 0 и cost.output == 0)."""
         sections = []
         current = None
@@ -35612,22 +37493,25 @@ class ClaudeManager(QMainWindow):
         for sec in sections:
             provider, _, short = sec[0].partition("/")
             try:
-                meta = json.loads("\n".join(sec[1:]))
+                payload = json.loads("\n".join(sec[1:]))
             except Exception:
-                meta = {}
-            c = meta.get("capabilities") or {}
-            cost = meta.get("cost") or {}
+                payload = {}
+            cost = payload.get("cost") or {}
             try:
                 is_free = (cost.get("input") == 0 and cost.get("output") == 0)
             except Exception:
                 is_free = False
-            parsed.append((provider, short, bool(c.get("reasoning", False)), bool(is_free)))
+            meta = _oc_meta_from_catalog_item(short, payload)
+            if "reasoning" not in meta:
+                caps = payload.get("capabilities") or {}
+                meta["reasoning"] = bool(caps.get("reasoning", False))
+            parsed.append((provider, short, meta, bool(is_free)))
         return parsed
 
     def _oc_fetch_capabilities(self, provider, config_path):
-        """Запускает `opencode models --verbose <provider>` и извлекает
-        capabilities.reasoning для каждой модели провайдера.
-        v2: CLI не отдаёт capabilities — reasoning неизвестен, всем False."""
+        """Метаданные моделей провайдера из CLI (v1 --verbose) или из
+        каталога opencode. v2 CLI не отдаёт capabilities/limit, поэтому
+        возвращаем пустую карту — загрузчик доберёт всё из models.json."""
         if not provider:
             return {}
         try:
@@ -35635,57 +37519,58 @@ class ClaudeManager(QMainWindow):
         except Exception:
             _v2 = False
         if _v2:
-            caps = {}
-            try:
-                plain = self._oc_run_models_plain(config_path)
-            except Exception:
-                plain = ""
-            for prov, short in self._oc_parse_plain_models(plain):
-                if prov == provider:
-                    caps[short] = False
-            return caps
+            return {}
         caps = {}
-        for prov, short, reasoning, _free in self._parse_verbose_sections(self._oc_run_models_cmd(provider, config_path)):
+        for prov, short, meta, _free in self._parse_verbose_sections(
+                self._oc_run_models_cmd(provider, config_path)):
             if prov == provider:
-                caps[short] = reasoning
+                caps[short] = dict(meta)
         return caps
 
+    def _oc_model_meta_for_ids(self, model_ids, base_meta=None, provider=None,
+                               free=False):
+        """Мост к модульному помощнику: дополняет метаданные моделей из
+        локального models.json, при необходимости — из свежего models.dev."""
+        return _oc_model_meta_for_ids(
+            model_ids, base_meta, provider=provider, free=free)
+
     def _oc_fetch_free_catalog(self):
-        """Бесплатные модели opencode: `opencode models --verbose` БЕЗ
-        OPENCODE_CONFIG (глобальный каталог). Возвращает (free_ids,
-        free_reasoning) для провайдера 'opencode' — только модели с нулевой
-        ценой (cost.input == 0 и cost.output == 0).
-        v2: цен в CLI-выводе нет — бесплатные = весь провайдер 'opencode'
-        из плоского `opencode models` (reasoning неизвестен, всем False)."""
+        """Бесплатные модели opencode: плоский `opencode models` (v2) или
+        `--verbose` без OPENCODE_CONFIG (v1). Возвращает (free_ids, meta):
+        контекст/vision/имя добираются из локального каталога models.dev."""
         try:
             _v2 = (_oc_installed_major() >= 2)
         except Exception:
             _v2 = False
+        free_ids = []
+        free_meta = {}
         if _v2:
             try:
                 plain = self._oc_run_models_plain()
             except Exception:
                 plain = ""
-            free_ids = []
-            free_reasoning = {}
             for prov, short in self._oc_parse_plain_models(plain):
                 if prov == "opencode":
                     free_ids.append(short)
-                    free_reasoning[short] = False
-            return free_ids, free_reasoning
-        out = self._oc_run_models_cmd(None, None)
-        free_ids = []
-        free_reasoning = {}
-        for prov, short, reasoning, is_free in self._parse_verbose_sections(out):
-            if prov == "opencode" and is_free:
-                free_ids.append(short)
-                free_reasoning[short] = reasoning
-        return free_ids, free_reasoning
+                    free_meta[short] = {}
+        else:
+            out = self._oc_run_models_cmd(None, None)
+            for prov, short, meta, is_free in self._parse_verbose_sections(out):
+                if prov == "opencode" and is_free:
+                    free_ids.append(short)
+                    free_meta[short] = dict(meta)
+        try:
+            free_meta = self._oc_model_meta_for_ids(
+                free_ids, free_meta, provider="opencode", free=True)
+        except Exception:
+            pass
+        return free_ids, free_meta
 
     def _oc_maybe_refresh_catalog(self):
         """Фоновый refresh каталога моделей, если он давно не обновлялся
         (>=300 c) — чтобы opencode подхватил добавленные/убранные бесплатные
-        модели. Вызывается при открытии окна выбора модели."""
+        модели. Вызывается при старте приложения (предзагрузка для окна
+        «Модели»); внутри окна обновление — кнопкой «Обновить»."""
         now = time.time()
         last = getattr(self, "_oc_free_fetched_at", 0)
         if last and (now - last) < 300:
@@ -35801,6 +37686,39 @@ class ClaudeManager(QMainWindow):
         anim.start()
         self._resize_anim = anim
 
+    def _maybe_start_version_check(self, cli, min_interval=600.0):
+        """Единый опрос версий при входе на вкладку.
+
+        Все вкладки ведут себя одинаково: если проверка этого CLI ещё не
+        идёт и с прошлой проверки прошло не меньше min_interval секунд,
+        запускаем её в фоновом потоке. Если проверок ещё не было (метка 0),
+        проверяем сразу. Сеть и процессы только в фоне, UI не блокируется."""
+        try:
+            if cli == "claude":
+                fn = self._check_claude_version
+                running = getattr(self, "_version_check_running", False)
+                last = float(getattr(self, "_claude_last_check_ts", 0.0) or 0.0)
+            elif cli == "codex":
+                # До подключения сигнала не запускаем — эмит потерялся бы.
+                if not getattr(self, "_codex_signal_ready", False):
+                    return
+                fn = self._check_codex_version
+                running = getattr(self, "_codex_version_check_running", False)
+                last = float(getattr(self, "_codex_last_check_ts", 0.0) or 0.0)
+            elif cli == "oc":
+                if not getattr(self, "_oc_signal_ready", False):
+                    return
+                fn = self._check_oc_version
+                running = getattr(self, "_oc_version_check_running", False)
+                last = float(getattr(self, "_oc_last_check_ts", 0.0) or 0.0)
+            else:
+                return
+            if running or (time.time() - last) < min_interval:
+                return
+            threading.Thread(target=fn, daemon=True).start()
+        except Exception:
+            pass
+
     def _apply_app_mode(self, mode=None):
         """Скрывает/показывает секции для режима anthropic / official / customurl / openai.
         official — под-режим двойной ячейки Anthropic|Claude: та же секция
@@ -35815,9 +37733,17 @@ class ClaudeManager(QMainWindow):
         is_official = mode == "official"
         is_customurl = mode == "customurl"
 
+        # Пишем настройки, только если что-то реально изменилось: _apply_app_mode
+        # зовётся и при старте, и после диалогов — лишние записи на диск в
+        # UI-потоке ни к чему (переключение вкладки режим всегда меняет).
+        # Отсутствующий файл настроек создаём всегда — как и раньше, при первом старте.
+        _need_save = (self.settings.get("app_mode") != mode
+                      or not self.settings.get("use_custom_token")
+                      or not os.path.exists(SETTINGS_FILE))
         self.settings["app_mode"] = mode
         self.settings["use_custom_token"] = True
-        save_settings(self.settings)
+        if _need_save:
+            save_settings(self.settings)
 
         # Свои модели — только Anthropic: в official-режиме их не видно,
         # поэтому при переходе туда с выбранной своей — откат на Opus 4.8.
@@ -35994,22 +37920,14 @@ class ClaudeManager(QMainWindow):
 
         if is_openai:
             self._update_codex_button_state()
-            # Ленивая проверка версии codex при первом входе на вкладку.
-            # До подключения сигнала (_codex_signal_ready) не запускаем —
-            # эмит из фонового потока потерялся бы.
-            if (getattr(self, "_codex_signal_ready", False)
-                    and not getattr(self, "_codex_version_checked_once", False)):
-                self._codex_version_checked_once = True
-                threading.Thread(target=self._check_codex_version, daemon=True).start()
+            # Единый опрос при входе на вкладку (как у opencode): версии
+            # обновляются в фоне, но не чаще раза в 10 минут.
+            self._maybe_start_version_check("codex")
 
         if is_customurl:
             self._update_oc_button_state()
-            # Ленивая проверка версии opencode при первом входе на вкладку
-            # (аналог codex-логики выше).
-            if (getattr(self, "_oc_signal_ready", False)
-                    and not getattr(self, "_oc_version_checked_once", False)):
-                self._oc_version_checked_once = True
-                threading.Thread(target=self._check_oc_version, daemon=True).start()
+            # Тот же единый опрос, что у codex/claude.
+            self._maybe_start_version_check("oc")
             # CLI поставили снаружи, пока приложение работало: стартовый
             # деплой его не видел — разворачиваем при первом входе.
             try:
@@ -36023,6 +37941,16 @@ class ClaudeManager(QMainWindow):
             if not getattr(self, "_oc_models_loaded_once", False):
                 self._oc_models_loaded_once = True
                 self._oc_refresh_models()
+
+        if not is_openai and not is_customurl:
+            # Claude-вкладки (Anthropic и официальный Claude): тот же опрос,
+            # что у codex/opencode — состояние кнопок обновляем сразу,
+            # версию перепроверяем в фоне (не чаще раза в 10 минут).
+            try:
+                self._update_install_button_state()
+            except Exception:
+                pass
+            self._maybe_start_version_check("claude")
 
         # Стики effort — переприжать к правому краю после перекладки секций
         # (геометрия комбо в момент старта/переключения вкладок несвежая).
@@ -36520,6 +38448,7 @@ class ClaudeManager(QMainWindow):
         if getattr(self, "_codex_version_check_running", False):
             return
         self._codex_version_check_running = True
+        self._codex_last_check_ts = time.time()
         try:
             local = self._get_installed_codex_version()
             latest = check_codex_latest_version()
@@ -36701,6 +38630,7 @@ class ClaudeManager(QMainWindow):
                 popen.wait()
             except Exception:
                 pass
+            _which_cli_invalidate()
             new_local = ""
             try:
                 time.sleep(0.5)
@@ -36831,6 +38761,7 @@ class ClaudeManager(QMainWindow):
                 popen.wait()
             except Exception:
                 pass
+            _which_cli_invalidate()
             try:
                 time.sleep(0.5)
                 installed_now = self._is_codex_installed()
@@ -37054,6 +38985,7 @@ class ClaudeManager(QMainWindow):
         if getattr(self, "_oc_version_check_running", False):
             return
         self._oc_version_check_running = True
+        self._oc_last_check_ts = time.time()
         try:
             local = self._get_installed_oc_version()
             latest = check_oc_latest_version()
@@ -37589,6 +39521,7 @@ class ClaudeManager(QMainWindow):
                 popen.wait()
             except Exception:
                 pass
+            _which_cli_invalidate()
             new_local = ""
             try:
                 time.sleep(0.5)
@@ -37724,6 +39657,7 @@ class ClaudeManager(QMainWindow):
                 popen.wait()
             except Exception:
                 pass
+            _which_cli_invalidate()
             try:
                 time.sleep(0.5)
                 installed_now = self._is_oc_installed()
@@ -37931,8 +39865,8 @@ class ClaudeManager(QMainWindow):
         except Exception:
             pass
 
-    def _oc_fetch_models(self, base_url, api_key):
-        """Спрашивает эндпоинт и возвращает список ID моделей.
+    def _oc_fetch_models_data(self, base_url, api_key):
+        """Спрашивает эндпоинт и возвращает (ID моделей, метаданные).
 
         Разные шлюзы обслуживают /models на разных путях:
         - обычный OpenAI-совместимый: {base}/v1/models (базовый URL часто
@@ -37940,8 +39874,10 @@ class ClaudeManager(QMainWindow):
         - некоторые прокси (cc.freemodel.dev) отдают каталог только на
           /v1/models, а на /models отвечают 403.
 
-        Поэтому пробуем варианты по очереди и берём первый, который
-        реально вернул список. Возвращаем пустой список при любой ошибке."""
+        Метаданные (контекст, vision, имя) шлюзы отдают по-разному:
+        context_length, context_window, limit.context, modalities,
+        architecture.input_modalities, capabilities.vision и т.п.
+        Разбираем известные варианты, остальное добирает каталог opencode."""
         tries = []
         base = base_url.rstrip("/")
         if base.endswith("/v1"):
@@ -37956,16 +39892,40 @@ class ClaudeManager(QMainWindow):
                 req = Request(url, headers=headers)
                 with urlopen(req, timeout=10) as resp:
                     data = json.loads(resp.read().decode("utf-8", "replace"))
-                ids = []
-                for m in (data.get("data") or []):
-                    mid = (m or {}).get("id")
-                    if mid:
-                        ids.append(str(mid))
+                if isinstance(data, list):
+                    rows = data
+                elif isinstance(data, dict):
+                    rows = data.get("data") or data.get("models") or []
+                else:
+                    rows = []
+                if not isinstance(rows, list):
+                    continue
+                ids, meta, seen = [], {}, set()
+                for item in rows:
+                    if isinstance(item, str):
+                        mid, payload = item.strip(), {}
+                    elif isinstance(item, dict):
+                        mid = (item.get("id") or item.get("model")
+                               or item.get("name") or "")
+                        mid, payload = str(mid).strip(), item
+                    else:
+                        continue
+                    if not mid or mid in seen:
+                        continue
+                    seen.add(mid)
+                    ids.append(mid)
+                    mmeta = _oc_meta_from_endpoint_item(payload)
+                    if mmeta:
+                        meta[mid] = mmeta
                 if ids:
-                    return ids
+                    return ids, meta
             except Exception:
                 continue
-        return []
+        return [], {}
+
+    def _oc_fetch_models(self, base_url, api_key):
+        """Совместимость для запуска opencode: только список ID."""
+        return self._oc_fetch_models_data(base_url, api_key)[0]
 
     def _write_oc_provider_config(self, base_url, api_key, model_ids):
         """Пишет конфиг opencode-провайдера (OpenAI-совместимого) рядом с
@@ -39099,6 +41059,7 @@ class ClaudeManager(QMainWindow):
                 popen.wait()
             except Exception:
                 pass
+            _which_cli_invalidate()
             try:
                 rc = popen.returncode
             except Exception:
@@ -39732,6 +41693,7 @@ class ClaudeManager(QMainWindow):
         if getattr(self, "_version_check_running", False):
             return
         self._version_check_running = True
+        self._claude_last_check_ts = time.time()
         try:
             local = self._get_installed_claude_version()
             try:
@@ -39887,6 +41849,7 @@ class ClaudeManager(QMainWindow):
                 popen.wait()
             except Exception:
                 pass
+            _which_cli_invalidate()
             try:
                 rc = popen.returncode
             except Exception:

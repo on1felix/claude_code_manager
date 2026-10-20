@@ -1,6 +1,66 @@
 {
-  "comment": "История обновлений Claude Code Manager. Показывается в окне «Обновления» (кнопка-«!» у названия программы). Новую запись добавлять СВЕРХУ (самая свежая — первая): поля id (уникальный, латиница), version (версия приложения с этим обновлением), dateISO (UTC-момент выхода, суффикс Z), icon (имя иконки), ru/en (title, features[{icon,text}], fixes[text], note{title,points} — необязательные блоки можно опускать). Иконки: Sparkles, Cpu, KeyRound, Columns2, Palette, Maximize2, Terminal, RefreshCw, Languages, Check, Network, Bot, Download, PlugZap, Wallet, SlidersHorizontal, Globe.",
+  "comment": "История обновлений Claude Code Manager. Показывается в окне «Обновления» (кнопка-«!» у названия программы). Новую запись добавлять СВЕРХУ (самая свежая — первая): поля id (уникальный, латиница), version (версия приложения с этим обновлением), dateISO (UTC-момент выхода, суффикс Z), icon (имя иконки), ru/en (title, features[{icon,text}], optimizations[text] или [{title,points}] — фиолетовая панель «Оптимизация», fixes[text], note{title,points,tone} — необязательные блоки можно опускать; tone: red | purple). Иконки: Sparkles, Cpu, KeyRound, Columns2, Palette, Maximize2, Terminal, RefreshCw, Languages, Check, Network, Bot, Download, PlugZap, Wallet, SlidersHorizontal, Globe.",
   "updates": [
+    {
+      "id": "speed-and-optimization-605",
+      "version": "6.0.5",
+      "dateISO": "2026-10-20T06:10:23Z",
+      "icon": "Cpu",
+      "ru": {
+        "title": "Быстрее и плавнее",
+        "features": [
+          { "icon": "Sparkles", "text": "Полностью переработано окно моделей в opencode: вся информация о модели на виду" },
+          { "icon": "RefreshCw", "text": "Поиск по моделям прямо в окне" }
+        ],
+        "optimizations": [
+          "Изменён механизм обновлений CLI: проверки и установка стали аккуратнее и больше не мешают интерфейсу",
+          "Оптимизирован поиск новых версий opencode, Claude Code и Codex — свежие релизы находятся быстрее, с меньшим числом лишних запросов",
+          "Единый опрос версий на всех вкладках: данные обновляются при входе на вкладку, но не чаще одного раза в 10 минут",
+          "Проделана полная работа над оптимизацией приложения: вкладки переключаются плавнее, интерфейс стал отзывчивее",
+          "Фоновые проверки версий и поиск CLI больше не нагружают UI — всё выполняется в фоне и кэшируется"
+        ],
+        "fixes": [
+          "Исправлено: у некоторых кнопок обрезался текст — теперь надписи видны целиком"
+        ]
+      },
+      "en": {
+        "title": "Faster and smoother",
+        "features": [
+          { "icon": "Sparkles", "text": "The opencode models window is fully reworked: all model details at a glance" },
+          { "icon": "RefreshCw", "text": "Model search right in the window" }
+        ],
+        "optimizations": [
+          "The CLI update mechanism has been reworked: checks and installs are more careful and no longer get in the way of the interface",
+          "Version discovery for opencode, Claude Code and Codex is optimized — new releases are found faster, with fewer unnecessary requests",
+          "Unified version polling across all tabs: data refreshes when you open a tab, at most once every 10 minutes",
+          "A full app optimization pass: tabs switch smoother and the interface feels more responsive",
+          "Background version checks and CLI discovery no longer load the UI — everything runs in the background and is cached"
+        ],
+        "fixes": [
+          "Fixed: some buttons clipped their text — labels are now fully visible"
+        ]
+      }
+    },
+    {
+      "id": "oc-models-grouping",
+      "version": "6.0.4",
+      "dateISO": "2026-10-17T20:15:59Z",
+      "icon": "Check",
+      "ru": {
+        "title": "Баг-фикс",
+        "fixes": [
+          "Исправлена проблема: добавленные вручную модели не отображались в opencode",
+          "Возвращена группировка моделей в opencode"
+        ]
+      },
+      "en": {
+        "title": "Bug fix",
+        "fixes": [
+          "Fixed: manually added models were not displayed in opencode",
+          "Model grouping in opencode is back"
+        ]
+      }
+    },
     {
       "id": "bugfix",
       "version": "6.0.3",
