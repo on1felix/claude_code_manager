@@ -29,7 +29,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QRect, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "6.0.5"  # Для обновлений
+APP_VERSION = "6.0.6"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -1262,6 +1262,13 @@ TRANSLATIONS = {
     "Модели провайдера": "Provider Models",
     "Бесплатные модели": "Free models",
     "Бесплатная модель": "Free model",
+    "Изменения в бесплатных моделях": "Changes in free models",
+    "Удалённые": "Removed",
+    "удалена": "removed",
+    "Новые": "New",
+    "Новая бесплатная модель": "New free model",
+    "убран сегодня": "removed today",
+    "убран %d дн. назад": "removed %dd ago",
     "Модели не найдены": "No models found",
     "Проверьте Base URL и ключ доступа.": "Check the Base URL and access key.",
     "Каталог opencode и модели вашего эндпоинта": "The opencode catalog and your endpoint models",
@@ -3701,14 +3708,44 @@ class OcModelInfoButton(StyledButton):
         super().__init__(text, parent)
         self._spinner = OcSpinner(self)
         self._spinner.hide()
+        # Жёлтый индикатор правее текста (пульсирующая точка, как в
+        # статусах): показывается, пока в бесплатных моделях есть
+        # изменения (NEW или убранные).
+        self._alert = StatusIndicator(self)
+        self._alert.set_state("warn")
+        self._alert.setToolTip(tr("Изменения в бесплатных моделях"))
+        self._alert.hide()
 
     def showEvent(self, event):
         super().showEvent(event)
         self._place_spinner()
+        self._place_alert()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._place_spinner()
+        self._place_alert()
+
+    def _place_alert(self):
+        if self._alert is None or not self._alert.isVisible():
+            return
+        # Прижат к правому краю с отступом (зеркально спиннеру слева):
+        # текст по центру, индикатор рядом с текстом не стоит — он за
+        # его границей и никогда не наезжает на буквы.
+        self._alert.move(self.width() - self._alert.width() - 12,
+                         (self.height() - self._alert.height()) // 2)
+        self._alert.raise_()
+
+    def set_alert(self, on):
+        """Показ/скрытие жёлтого знака «есть изменения в бесплатных»."""
+        on = bool(on)
+        if on == bool(self._alert.isVisible()):
+            return
+        if on:
+            self._alert.show()
+            self._place_alert()
+        else:
+            self._alert.hide()
 
     def _place_spinner(self):
         if self._spinner is None:
@@ -9489,6 +9526,26 @@ def _oc_effort_value(meta):
     return None
 
 
+def _oc_parse_release_date(value):
+    """release_date из каталога opencode (models.dev): «2026-04-22» или
+    ISO → time.time(); пустое/битое → None. Дата берётся в полдень,
+    чтобы календарные сдвиги не плавали из-за перевода часов."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    mm = re.match(r"^(\d{4})-(\d{2})-(\d{2})", text)
+    if mm:
+        try:
+            return time.mktime((int(mm.group(1)), int(mm.group(2)),
+                                int(mm.group(3)), 12, 0, 0, 0, 0, -1))
+        except Exception:
+            return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def _oc_meta_from_catalog_item(mid, item):
     if not isinstance(item, dict):
         return {}
@@ -9497,6 +9554,7 @@ def _oc_meta_from_catalog_item(mid, item):
         "vision": _oc_vision_value(item),
         "reasoning": _oc_reasoning_value(item),
         "effort": _oc_effort_value(item),
+        "released": _oc_parse_release_date(item.get("release_date")),
         "name": str(item.get("name") or "").strip() or None,
         "family": str(item.get("family") or "").strip() or None,
     }
@@ -9867,14 +9925,15 @@ class _OcInfoRow(QFrame):
     левой акцентной полоски (она статична и всегда в полный цвет). Карточка
     рисуется в paintEvent, поэтому палочка сверху и снизу скругляется
     одинаково. Рамка покоя — серая 2px, как у провайдеров в окне
-    «Провайдеры opencode». При наведении строка никак не выделяется — так
+    «Провайдеры opencode»; у новой бесплатной модели (is_new) она жёлтая,
+    со сроком 4 дня. При наведении строка никак не выделяется — так
     попросили, чтобы список не «загорался» под курсором."""
 
     # Серая рамка покоя: та же, что у кнопок (rgb(60, 60, 65), 2px).
     BASE_BORDER = (60, 60, 65)
 
     def __init__(self, model_name, color=None, parent=None, is_free=False,
-                 meta=None):
+                 meta=None, is_new=False, released_ts=None):
         super().__init__(parent)
         self._name = str(model_name)
         self._meta = dict(meta or {})
@@ -9884,6 +9943,13 @@ class _OcInfoRow(QFrame):
         # (суффикс -free/:free). У секции «Бесплатные модели» бейджей нет
         # вовсе — её статус показывают UNLIMIT в шапке и зелёная окраска.
         self._is_free = bool(is_free)
+        # Пометка «новая» — оперирует датой релиза из каталога opencode:
+        # чип NEW и жёлтая окантовка снято решаются на стороне диалога
+        # (released младше 4 дней), здесь только хранится для отрисовки.
+        self._is_new = bool(is_new)
+        # Дата релиза (из каталога opencode, поле release_date): короткая
+        # мелкая метка «когда» под названием — без времени, всегда.
+        self._released_ts = released_ts
         name_low = self._name.strip().lower()
         self._badge_free = (not self._is_free and (
             name_low.endswith(":free") or name_low.endswith("-free")))
@@ -9913,7 +9979,29 @@ class _OcInfoRow(QFrame):
             % (r, g, b))
         name_lbl.setTextFormat(Qt.PlainText)
         name_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        text_col.addWidget(name_lbl)
+        # Название и — справа-сверху, сразу после текста — малый чип NEW
+        # у новой бесплатной модели (меньше бейджей контекста/effort).
+        self._name_lbl = name_lbl
+        self._name_chip = None
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(5)
+        name_lbl.setMinimumWidth(0)   # длинное имя элайдится, чип не вылетает
+        name_row.addWidget(name_lbl)
+        if self._is_new:
+            new_chip = QLabel("NEW")
+            new_chip.setFont(QFont("Segoe UI", 6, QFont.Bold))
+            new_chip.setAlignment(Qt.AlignCenter)
+            new_chip.setStyleSheet(
+                "color: rgb(244, 214, 118);"
+                " background: rgba(244, 214, 118, 20);"
+                " border: 2px solid rgba(244, 214, 118, 96);"
+                " border-radius: 6px; padding: 0px 5px;")
+            new_chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            name_row.addWidget(new_chip, 0, Qt.AlignTop)
+            self._name_chip = new_chip
+        name_row.addStretch(1)
+        text_col.addLayout(name_row)
         if display_name.lower() != self._name.lower():
             sub_lbl = _ElidingLabel(self._name, Qt.ElideMiddle)
             sub_lbl.setFont(QFont("Consolas", 8))
@@ -9922,6 +10010,22 @@ class _OcInfoRow(QFrame):
             sub_lbl.setTextFormat(Qt.PlainText)
             sub_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             text_col.addWidget(sub_lbl)
+        # Мелкая метка «когда»: сегодня/вчера/N дн. назад, после 4 дней —
+        # дата (19.02.2026) для даты релиза из каталога; без времени.
+        # Оформлена маленьким серым чипом-бейджем, слева под названием.
+        if released_ts is not None:
+            when_lbl = QLabel(_oc_free_when_text(
+                released_ts, with_time=False))
+            when_lbl.setFont(QFont("Segoe UI", 7, QFont.Bold))
+            when_lbl.setAlignment(Qt.AlignCenter)
+            when_lbl.setStyleSheet(
+                "color: rgb(158, 158, 170);"
+                " background: rgba(255, 255, 255, 0.05);"
+                " border: 2px solid rgba(255, 255, 255, 0.14);"
+                " border-radius: 7px; padding: 0px 5px;")
+            when_lbl.setTextFormat(Qt.PlainText)
+            when_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            text_col.addWidget(when_lbl, 0, Qt.AlignLeft)
         lay.addLayout(text_col, 1)
 
         chips = QHBoxLayout()
@@ -10022,6 +10126,8 @@ class _OcInfoRow(QFrame):
             lay.addLayout(chips)
 
         tip = [self._name]
+        if self._is_new:
+            tip.append(tr("Новая бесплатная модель"))
         if self._badge_free:
             tip.append(tr("Бесплатная модель"))
         if ctx_text:
@@ -10053,6 +10159,8 @@ class _OcInfoRow(QFrame):
         p.fillPath(outer, QBrush(grad))
         border = QPainterPath()
         border.addRoundedRect(rect.adjusted(1.0, 1.0, -1.0, -1.0), 9.0, 9.0)
+        # Рамка у всех карточек одинаковая, серая: жёлтое выделение
+        # новинок убрано (NEW показывает малый чип у названия).
         p.setPen(QPen(QColor(*self.BASE_BORDER), 2.0))
         p.setBrush(Qt.NoBrush)
         p.drawPath(border)
@@ -25283,6 +25391,188 @@ class OcSettingsDialog(QDialog):
         self.accept()
 
 
+# ============================================================
+# БЕСПЛАТНЫЕ МОДЕЛИ OPCODE: история появления/убирания.
+# Снапшот списка хранится в oc_free_state.json рядом с настройками.
+# При каждом приходе свежего списка он сравнивается со снапшотом:
+# новички получают пометку NEW, убранные — строку в красном виджете
+# над списком «Бесплатные модели». У каждой красной записи свой срок —
+# _OC_FREE_REMOVED_TTL_DAYS (2 дня) с момента убирания; снимаются по
+# одной, новые записи срок старым не продлевают. Пометка NEW живёт
+# _OC_FREE_TTL_DAYS (4 дня) от даты релиза из каталога.
+# ============================================================
+
+_OC_FREE_STATE_FILE = os.path.join(SETTINGS_DIR, "oc_free_state.json")
+_OC_FREE_TTL_DAYS = 4
+# Срок жизни записи об убранной модели в красном виджете: 2 дня, потом
+# запись снимается сама (каждая по своему времени убирания — убранная
+# позже держится дольше).
+_OC_FREE_REMOVED_TTL_DAYS = 2
+
+
+def _oc_free_state_load():
+    """Читает снапшот бесплатных моделей: {"known": {id: ""},
+    "removed": {id: ts}, "ack": ts} — отметка последнего «ознакомления»
+    (открытия окна моделей), от которой зависит жёлтый индикатор кнопки."""
+    try:
+        with open(_OC_FREE_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+    except Exception:
+        return {}
+    known = data.get("known")
+    removed = data.get("removed")
+    return {
+        "known": dict(known) if isinstance(known, dict) else {},
+        "removed": dict(removed) if isinstance(removed, dict) else {},
+        "ack": data.get("ack"),
+    }
+
+
+def _oc_free_state_save(state):
+    try:
+        os.makedirs(SETTINGS_DIR, exist_ok=True)
+        with open(_OC_FREE_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _oc_free_state_ts(value):
+    """Значение снапшота → time.time(); "" / битое → None."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _oc_free_state_ack():
+    """Отметка «ознакомился» (последнее открытие окна моделей).
+    0.0 — ещё не ознакомился ничего/файл только создался."""
+    return _oc_free_state_ts(_oc_free_state_load().get("ack")) or 0.0
+
+
+def _oc_free_state_set_ack(ts):
+    """Сохраняет отметку «ознакомился» в снапшоте."""
+    state = _oc_free_state_load()
+    state["ack"] = float(ts)
+    _oc_free_state_save(state)
+
+
+def _oc_free_when_text(ts, now=None, with_time=True):
+    """Короткое «когда» для меток бесплатных моделей: «сегодня в 20:00»,
+    «вчера в 20:00», «3 дня назад», а для событий старше четырёх дней —
+    сама дата «19.02.2026». Слова «удален/добавлен» не добавляются
+    (так просили): смысл метки задаёт место, где она стоит.
+    with_time=False — вариант без времени («сегодня», «вчера»): им
+    показывают даты релиза из каталога opencode, время там отсутствует."""
+    try:
+        ts = float(ts)
+        now = time.time() if now is None else float(now)
+    except (TypeError, ValueError):
+        return ""
+    lang_en = LANG is not None and LANG.lang == "en"
+
+    def _key(st):
+        return (st.tm_year, st.tm_mon, st.tm_mday)
+
+    lt = time.localtime(ts)
+    lt_now = time.localtime(now)
+    hh_mm = "%02d:%02d" % (lt.tm_hour, lt.tm_min)
+    if _key(lt) == _key(lt_now):
+        if not with_time:
+            return "today" if lang_en else "сегодня"
+        return ("today at " + hh_mm) if lang_en else ("сегодня в " + hh_mm)
+    lt_prev = time.localtime(now - 86400.0)
+    if _key(lt) == _key(lt_prev):
+        if not with_time:
+            return "yesterday" if lang_en else "вчера"
+        return ("yesterday at " + hh_mm) if lang_en else ("вчера в " + hh_mm)
+
+    def _midnight(st):
+        return time.mktime((st.tm_year, st.tm_mon, st.tm_mday,
+                            0, 0, 0, 0, 0, -1))
+
+    days = int(round((_midnight(lt_now) - _midnight(lt)) / 86400.0))
+    if days <= _OC_FREE_TTL_DAYS:
+        if lang_en:
+            return "%d day%s ago" % (days, "" if days == 1 else "s")
+        n100, n10 = days % 100, days % 10
+        if n100 in range(11, 15):
+            word = "дней"
+        elif n10 == 1:
+            word = "день"
+        elif n10 in range(2, 5):
+            word = "дня"
+        else:
+            word = "дней"
+        return "%d %s назад" % (days, word)
+    return time.strftime("%d.%m.%Y", lt)
+
+
+def _oc_free_state_diff(free_ids):
+    """Сравнивает свежий список бесплатных моделей opencode со снапшотом.
+
+    Возвращает removed_view {id: ts} — убранные для красного виджета,
+    по _OC_FREE_REMOVED_TTL_DAYS (2 дня) на запись, каждая снимается
+    независимо по своему времени убирания (убранная позже держится
+    дольше). Даты «когда добавлено» локально НЕ хранятся и не
+    изобретаются: они берутся из каталога самого opencode
+    (release_date → meta "released" в _oc_meta_from_catalog_item).
+    Локальному снапшоту остаётся только состав прошлого списка (known)
+    и время убирания (removed) — иначе убранные не отличить: opencode
+    об удалении задним числом не сообщает. Первый запуск просто
+    запоминает список и ставит ack «ознакомления» (жёлтый индикатор
+    кнопки не беспокоит юзера стартовой пачкой). Пустой текущий список
+    (сбой CLI) не сравнивается — не плодим ложных «убранных».
+    """
+    state = _oc_free_state_load()
+    known = state.get("known") or {}
+    removed = state.get("removed") or {}
+    now = time.time()
+    ttl_rm = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
+    current = list(dict.fromkeys(
+        str(x).strip() for x in (free_ids or [])
+        if str(x).strip()))
+    if not current:
+        return {}
+    was_seed = not known
+    present = set(current)
+    # Красные записи старше своего срока снимаются сами.
+    for rid in list(removed):
+        t = _oc_free_state_ts(removed.get(rid))
+        if t is None or (now - t) >= ttl_rm:
+            del removed[rid]
+    # Вернувшаяся в список модель — красная запись снимается (без NEW:
+    # «новизна» решает дата релиза из каталога opencode, см. _add_row).
+    for mid in current:
+        if mid in removed:
+            del removed[mid]
+    # Кто был известен, а сейчас пропал — в красный виджет (если записи ещё нет).
+    for mid in known:
+        if mid not in present and mid not in removed:
+            removed[mid] = now
+    # Снапшот состава: только факт «была в списке», без дат.
+    for mid in current:
+        if mid not in known:
+            known[mid] = ""
+    # Отметка «ознакомился»: персистим как есть; при самом первом посеве
+    # считаем всё увиденным — индикатор не зажигаем молнией данных.
+    ack = _oc_free_state_ts(state.get("ack"))
+    if ack is None and was_seed:
+        ack = now
+    _oc_free_state_save(
+        {"known": known, "removed": removed,
+         "ack": ack if ack is not None else 0.0})
+    removed_view = {}
+    for rid, ts in removed.items():
+        t = _oc_free_state_ts(ts)
+        if t is not None and (now - t) < ttl_rm:
+            removed_view[rid] = t
+    return removed_view
+
+
 class OcModelDialog(QDialog):
     """Информационное окно для вкладки Custom URL (opencode).
 
@@ -25297,7 +25587,7 @@ class OcModelDialog(QDialog):
     MIN_W = 420
 
     def __init__(self, endpoint_models, free_models, model_meta=None,
-                 provider_name="", parent=None):
+                 provider_name="", parent=None, free_removed=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -25309,6 +25599,10 @@ class OcModelDialog(QDialog):
         self._free = [m for m in (free_models or []) if m not in self._endpoint]
         self._provider_name = provider_name
         self._meta = _oc_normalize_meta_map(model_meta)
+        # Пометки бесплатных моделей: убранные (красный виджет под шапкой
+        # секции). Даты «когда добавлено» приходят прямо в мете моделей
+        # из каталога opencode (released), локально не хранятся.
+        self._set_free_maps(free_removed)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)
@@ -25469,6 +25763,23 @@ class OcModelDialog(QDialog):
         self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
         self._closing = False
 
+    def _set_free_maps(self, free_removed):
+        """Красный виджет удалённых: {id: ts}. Просроченные записи (старше
+        _OC_FREE_REMOVED_TTL_DAYS) отбрасываются сразу — чтобы окно не
+        показывало пометки по устаревшему кэшу главного окна."""
+        now = time.time()
+        ttl = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
+
+        def _fresh(mapping):
+            out = {}
+            for mid, ts in dict(mapping or {}).items():
+                t = _oc_free_state_ts(ts)
+                if t is not None and (now - t) < ttl:
+                    out[str(mid)] = t
+            return out
+
+        self._free_removed = _fresh(free_removed)
+
     def _apply_preferred_size(self):
         """adjustSize() у QScrollArea часто выбирает минимальную ширину:
         задаём комфортную ширину и высоту под число моделей, но не
@@ -25543,7 +25854,8 @@ class OcModelDialog(QDialog):
         inner.addWidget(frame)
 
     def _add_section_header(self, title, count, provider="", badge=""):
-        """Лёгкая шапка секции: название, счётчик, бейдж и провайдер.
+        """Лёгкая шапка секции: название и один чип, внутри которого —
+        число моделей («UNLIMIT · 4» / «tokenharbor.ai · 70»).
         Не карточка — поэтому список не выглядит набором одинаковых рамок."""
         host = QWidget()
         host.setStyleSheet("background: transparent; border: none;")
@@ -25561,41 +25873,48 @@ class OcModelDialog(QDialog):
         lbl.setTextFormat(Qt.PlainText)
         row.addWidget(lbl)
 
-        cnt = QLabel(str(count))
-        cnt.setFont(QFont("Segoe UI", 8, QFont.Bold))
-        cnt.setAlignment(Qt.AlignCenter)
-        cnt.setStyleSheet(
-            "color: rgb(176, 176, 188);"
-            " background: rgba(255, 255, 255, 0.055);"
-            " border: 2px solid rgba(255, 255, 255, 0.16);"
-            " border-radius: 8px; padding: 1px 6px;")
+        # Количество — внутри чипа: у «Бесплатных» в UNLIMIT
+        # («UNLIMIT · 4»), у секции провайдера в пилюле имени
+        # («tokenharbor.ai · 70»). Отдельный чип количества не нужен.
+        count_prefix = ""
         if badge:
-            b = QLabel(badge.upper())
-            b.setFont(QFont("Segoe UI", 7, QFont.Bold))
-            b.setAlignment(Qt.AlignCenter)
-            b.setStyleSheet(
+            count_prefix = badge.upper() + " · "
+            cnt = QLabel(count_prefix + str(count))
+            # Размер — как у пилюли добавленного провайдера
+            # («tokenharbor.ai · 70»): тот же шрифт, отступы и радиус.
+            cnt.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            cnt.setAlignment(Qt.AlignCenter)
+            cnt.setStyleSheet(
                 "color: rgb(140, 220, 150);"
                 " background: rgba(140, 220, 150, 18);"
                 " border: 2px solid rgba(140, 220, 150, 90);"
-                " border-radius: 8px; padding: 1px 7px;")
-            row.addWidget(b)
-
-        if provider:
+                " border-radius: 9px; padding: 2px 8px;")
+            cnt.setTextFormat(Qt.PlainText)
+            row.addWidget(cnt)
+        elif provider:
             pr, pg, pb = assign_provider_color(provider)
-            pill = QLabel(provider)
-            pill.setFont(QFont("Segoe UI", 8, QFont.Bold))
-            pill.setStyleSheet(
+            count_prefix = provider + " · "
+            cnt = QLabel(count_prefix + str(count))
+            cnt.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            cnt.setStyleSheet(
                 "color: rgb(%d, %d, %d);"
                 " background: rgba(%d, %d, %d, 18);"
                 " border: 2px solid rgba(%d, %d, %d, 95);"
                 " border-radius: 9px; padding: 2px 8px;"
                 % (pr, pg, pb, pr, pg, pb, pr, pg, pb))
-            pill.setTextFormat(Qt.PlainText)
-            row.addWidget(pill)
+            cnt.setTextFormat(Qt.PlainText)
+            row.addWidget(cnt)
+        else:
+            cnt = QLabel(str(count))
+            cnt.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            cnt.setAlignment(Qt.AlignCenter)
+            cnt.setStyleSheet(
+                "color: rgb(176, 176, 188);"
+                " background: rgba(255, 255, 255, 0.055);"
+                " border: 2px solid rgba(255, 255, 255, 0.16);"
+                " border-radius: 9px; padding: 2px 8px;")
+            row.addWidget(cnt)
 
-        # Порядок слева: надпись → бейдж (UNLIMIT/пилюля провайдера) →
-        # количество моделей. Растяжка последняя — правый край пустой.
-        row.addWidget(cnt)
         row.addStretch(1)
         box.addLayout(row)
 
@@ -25610,8 +25929,11 @@ class OcModelDialog(QDialog):
         self._cards_layout.addSpacing(3)
         # Секция помнит свою шапку и строки — для живого поиска:
         # _apply_filter прячет несовпавшие строки и опустевшие шапки.
+        # count_prefix — текст чипа до числа («UNLIMIT · », «имя · »):
+        # живой счётчик обновляет только число, не теряя название.
         self._filter_sections.append(
-            {"host": host, "count": cnt, "rows": [], "subs": []})
+            {"host": host, "count": cnt, "count_prefix": count_prefix,
+             "rows": [], "subs": []})
 
     def _add_family_header(self, title, count):
         """Явный подзаголовок семейства внутри «Моделей провайдера»:
@@ -25657,8 +25979,21 @@ class OcModelDialog(QDialog):
         # Бейдж FREE рисует только название строки провайдера (суффикс
         # -free/:free, см. _OcInfoRow); у секции «Бесплатные модели»
         # бейджей нет вовсе. Окраска задаётся секцией (is_free → зелёный)
-        # и не меняется.
-        row = _OcInfoRow(name, is_free=bool(is_free), meta=meta)
+        # и не меняется. NEW и метка «когда» решаются датой релиза из
+        # каталога opencode (release_date): свежее 4 дней → чип NEW
+        # и жёлтая окантовка, метка «когда» — под названием всегда.
+        released = None
+        if is_free:
+            try:
+                released = _oc_free_state_ts(meta.get("released"))
+            except Exception:
+                released = None
+        row = _OcInfoRow(
+            name, is_free=bool(is_free), meta=meta,
+            is_new=bool(released
+                        and (time.time() - released)
+                        < _OC_FREE_TTL_DAYS * 86400.0),
+            released_ts=released)
         self._cards_layout.addWidget(row)
         # Для поиска: и по ID, и по отображаемому имени модели.
         display = str(meta.get("name") or "")
@@ -25670,8 +26005,177 @@ class OcModelDialog(QDialog):
             else:
                 last["rows"].append((row, haystack))
 
+    def _add_removed_notice(self, removed_map):
+        """Красный виджет над списком «Бесплатные модели»: по строке на
+        каждую удалённую модель — после названия «— удалена», без дат и
+        без точного времени (срок виден сам: запись живёт
+        _OC_FREE_REMOVED_TTL_DAYS дня с момента убирания и снимается
+        независимо, поэтому удалённая позже держится дольше: срок первой
+        записи новыми записями не продлевается)."""
+        now = time.time()
+        ttl = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
+        entries = []
+        for mid, ts in dict(removed_map or {}).items():
+            t = _oc_free_state_ts(ts)
+            if t is not None and (now - t) < ttl:
+                entries.append((str(mid), t))
+        if not entries:
+            return
+        entries.sort(key=lambda kv: kv[1])
+        box = QFrame()
+        box.setObjectName("ocRemovedNotice")
+        box.setStyleSheet(
+            "QFrame#ocRemovedNotice {"
+            " background: rgba(214, 86, 86, 0.10);"
+            " border: 2px solid rgba(214, 86, 86, 110);"
+            " border-radius: 10px; }")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(12, 8, 12, 9)
+        lay.setSpacing(4)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(7)
+        dot = QLabel()
+        dot.setFixedSize(8, 8)
+        dot.setStyleSheet(
+            "background: rgb(214, 86, 86); border: none; border-radius: 4px;")
+        title_row.addWidget(dot, 0, Qt.AlignVCenter)
+        title = QLabel(tr("Удалённые").upper())
+        title.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        title.setStyleSheet(
+            "color: rgb(235, 140, 140);"
+            " background: transparent; border: none;")
+        title.setTextFormat(Qt.PlainText)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        lay.addLayout(title_row)
+
+        haystacks = ["удалена removed"]
+        for mid, ts in entries:
+            meta = self._meta.get(mid) or {}
+            display = str(meta.get("name") or mid).strip() or mid
+            name_lbl = _ElidingLabel(display, Qt.ElideMiddle)
+            name_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+            name_lbl.setStyleSheet(
+                "color: rgb(240, 152, 152);"
+                " background: transparent; border: none;")
+            name_lbl.setTextFormat(Qt.PlainText)
+            if display.lower() != mid.lower():
+                name_lbl.setToolTip(mid)
+            status_lbl = QLabel("— " + tr("удалена"))
+            status_lbl.setFont(QFont("Segoe UI", 8))
+            status_lbl.setStyleSheet(
+                "color: rgb(212, 128, 128);"
+                " background: transparent; border: none;")
+            status_lbl.setTextFormat(Qt.PlainText)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(7)
+            name_lbl.setMinimumWidth(0)   # длинное имя элайдится, статус не вылетает
+            row.addWidget(name_lbl, 0, Qt.AlignVCenter)
+            row.addWidget(status_lbl, 0, Qt.AlignVCenter)
+            row.addStretch(1)
+            lay.addLayout(row)
+            haystacks.append("%s %s" % (mid, display))
+        self._cards_layout.addWidget(box)
+        self._cards_layout.addSpacing(1)
+        # Поисковый фильтр лечит виджет как строку секции, а счётчик
+        # моделей он не увеличивает — маркер is_notice.
+        box.is_notice = True
+        if self._filter_sections:
+            self._filter_sections[-1]["rows"].append(
+                (box, " ".join(haystacks).strip().lower()))
+
+    def _add_new_notice(self, free_ids):
+        """Зелёный виджет «НОВЫЕ» над списком «Бесплатные модели» —
+        зеркальный красному: по строке на каждую СВЕЖУЮ бесплатную
+        модель (дата релиза из каталога opencode младше
+        _OC_FREE_TTL_DAYS дней — тот же признак новизны, что у чипа NEW
+        и жёлтой окантовки). После названия — та же дата, что подписана
+        под самой карточкой: «— сегодня» / «— вчера» / «— 17.10.2026»,
+        без времени (так просили). Новые сверху, старые ниже. Даты
+        локально не хранятся и не изобретаются — только release_date
+        из каталога."""
+        now = time.time()
+        ttl = _OC_FREE_TTL_DAYS * 86400.0
+        entries = []
+        for mid in list(free_ids or []):
+            meta = self._meta.get(str(mid)) or {}
+            t = _oc_free_state_ts(meta.get("released"))
+            if t is not None and (now - t) < ttl:
+                entries.append((str(mid), t))
+        if not entries:
+            return
+        entries.sort(key=lambda kv: kv[1], reverse=True)
+        box = QFrame()
+        box.setObjectName("ocAddedNotice")
+        box.setStyleSheet(
+            "QFrame#ocAddedNotice {"
+            " background: rgba(86, 182, 122, 0.10);"
+            " border: 2px solid rgba(86, 182, 122, 110);"
+            " border-radius: 10px; }")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(12, 8, 12, 9)
+        lay.setSpacing(4)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(7)
+        dot = QLabel()
+        dot.setFixedSize(8, 8)
+        dot.setStyleSheet(
+            "background: rgb(86, 182, 122); border: none; border-radius: 4px;")
+        title_row.addWidget(dot, 0, Qt.AlignVCenter)
+        title = QLabel(tr("Новые").upper())
+        title.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        title.setStyleSheet(
+            "color: rgb(142, 216, 170);"
+            " background: transparent; border: none;")
+        title.setTextFormat(Qt.PlainText)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        lay.addLayout(title_row)
+
+        haystacks = ["новая new добавлена добавлены"]
+        for mid, ts in entries:
+            meta = self._meta.get(mid) or {}
+            display = str(meta.get("name") or mid).strip() or mid
+            name_lbl = _ElidingLabel(display, Qt.ElideMiddle)
+            name_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+            name_lbl.setStyleSheet(
+                "color: rgb(154, 214, 172);"
+                " background: transparent; border: none;")
+            name_lbl.setTextFormat(Qt.PlainText)
+            if display.lower() != mid.lower():
+                name_lbl.setToolTip(mid)
+            when = _oc_free_when_text(ts, now, with_time=False)
+            status_lbl = QLabel("— " + (when or "—"))
+            status_lbl.setFont(QFont("Segoe UI", 8))
+            status_lbl.setStyleSheet(
+                "color: rgb(120, 186, 146);"
+                " background: transparent; border: none;")
+            status_lbl.setTextFormat(Qt.PlainText)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(7)
+            name_lbl.setMinimumWidth(0)   # длинное имя элайдится, дата не вылетает
+            row.addWidget(name_lbl, 0, Qt.AlignVCenter)
+            row.addWidget(status_lbl, 0, Qt.AlignVCenter)
+            row.addStretch(1)
+            lay.addLayout(row)
+            haystacks.append("%s %s" % (mid, display))
+        self._cards_layout.addWidget(box)
+        self._cards_layout.addSpacing(1)
+        # Поисковый фильтр лечит виджет как строку секции, а счётчик
+        # моделей он не увеличивает — маркер is_notice.
+        box.is_notice = True
+        if self._filter_sections:
+            self._filter_sections[-1]["rows"].append(
+                (box, " ".join(haystacks).strip().lower()))
+
     def update_models(self, endpoint_models, free_models, provider_name="",
-                      model_meta=None):
+                      model_meta=None, free_removed=None):
         """Перестраивает карточки моделей, когда фоновый loader принёс свежие
         данные (установка/удаление/обновление opencode и т.п.)."""
         self._endpoint = list(endpoint_models or [])
@@ -25679,6 +26183,7 @@ class OcModelDialog(QDialog):
         self._provider_name = provider_name or ""
         if model_meta is not None:
             self._meta = _oc_normalize_meta_map(model_meta)
+        self._set_free_maps(free_removed)
         while self._cards_layout.count():
             item = self._cards_layout.takeAt(0)
             w = item.widget()
@@ -25742,6 +26247,11 @@ class OcModelDialog(QDialog):
         if self._free:
             queue.append(("header", (tr("Бесплатные модели"),
                                      len(self._free), "", "UNLIMIT")))
+            if self._free_removed:
+                # Красный виджет убранных из бесплатных — сразу под шапкой.
+                queue.append(("removed", self._free_removed))
+            # Зелёный виджет свежих (NEW) — под красным, над строками.
+            queue.append(("added", self._free))
             queue.extend(("row", (m, True)) for m in self._free)
         if self._endpoint:
             queue.append(("header", (tr("Модели провайдера"),
@@ -25793,6 +26303,10 @@ class OcModelDialog(QDialog):
                     self._add_section_header(*payload)
                 elif kind == "subheader":
                     self._add_family_header(*payload)
+                elif kind == "removed":
+                    self._add_removed_notice(payload)
+                elif kind == "added":
+                    self._add_new_notice(payload)
                 elif kind == "row":
                     self._add_row(payload[0], is_free=payload[1])
                 elif kind == "empty":
@@ -25828,6 +26342,10 @@ class OcModelDialog(QDialog):
         empty.hide()
         self._cards_layout.addWidget(empty)
         self._no_results = empty
+        # Растяжка в хвосте списка: если вьюпорт выше содержимого (мало
+        # моделей), свободная высота уходит в конец, а шапки секций и
+        # красный виджет убранных не растягиваются на весь экран.
+        self._cards_layout.addStretch(1)
         # Порционную сборку крупного списка показываем одним появлением.
         if self._cards_host.isHidden():
             _oc_reveal_smooth(self._cards_host)
@@ -25858,9 +26376,12 @@ class OcModelDialog(QDialog):
             for row, haystack in section["rows"]:
                 match = (not query) or (query in haystack)
                 row.setVisible(match)
-                if match:
+                # Красный виджет убранных участвует в поиске как строка,
+                # но в счётчике моделей секции не значится.
+                if match and not getattr(row, "is_notice", False):
                     visible += 1
-            section["count"].setText(str(visible))
+            section["count"].setText(
+                str(section.get("count_prefix", "")) + str(visible))
             section["host"].setVisible(visible > 0)
             if visible:
                 any_visible = True
@@ -37070,6 +37591,10 @@ class ClaudeManager(QMainWindow):
         if not hasattr(self, "_oc_model_ids"):
             self._oc_model_ids = []
             self._oc_free_ids = []
+            # Пометки бесплатных: {id: ts} убранных (окно моделей, красный
+            # виджет). Даты добавлений приходят из каталога opencode
+            # (release_date → meta "released"), локально не хранятся.
+            self._oc_free_removed = {}
             self._oc_model_meta = {}
             self._oc_info_dlg = None
             self._oc_provider_name = ""
@@ -37206,6 +37731,16 @@ class ClaudeManager(QMainWindow):
         не выбирает — окно только показывает доступное."""
         self._oc_model_ids = list(model_ids)
         self._oc_free_ids = list(free_ids)
+        # История бесплатных: новички (NEW) и убранные (красный виджет)
+        # считаются здесь — в единственной точке прихода свежих данных.
+        # Пустой каталог не сравниваем: сбой CLI не обязан выглядеть как
+        # «все модели убрали».
+        self._oc_free_removed = {}
+        if free_ids:
+            try:
+                self._oc_free_removed = _oc_free_state_diff(free_ids)
+            except Exception:
+                pass
         meta = _oc_normalize_meta_map(endpoint_meta)
         meta.update(_oc_normalize_meta_map(free_meta))
         self._oc_model_meta = meta
@@ -37252,7 +37787,8 @@ class ClaudeManager(QMainWindow):
                 list(self._oc_model_ids or []),
                 list(self._oc_free_ids or []),
                 getattr(self, "_oc_provider_display", "") or "",
-                model_meta=dict(getattr(self, "_oc_model_meta", {}) or {}))
+                model_meta=dict(getattr(self, "_oc_model_meta", {}) or {}),
+                free_removed=dict(getattr(self, "_oc_free_removed", {}) or {}))
         except Exception:
             pass
 
@@ -37264,6 +37800,35 @@ class ClaudeManager(QMainWindow):
         btn = getattr(self, "oc_info_btn", None)
         if btn is None:
             return
+        # Жёлтый индикатор на кнопке: только если пользователь ещё НЕ
+        # ознакомился (не открывал окно моделей, отметка ack) — при этом
+        # есть удалённые (ts позже ack) или свежие релизы NEW (дата релиза
+        # позже ack; срок пометки NEW — 4 дня). После открытия окна
+        # моделей отметка «ознакомился» сохраняется — индикатор не вернётся,
+        # пока не случится новое изменение в бесплатных.
+        try:
+            ack = _oc_free_state_ack()
+            now_ts = time.time()
+            ttl_rm = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
+            ttl_new = _OC_FREE_TTL_DAYS * 86400.0
+            alerted = False
+            for iid, ts in dict(getattr(self, "_oc_free_removed", {})
+                                or {}).items():
+                t = _oc_free_state_ts(ts)
+                if t is not None and t > ack and (now_ts - t) < ttl_rm:
+                    alerted = True
+                    break
+            if not alerted:
+                meta_map = getattr(self, "_oc_model_meta", {}) or {}
+                for mid in list(getattr(self, "_oc_free_ids", []) or []):
+                    t = _oc_free_state_ts(
+                        (meta_map.get(str(mid)) or {}).get("released"))
+                    if t is not None and t > ack and (now_ts - t) < ttl_new:
+                        alerted = True
+                        break
+            btn.set_alert(alerted)
+        except Exception:
+            pass
         try:
             _cli = self._is_oc_installed()
         except Exception:
@@ -37321,18 +37886,39 @@ class ClaudeManager(QMainWindow):
                 txt += f" · {len(free_ids)} бесплатных моделей"
         btn.setText(txt)
 
+    def _oc_free_mark_seen(self):
+        """Открыли окно моделей — «ознакомился» с изменениями в бесплатных:
+        жёлтый индикатор на кнопке гаснет и не вернётся, пока не появится
+        новое изменение (убирание или свежий релиз после этого момента)."""
+        try:
+            _oc_free_state_set_ack(time.time())
+        except Exception:
+            pass
+        btn = getattr(self, "oc_info_btn", None)
+        if btn is not None:
+            try:
+                btn.set_alert(False)
+            except Exception:
+                pass
+
     def _oc_show_info(self):
         """Открывает информационное окно доступных моделей (клик по кнопке
         «Какие модели доступны»). В карточках видны контекст, EFFORT
         и VISION.
         Окно строится из кэша мгновенно, без загрузки при открытии (данные
         обновляются при старте приложения и кнопкой «Обновить» в окне)."""
+        # Открытие окна = «ознакомился» с изменениями в бесплатных:
+        # отметка снимает жёлтый индикатор кнопки — он не вернётся, пока
+        # не появится новое изменение.
+        self._oc_free_mark_seen()
         endpoint = list(getattr(self, "_oc_model_ids", []) or [])
         free = list(getattr(self, "_oc_free_ids", []) or [])
         meta = dict(getattr(self, "_oc_model_meta", {}) or {})
         provider_name = getattr(self, "_oc_provider_display", "") or ""
         dlg = OcModelDialog(endpoint, free, meta,
-                            provider_name=provider_name, parent=self)
+                            provider_name=provider_name, parent=self,
+                            free_removed=dict(
+                                getattr(self, "_oc_free_removed", {}) or {}))
         dlg.destroyed.connect(lambda *_: self._on_oc_info_destroyed(dlg))
         self._oc_info_dlg = dlg
         # Если фоновая загрузка (старт приложения или смена URL/ключа) ещё
