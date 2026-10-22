@@ -25573,6 +25573,43 @@ def _oc_free_state_diff(free_ids):
     return removed_view
 
 
+class _OcNoticeIndicator(QWidget):
+    """Компактный «живой» индикатор в заголовках плашек «УДАЛЁННЫЕ» и
+    «НОВЫЕ»: цветная точка с мягким пульсирующим ореолом (как
+    StatusIndicator у кнопок, но меньше и в цвет своей плашки)."""
+
+    def __init__(self, rgb, parent=None):
+        super().__init__(parent)
+        self._rgb = tuple(rgb)
+        self.setFixedSize(14, 14)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(33)          # ~30 FPS: мелкому ореолу хватает
+
+    def _tick(self):
+        self._phase += 0.11
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        r, g, b = self._rgb
+        pulse = 0.5 + 0.5 * math.sin(self._phase)     # 0..1
+        center = QPointF(self.width() / 2.0, self.height() / 2.0)
+        painter.setPen(Qt.NoPen)
+        # Ореол плавно «дышит» — точка выглядит живым индикатором.
+        painter.setBrush(QColor(r, g, b, int(28 + 52 * pulse)))
+        glow_r = 4.2 + 2.2 * pulse
+        painter.drawEllipse(center, glow_r, glow_r)
+        # Ядро чуть меняет яркость вместе с ореолом.
+        bright = 0.86 + 0.14 * pulse
+        painter.setBrush(QColor(
+            int(r * bright), int(g * bright), int(b * bright)))
+        painter.drawEllipse(center, 3.2, 3.2)
+
+
 class OcModelDialog(QDialog):
     """Информационное окно для вкладки Custom URL (opencode).
 
@@ -26036,11 +26073,8 @@ class OcModelDialog(QDialog):
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(7)
-        dot = QLabel()
-        dot.setFixedSize(8, 8)
-        dot.setStyleSheet(
-            "background: rgb(214, 86, 86); border: none; border-radius: 4px;")
-        title_row.addWidget(dot, 0, Qt.AlignVCenter)
+        indicator = _OcNoticeIndicator((214, 86, 86))
+        title_row.addWidget(indicator, 0, Qt.AlignVCenter)
         title = QLabel(tr("Удалённые").upper())
         title.setFont(QFont("Segoe UI", 8, QFont.Bold))
         title.setStyleSheet(
@@ -26122,11 +26156,8 @@ class OcModelDialog(QDialog):
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(7)
-        dot = QLabel()
-        dot.setFixedSize(8, 8)
-        dot.setStyleSheet(
-            "background: rgb(86, 182, 122); border: none; border-radius: 4px;")
-        title_row.addWidget(dot, 0, Qt.AlignVCenter)
+        indicator = _OcNoticeIndicator((86, 182, 122))
+        title_row.addWidget(indicator, 0, Qt.AlignVCenter)
         title = QLabel(tr("Новые").upper())
         title.setFont(QFont("Segoe UI", 8, QFont.Bold))
         title.setStyleSheet(
