@@ -2,6 +2,60 @@
  "comment": "История обновлений Claude Code Manager. Показывается в окне «Обновления» (кнопка-«!» у названия программы). Новую запись добавлять СВЕРХУ (самая свежая — первая): поля id (уникальный, латиница), version (версия приложения с этим обновлением), dateISO (UTC-момент выхода, суффикс Z), icon (имя иконки), ru/en (title, features[{icon,text}], optimizations[text] или [{title,points}] — фиолетовая панель «Оптимизация», fixes[text], note{title,points,tone} — необязательные блоки можно опускать; tone: red | purple). Иконки: Sparkles, Cpu, KeyRound, Columns2, Palette, Maximize2, Terminal, RefreshCw, Languages, Check, Network, Bot, Download, PlugZap, Wallet, SlidersHorizontal, Globe.",
  "updates": [
   {
+   "id": "oc-models-607",
+   "version": "6.0.7",
+   "dateISO": "2026-10-24T14:04:54Z",
+   "icon": "SlidersHorizontal",
+   "ru": {
+    "title": "Системный промт",
+    "features": [
+     {
+      "icon": "Bot",
+      "text": "Свой системный промт для opencode: кнопка «Системный промт» находится в настройках на вкладке Custom URL. Дополнительные правила пишутся там же, хранятся в ~/.config/opencode/AGENTS.md и действуют во всех проектах. Промт можно отключить без потери текста, а пустое поле + «Сохранить» удаляет его."
+     },
+     {
+      "icon": "Globe",
+      "text": "Контекст моделей добавленного провайдера берётся только из его шлюза. Если лимит не сообщён, показывается красный чип 200K"
+     },
+     {
+      "icon": "SlidersHorizontal",
+      "text": "У моделей добавленного провайдера убран чип EFFORT. У бесплатных моделей opencode чип остался"
+     },
+     {
+      "icon": "RefreshCw",
+      "text": "Добавленные и удалённые бесплатные модели собраны в одну тёмно-серую плашку: сверху зелёные строки «добавлена», ниже красные «удалена», у заголовка жёлтый индикатор"
+     }
+    ],
+    "fixes": [
+     "Установка, обновление и удаление CLI обходят политику PowerShell и используют npm.cmd; --allow-scripts добавляется только на новых npm"
+    ]
+   },
+   "en": {
+    "title": "System prompt",
+    "features": [
+     {
+      "icon": "Bot",
+      "text": "Custom system prompt for opencode: the 'System prompt' button is in Settings on the Custom URL tab. Extra rules are written there, stored in ~/.config/opencode/AGENTS.md and applied to every project. The prompt can be disabled without losing the text; an empty field + Save removes it."
+     },
+     {
+      "icon": "Globe",
+      "text": "Context for an added provider's model comes only from its endpoint. If the limit is not reported, a red 200K chip is shown"
+     },
+     {
+      "icon": "SlidersHorizontal",
+      "text": "Added-provider models no longer show the EFFORT chip. opencode free models keep it"
+     },
+     {
+      "icon": "RefreshCw",
+      "text": "Added and removed free models now share one dark gray panel: green 'added' rows on top, red 'removed' rows below, with a yellow indicator"
+     }
+    ],
+    "fixes": [
+     "CLI install, update and removal bypass the PowerShell policy and use npm.cmd; --allow-scripts is added only on newer npm"
+    ]
+   }
+  },
+  {
    "id": "free-models-changes-606",
    "version": "6.0.6",
    "dateISO": "2026-10-22T07:55:40Z",

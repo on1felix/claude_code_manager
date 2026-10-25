@@ -29,7 +29,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QRect, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "6.0.6"  # Для обновлений
+APP_VERSION = "6.0.7"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -1264,7 +1264,9 @@ TRANSLATIONS = {
     "Бесплатная модель": "Free model",
     "Изменения в бесплатных моделях": "Changes in free models",
     "Удалённые": "Removed",
+    "Добавленные": "Added",
     "удалена": "removed",
+    "добавлена": "added",
     "Новые": "New",
     "Новая бесплатная модель": "New free model",
     "убран сегодня": "removed today",
@@ -1276,6 +1278,7 @@ TRANSLATIONS = {
     "Введите /model в терминале opencode и выберите нужную модель. Список обновляется при запуске приложения; кнопка «Обновить» — вручную.": "Type /model in the opencode terminal and pick the model you need. The list refreshes at app startup; the Update button refreshes it manually.",
     "Контекст": "Context",
     "токенов": "tokens",
+    "Провайдер не сообщил контекст; OpenCode по умолчанию использует 200K": "The provider did not report context; OpenCode defaults to 200K",
     "Поддерживает изображения": "Supports images",
     "Поддерживает effort": "Supports effort",
     "Как изменить модель": "How to change the model",
@@ -1313,6 +1316,26 @@ TRANSLATIONS = {
     "Не удалось добавить звук: копия не создана.": "Could not add sound: copy was not created.",
     "Тема": "Theme",
     "Настройки": "Settings",
+    "Системный промт": "System prompt",
+    "Задан": "Set",
+    "Отключён": "Disabled",
+    "Включён": "Enabled",
+    "Использовать промт": "Use prompt",
+    "Дополнительные правила для ИИ во всех проектах. Хранятся в ~/.config/opencode/AGENTS.md.": "Extra rules for the AI in every project. Stored in ~/.config/opencode/AGENTS.md.",
+    "Напишите, что ИИ должен соблюдать…": "Write what the AI should follow…",
+    "Можно дополнять и менять текст.": "You can add to and change the text.",
+    "Пустое поле + «Сохранить» — промт удалится.": "An empty field + Save removes the prompt.",
+    "Редактирование…": "Editing…",
+    "Промт сохранён": "Prompt saved",
+    "Промт удалён": "Prompt removed",
+    "Не удалось сохранить промт": "Could not save the prompt",
+    "Промт отключён": "Prompt disabled",
+    "Промт включён": "Prompt enabled",
+    "Не удалось отключить промт": "Could not disable the prompt",
+    "Не удалось включить промт": "Could not enable the prompt",
+    "Промт пуст — нечего отключать.": "The prompt is empty — nothing to disable.",
+    "Выключение сохраняет текст — включение вернёт его обратно.": "Turning it off keeps the text — turning it on brings it back.",
+    "Примерная оценка: кириллица ≈ 2.6 символа на токен, латиница ≈ 4.": "Rough estimate: Cyrillic ≈ 2.6 chars per token, Latin ≈ 4.",
     "Вкл": "On",
     "Выкл": "Off",
     "Прозрачная тема opencode": "Transparent opencode theme",
@@ -2609,6 +2632,41 @@ def find_windows_terminal():
         return local
     return None
 
+# PowerShell ExecutionPolicy: на части Windows стоит Restricted, и тогда
+# npm.ps1 / .ps1-шимы CLI не запускаются («running scripts is disabled»).
+# Снимаем политику только для процесса — Scope Process ничего не меняет
+# в настройках системы и действует, пока открыто окно установки/CLI.
+PS_EXEC_BYPASS = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+
+
+def _ps_with_bypass(ps_body):
+    """Тело PowerShell с гарантированным обходом ExecutionPolicy.
+
+    Если префикс уже добавлен вызывающим кодом (запуск Claude/Codex/
+    opencode) — не дублируем его."""
+    body = str(ps_body or "")
+    if body.lstrip().lower().startswith("set-executionpolicy"):
+        return body
+    return PS_EXEC_BYPASS + body
+
+
+def _ps_npm_install(pkg):
+    """`npm install -g` с авторазрешением install-скриптов пакета.
+
+    npm 11.16+ предупреждает, что lifecycle-скрипты не разрешены, а npm 12
+    их блокирует, и просит флаг `--allow-scripts=<pkg>`. Добавляем флаг
+    только на новых npm: на старых скрипты и так выполняются. Если версию
+    определить не удалось — флаг оставляем, чтобы postinstall не пропустился
+    молча."""
+    return (
+        f"$allowArgs = @('--allow-scripts={pkg}'); "
+        "try { $nv = [version]((& npm.cmd --version 2>$null | "
+        "Select-Object -Last 1).Trim()); "
+        "if ($nv -lt [version]'11.16.0') { $allowArgs = @() } } catch {} "
+        f"npm.cmd install -g {pkg}@latest @allowArgs; "
+    )
+
+
 def spawn_powershell_session(working_dir, ps_body, env=None, wt_profile=None):
     """Открывает интерактивное окно PowerShell с ps_body в рабочей директории.
 
@@ -2625,6 +2683,7 @@ def spawn_powershell_session(working_dir, ps_body, env=None, wt_profile=None):
     Пишем ps_body во временный .ps1 и запускаем -File; рабочий каталог
     задаём флагом wt -d (cd не нужен)."""
     wt = find_windows_terminal()
+    body = _ps_with_bypass(ps_body)
     if wt:
         script = os.path.join(
             tempfile.gettempdir(),
@@ -2632,11 +2691,12 @@ def spawn_powershell_session(working_dir, ps_body, env=None, wt_profile=None):
         )
         try:
             with open(script, 'w', encoding='utf-8-sig') as f:
-                f.write(ps_body)
+                f.write(body)
         except OSError:
             # Не смогли записать скрипт — деградируем к обычному запуску.
             return subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {ps_body}"],
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-Command", f"cd '{working_dir}'; {body}"],
                 env=env
             )
         wt_args = [wt]
@@ -2661,7 +2721,8 @@ def spawn_powershell_session(working_dir, ps_body, env=None, wt_profile=None):
         timer.start()
         return proc
     return subprocess.Popen(
-        ["powershell", "-NoExit", "-Command", f"cd '{working_dir}'; {ps_body}"],
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-NoExit", "-Command", f"cd '{working_dir}'; {body}"],
         env=env
     )
 
@@ -2765,7 +2826,7 @@ def spawn_setup_session(ps_body, env=None, working_dir=None):
         pid_file = os.path.join(tempfile.gettempdir(),
                                 "ccm_setup_{}.pid".format(stamp))
         body = ("[IO.File]::WriteAllText('{}', [string]$PID)\n".format(
-            pid_file.replace("'", "''")) + ps_body)
+            pid_file.replace("'", "''")) + _ps_with_bypass(ps_body))
         try:
             with open(script, 'w', encoding='utf-8-sig') as f:
                 f.write(body)
@@ -2773,7 +2834,7 @@ def spawn_setup_session(ps_body, env=None, working_dir=None):
             # Не смогли записать скрипт — деградируем к обычному запуску.
             return subprocess.Popen(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-Command", ps_body],
+                 "-Command", _ps_with_bypass(ps_body)],
                 env=env
             )
         # Профиль терминала не задаём: окно открывается с дефолтным
@@ -2798,7 +2859,7 @@ def spawn_setup_session(ps_body, env=None, working_dir=None):
         return _SetupSessionWait(pid_file, proc, _cleanup)
     return subprocess.Popen(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-         "-Command", ps_body],
+         "-Command", _ps_with_bypass(ps_body)],
         env=env
     )
 
@@ -9851,6 +9912,35 @@ def _oc_model_meta_for_ids(model_ids, base_meta=None, provider=None,
     return result
 
 
+def _oc_keep_provider_context(meta_map, provider_context):
+    """Контекст добавленного провайдера — только из ответа его шлюза.
+
+    models.dev остаётся источником имени/vision/effort, но не контекста:
+    если провайдер не сообщил context_length, models.dev не должен
+    подставлять чужой лимит. В этом случае показываем 200K с маркером
+    context_unknown: это не измеренный лимит, а значение OpenCode по
+    умолчанию — на карточке такой чип будет красным.
+    Бесплатные модели идут другим путём (free=True) и здесь не участвуют.
+    """
+    if not isinstance(meta_map, dict):
+        return meta_map
+    for mid, ctx in (provider_context or {}).items():
+        mid = str(mid)
+        meta = meta_map.get(mid)
+        if ctx is not None:
+            if isinstance(meta, dict):
+                meta.pop("context_unknown", None)
+            continue
+        if not isinstance(meta, dict):
+            meta = {}
+            meta_map[mid] = meta
+        # Затираем контекст, пришедший из models.dev: у реселлера может
+        # быть другой лимит, а неизвестность важнее красивой цифры.
+        meta["context"] = 200000
+        meta["context_unknown"] = True
+    return meta_map
+
+
 def _oc_normalize_meta_map(raw):
     """Совместимость со старым форматом {model: reasoning_bool}."""
     out = {}
@@ -9918,6 +10008,12 @@ def _oc_reveal_smooth(widget, duration=140):
 
 class _OcInfoRow(QFrame):
     """Карточка модели: название, ID, контекст, бейджи EFFORT и VISION.
+
+    Красный чип 200K у добавленного провайдера означает неизвестный
+    контекст: шлюз его не сообщил, OpenCode по умолчанию берёт 200K.
+    Чип EFFORT показывается только у бесплатных моделей opencode: для
+    добавленного провайдера OpenCode сам подставляет generic
+    low/medium/high, и такой чип не отражал бы реальную поддержку.
 
     Не кнопка: строка только показывает данные. Название выкрашено в цвет
     вендора по семейству модели (первое слово ID — все варианты семейства
@@ -10048,19 +10144,37 @@ class _OcInfoRow(QFrame):
             chips.addWidget(free_chip, 0, Qt.AlignVCenter)
         ctx = _oc_context_value(self._meta)
         ctx_text = _oc_format_context(ctx)
+        ctx_unknown = bool(isinstance(self._meta, dict)
+                           and self._meta.get("context_unknown"))
         if ctx_text:
             chip = QLabel(ctx_text)
+            chip.setObjectName("ocContextChip")
+            chip.setProperty("contextUnknown", ctx_unknown)
             chip.setFont(QFont("Segoe UI", 8, QFont.Bold))
             chip.setAlignment(Qt.AlignCenter)
             chip.setMinimumWidth(46)
-            chip.setStyleSheet(
-                "color: rgb(178, 198, 224);"
-                " background: rgba(84, 112, 150, 0.16);"
-                " border: 2px solid rgba(105, 145, 190, 0.45);"
-                " border-radius: 9px; padding: 2px 8px;")
+            if ctx_unknown:
+                # Красный 200K — не лимит модели, а неизвестность:
+                # провайдер не сообщил контекст, OpenCode берёт 200K
+                # по умолчанию. Красный цвет отделяет его от реальных
+                # значений, полученных от шлюза или models.dev.
+                chip.setStyleSheet(
+                    "color: rgb(235, 140, 140);"
+                    " background: rgba(214, 86, 86, 0.12);"
+                    " border: 2px solid rgba(214, 86, 86, 120);"
+                    " border-radius: 9px; padding: 2px 8px;")
+            else:
+                chip.setStyleSheet(
+                    "color: rgb(178, 198, 224);"
+                    " background: rgba(84, 112, 150, 0.16);"
+                    " border: 2px solid rgba(105, 145, 190, 0.45);"
+                    " border-radius: 9px; padding: 2px 8px;")
             chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             chips.addWidget(chip, 0, Qt.AlignVCenter)
-        effort = _oc_effort_value(self._meta)
+        # EFFORT — только у бесплатных моделей. У добавленного провайдера
+        # OpenCode подставляет generic low/medium/high всем моделям, поэтому
+        # чип не доказывает поддержку effort и только вводил бы в заблуждение.
+        effort = _oc_effort_value(self._meta) if self._is_free else None
         if effort is not None:
             ef = QFrame()
             ef.setObjectName("ocEffortChip")
@@ -10131,8 +10245,15 @@ class _OcInfoRow(QFrame):
         if self._badge_free:
             tip.append(tr("Бесплатная модель"))
         if ctx_text:
-            tip.append("%s: %s %s" % (
-                tr("Контекст"), _oc_format_tokens_full(ctx), tr("токенов")))
+            if ctx_unknown:
+                tip.append("%s: %s %s — %s" % (
+                    tr("Контекст"), _oc_format_tokens_full(ctx),
+                    tr("токенов"),
+                    tr("Провайдер не сообщил контекст; OpenCode по умолчанию использует 200K")))
+            else:
+                tip.append("%s: %s %s" % (
+                    tr("Контекст"), _oc_format_tokens_full(ctx),
+                    tr("токенов")))
         if vision is True:
             tip.append(tr("Поддерживает изображения"))
         if effort is not None:
@@ -25159,9 +25280,723 @@ class OcThemeDialog(QDialog):
         self.accept()
 
 
+# ============================================================
+# СИСТЕМНЫЙ ПРОМТ OPENCODE (глобальный AGENTS.md)
+# Промт хранится отдельным управляемым блоком в
+# ~/.config/opencode/AGENTS.md: он дополняет штатные инструкции opencode
+# и действует во всех проектах. Чужой текст вокруг блока не трогаем.
+# Очистка убирает только наш блок; если файл стал пустым — удаляем его.
+# ============================================================
+
+_OC_PROMPT_BEGIN = "<!-- BEGIN claude-code-manager: system prompt -->"
+_OC_PROMPT_END = "<!-- END claude-code-manager: system prompt -->"
+
+
+def _oc_prompt_path():
+    """Глобальный AGENTS.md opencode: один на все проекты пользователя."""
+    try:
+        return os.path.join(os.path.expanduser("~"),
+                            ".config", "opencode", "AGENTS.md")
+    except Exception:
+        return ""
+
+
+def _oc_prompt_bounds(lines):
+    """Индексы строк управляемого блока (BEGIN, END) или None.
+    Блок без END считается оборванным — чужой файл тогда не режем."""
+    start = None
+    for i, line in enumerate(lines):
+        if str(line).strip() == _OC_PROMPT_BEGIN:
+            start = i
+            break
+    if start is None:
+        return None
+    for j in range(start + 1, len(lines)):
+        if str(lines[j]).strip() == _OC_PROMPT_END:
+            return (start, j)
+    return None
+
+
+def _oc_prompt_load():
+    """(текст файла, кодировка для обратной записи).
+    (None, "utf-8") — прочитать не удалось. UTF-16 (PowerShell/Out-File)
+    и UTF-8 BOM сохраняем, чтобы не испортить чужой AGENTS.md."""
+    try:
+        p = _oc_prompt_path()
+        if not p or not os.path.exists(p):
+            return "", "utf-8"
+        with open(p, "rb") as f:
+            data = f.read()
+        if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+            return data.decode("utf-16"), "utf-16"
+        enc = "utf-8-sig" if data.startswith(b"\xef\xbb\xbf") else "utf-8"
+        try:
+            raw = data.decode(enc)
+        except UnicodeDecodeError:
+            raw = data.decode("utf-8", "replace")
+            enc = "utf-8"
+        return raw, enc
+    except Exception:
+        return None, "utf-8"
+
+
+def _oc_prompt_split(raw):
+    """Текст до и после управляемого блока (маркеры вырезаны)."""
+    text = str(raw or "")
+    lines = text.splitlines(keepends=True)
+    bounds = _oc_prompt_bounds(lines)
+    if bounds is None:
+        return text, ""
+    start, end = bounds
+    return "".join(lines[:start]), "".join(lines[end + 1:])
+
+
+def _oc_prompt_read():
+    """Текст кастомного промта; "" — промт не задан."""
+    raw, _enc = _oc_prompt_load()
+    if raw is None:
+        return ""
+    lines = raw.splitlines()
+    bounds = _oc_prompt_bounds(lines)
+    if bounds is None:
+        return ""
+    start, end = bounds
+    return "\n".join(lines[start + 1:end]).strip("\r\n")
+
+
+def _oc_prompt_has():
+    """Задан ли непустой кастомный промт (блок в AGENTS.md)."""
+    return bool(_oc_prompt_read().strip())
+
+
+def _oc_prompt_disabled_path():
+    """Копия промта, пока он выключен: AGENTS.md остаётся без нашего блока."""
+    try:
+        return os.path.join(SETTINGS_DIR, "oc_system_prompt_disabled.md")
+    except Exception:
+        return ""
+
+
+def _oc_prompt_read_disabled():
+    try:
+        p = _oc_prompt_disabled_path()
+        if not p or not os.path.exists(p):
+            return ""
+        with open(p, "r", encoding="utf-8-sig") as f:
+            return f.read().strip("\r\n")
+    except Exception:
+        return ""
+
+
+def _oc_prompt_remove_disabled():
+    try:
+        p = _oc_prompt_disabled_path()
+        if p and os.path.exists(p):
+            os.remove(p)
+        return True
+    except Exception:
+        return False
+
+
+def _oc_prompt_save_disabled(text):
+    """Кладёт выключенный промт в sidecar рядом с настройками приложения."""
+    text = str(text or "").strip("\r\n")
+    if not text.strip():
+        return _oc_prompt_remove_disabled()
+    try:
+        p = _oc_prompt_disabled_path()
+        if not p:
+            return False
+        parent = os.path.dirname(p)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(text + "\n")
+        os.replace(tmp, p)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def _oc_prompt_state():
+    """'on' — блок активен; 'off' — текст сохранён выключенным; 'empty'."""
+    if _oc_prompt_has():
+        return "on"
+    if _oc_prompt_read_disabled().strip():
+        return "off"
+    return "empty"
+
+
+def _oc_prompt_read_for_ui():
+    """Текст для окна: активный блок, иначе сохранённый выключенный."""
+    if _oc_prompt_has():
+        return _oc_prompt_read()
+    return _oc_prompt_read_disabled()
+
+
+def _oc_prompt_disable(text=None):
+    """Выключает промт, не теряя текст. В AGENTS.md чистится только наш
+    блок; если файл стал пустым — удаляется. Чужой текст не трогаем."""
+    text = _oc_prompt_read() if text is None else str(text or "")
+    if text.strip():
+        if not _oc_prompt_save_disabled(text):
+            return False
+    else:
+        if not _oc_prompt_remove_disabled():
+            return False
+    return _oc_prompt_clear(keep_disabled=True)
+
+
+def _oc_prompt_enable(text=None):
+    """Возвращает сохранённый выключенный промт в AGENTS.md."""
+    text = _oc_prompt_read_disabled() if text is None else str(text or "")
+    if not text.strip():
+        return False
+    return _oc_prompt_write(text)
+
+
+def _oc_prompt_token_estimate(text):
+    """Грубая оценка токенов: кириллица ~2.6 символа/токен, латиница ~4.
+    Точное число зависит от модели; для индикатора длины этого хватает."""
+    text = str(text or "")
+    if not text.strip():
+        return 0
+    cyr = 0
+    lat = 0
+    for ch in text:
+        o = ord(ch)
+        if 0x0400 <= o <= 0x04FF:
+            cyr += 1
+        elif ch.isascii() and ch.isalpha():
+            lat += 1
+    other = len(text) - cyr - lat
+    tokens = cyr / 2.6 + lat / 4.0 + other / 3.0
+    return max(1, int(round(tokens)))
+
+
+def _oc_prompt_ru_plural(n, one, few, many):
+    n100, n10 = n % 100, n % 10
+    if n100 in range(11, 15):
+        return many
+    if n10 == 1:
+        return one
+    if n10 in range(2, 5):
+        return few
+    return many
+
+
+def _oc_prompt_usage_text(tokens, chars):
+    """«≈ 42 токена · 156 символов» (EN: tokens/chars)."""
+    if lang_is_en():
+        return "≈ %d token%s · %d char%s" % (
+            tokens, "" if tokens == 1 else "s",
+            chars, "" if chars == 1 else "s")
+    return "≈ %d %s · %d %s" % (
+        tokens, _oc_prompt_ru_plural(tokens, "токен", "токена", "токенов"),
+        chars, _oc_prompt_ru_plural(chars, "символ", "символа", "символов"))
+
+
+def _oc_prompt_write(text):
+    """Пишет промт управляемым блоком, сохраняя чужой текст AGENTS.md.
+    Пустой текст означает удаление промта. True — записано."""
+    text = str(text or "").strip("\r\n")
+    if not text.strip():
+        return _oc_prompt_clear()
+    raw, enc = _oc_prompt_load()
+    if raw is None:
+        return False
+    p = _oc_prompt_path()
+    if not p:
+        return False
+    before, after = _oc_prompt_split(raw)
+    nl = "\r\n" if "\r\n" in raw else "\n"
+    head = before.rstrip("\r\n")
+    tail = after.strip("\r\n")
+    parts = []
+    if head:
+        parts.extend((head, ""))
+    parts.append(_OC_PROMPT_BEGIN)
+    parts.extend(text.splitlines())
+    parts.append(_OC_PROMPT_END)
+    if tail:
+        parts.extend(("", tail))
+    out = nl.join(parts) + nl
+    tmp = p + ".tmp"
+    try:
+        parent = os.path.dirname(p)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tmp, "w", encoding=enc, newline="") as f:
+            f.write(out)
+        os.replace(tmp, p)
+        _oc_prompt_remove_disabled()
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def _oc_prompt_clear(keep_disabled=False):
+    """Убирает только наш блок. Если в AGENTS.md больше ничего нет —
+    удаляет и сам файл. Чужой текст остаётся нетронутым.
+    keep_disabled=True — не трогать sidecar выключенного промта."""
+    raw, enc = _oc_prompt_load()
+    if raw is None:
+        return False
+    p = _oc_prompt_path()
+    if not p:
+        return False
+    if not os.path.exists(p):
+        return True if keep_disabled else _oc_prompt_remove_disabled()
+    if _oc_prompt_bounds(raw.splitlines()) is None:
+        # нашего блока нет — файл не трогаем
+        return True if keep_disabled else _oc_prompt_remove_disabled()
+    before, after = _oc_prompt_split(raw)
+    head = before.rstrip("\r\n")
+    tail = after.strip("\r\n")
+    if not head.strip() and not tail.strip():
+        try:
+            os.remove(p)
+            return True if keep_disabled else _oc_prompt_remove_disabled()
+        except Exception:
+            return False
+    nl = "\r\n" if "\r\n" in raw else "\n"
+    out = head
+    if head.strip() and tail.strip():
+        out += nl + nl
+    out += tail
+    out += nl
+    tmp = p + ".tmp"
+    try:
+        with open(tmp, "w", encoding=enc, newline="") as f:
+            f.write(out)
+        os.replace(tmp, p)
+        return True if keep_disabled else _oc_prompt_remove_disabled()
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+class OcSystemPromptDialog(QDialog):
+    """Окно кастомного системного промта opencode (вкладка Custom URL).
+
+    Текст хранится управляемым блоком в глобальном
+    ~/.config/opencode/AGENTS.md и дополняет штатные инструкции opencode
+    во всех проектах. Пока окно открыто, текст только для чтения: кнопка
+    «Изменить» разблокирует поле, «Сохранить» пишет изменения. Пустое поле
+    + «Сохранить» убирает блок (и файл, если он стал пустым)."""
+
+    WIDTH = 620
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self._editing = False
+        state = _oc_prompt_state()
+        self._enabled = state != "off"
+        self._saved_text = _oc_prompt_read_for_ui()
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        container = DottedFrame()
+        container.setObjectName("ocPromptContainer")
+        container.setStyleSheet("""
+            QFrame#ocPromptContainer {
+                background-color: rgb(20, 20, 25);
+                border: 2px solid rgb(60, 60, 65);
+                border-radius: 16px;
+            }
+        """)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(26, 18, 26, 22)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(28, 28)
+        left_spacer.setStyleSheet("background: transparent; border: none;")
+        title_row.addWidget(left_spacer)
+        title = QLabel(tr("Системный промт"))
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(
+            "color: #CCCCCC; background: transparent; border: none;")
+        title_row.addWidget(title, 1)
+        self.btn_close = _CloseButton(parent=container)
+        self.btn_close.clicked.connect(self.accept)
+        title_row.addWidget(self.btn_close)
+        layout.addLayout(title_row)
+
+        hint = QLabel(tr("Дополнительные правила для ИИ во всех проектах. "
+                         "Хранятся в ~/.config/opencode/AGENTS.md."))
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setStyleSheet(
+            "color: rgb(160, 160, 168); background: transparent; border: none;")
+        layout.addWidget(hint)
+
+        toggle_row = QHBoxLayout()
+        toggle_row.setContentsMargins(2, 0, 2, 0)
+        toggle_row.setSpacing(10)
+        use_label = QLabel(tr("Использовать промт"))
+        use_label.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        use_label.setStyleSheet(
+            "color: rgb(205, 205, 214); background: transparent; border: none;")
+        toggle_row.addWidget(use_label)
+        self.toggle = KeyToggle(on=self._enabled, parent=container)
+        self.toggle.setToolTip(tr(
+            "Выключение сохраняет текст — включение вернёт его обратно."))
+        self.toggle.toggled.connect(self._on_toggle)
+        toggle_row.addWidget(self.toggle)
+        self.state_label = QLabel("")
+        self.state_label.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.state_label.setStyleSheet(
+            "color: rgb(52, 211, 153); background: transparent; border: none;")
+        toggle_row.addWidget(self.state_label)
+        toggle_row.addStretch(1)
+        layout.addLayout(toggle_row)
+
+        # Поле прозрачное: сквозь него виден фирменный узор самого окна.
+        # Своя подложка не нужна — только рамка, чтобы поле читалось.
+        self.field = QFrame()
+        self.field.setObjectName("ocPromptField")
+        self.field.setStyleSheet("""
+            QFrame#ocPromptField {
+                background: transparent;
+                border: 2px solid rgb(50, 50, 58);
+                border-radius: 10px;
+            }
+        """)
+        field_layout = QVBoxLayout(self.field)
+        field_layout.setContentsMargins(2, 2, 2, 2)
+        field_layout.setSpacing(0)
+
+        self.edit = QTextEdit(self.field)
+        self.edit.setObjectName("ocPromptEdit")
+        self.edit.setFont(QFont("Segoe UI", 10))
+        self.edit.setFrameShape(QFrame.NoFrame)
+        self.edit.setStyleSheet("""
+            QTextEdit#ocPromptEdit {
+                background: transparent;
+                border: none;
+                border-radius: 8px;
+                padding: 9px;
+                color: #d6d6de;
+                selection-background-color: rgb(60, 140, 200);
+            }
+        """)
+        try:
+            self.edit.viewport().setAutoFillBackground(False)
+        except Exception:
+            pass
+        self.edit.setPlaceholderText(
+            tr("Напишите, что ИИ должен соблюдать…"))
+        self.edit.setPlainText(self._saved_text)
+        self.edit.setReadOnly(True)
+        field_layout.addWidget(self.edit)
+        layout.addWidget(self.field, 1)
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(2, 0, 2, 0)
+        status_row.setSpacing(8)
+        self.status = QLabel("")
+        self.status.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.status.setStyleSheet(
+            "color: rgb(150, 150, 158); background: transparent; border: none;")
+        status_row.addWidget(self.status, 1)
+        self.counter = QLabel("")
+        self.counter.setFont(QFont("Segoe UI", 8))
+        self.counter.setToolTip(tr(
+            "Примерная оценка: кириллица ≈ 2.6 символа на токен, латиница ≈ 4."))
+        self.counter.setStyleSheet(
+            "color: rgb(140, 140, 148); background: transparent; border: none;")
+        status_row.addWidget(self.counter)
+        layout.addLayout(status_row)
+
+        clear_hint = QLabel(tr("Пустое поле + «Сохранить» — промт удалится."))
+        clear_hint.setFont(QFont("Segoe UI", 8))
+        clear_hint.setAlignment(Qt.AlignRight)
+        clear_hint.setStyleSheet(
+            "color: rgb(130, 130, 138); background: transparent; border: none;")
+        layout.addWidget(clear_hint)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 2, 0, 0)
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        self.btn_edit = StyledButton(tr("Изменить"), compact=True)
+        self.btn_edit.set_hover_color(120, 180, 230)
+        self.btn_edit.setFixedHeight(34)
+        self.btn_edit.clicked.connect(self._start_edit)
+        btn_row.addWidget(self.btn_edit)
+        self.btn_save = StyledButton(tr("Сохранить"), compact=True)
+        self.btn_save.set_hover_color(52, 211, 153)
+        self.btn_save.setFixedHeight(34)
+        self.btn_save.clicked.connect(self._save)
+        btn_row.addWidget(self.btn_save)
+        layout.addLayout(btn_row)
+
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+        self.setFixedSize(self.WIDTH, 520)
+
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(self._clear_status)
+        self.edit.textChanged.connect(self._refresh_counter)
+        self._update_state()
+        self._refresh_counter()
+
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_anim.setDuration(220)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _set_field_border(self, active):
+        """Синяя рамка — поле в режиме редактирования, серая — в покое."""
+        color = "rgb(120, 180, 230)" if active else "rgb(50, 50, 58)"
+        try:
+            self.field.setStyleSheet("""
+                QFrame#ocPromptField {
+                    background: transparent;
+                    border: 2px solid %s;
+                    border-radius: 10px;
+                }
+            """ % color)
+            self.field.update()
+        except Exception:
+            pass
+
+    def _update_state(self):
+        """Подпись и цвет состояния рядом с переключателем."""
+        if self._enabled:
+            text = tr("Включён")
+            color = "rgb(52, 211, 153)"
+        else:
+            text = tr("Отключён")
+            color = "rgb(232, 178, 90)"
+        try:
+            self.state_label.setText(text)
+            self.state_label.setStyleSheet(
+                "color: %s; background: transparent; border: none;" % color)
+        except Exception:
+            pass
+
+    def _refresh_counter(self):
+        """Приблизительный счётчик токенов под полем."""
+        try:
+            text = self.edit.toPlainText()
+            tokens = _oc_prompt_token_estimate(text)
+            chars = len(text)
+            self.counter.setText(_oc_prompt_usage_text(tokens, chars))
+            if tokens >= 1200:
+                color = "rgb(224, 90, 90)"
+            elif tokens >= 600:
+                color = "rgb(232, 178, 90)"
+            else:
+                color = "rgb(140, 140, 148)"
+            self.counter.setStyleSheet(
+                "color: %s; background: transparent; border: none;" % color)
+        except Exception:
+            pass
+
+    def _on_toggle(self, on):
+        """Мгновенно выключает/включает промт, не теряя текст.
+
+        Для выключения берём текущий текст из поля (даже несохранённый);
+        если поле пустое — последний сохранённый. При ошибке файловой
+        операции переключатель возвращается в прежнее положение."""
+        on = bool(on)
+        if on == self._enabled:
+            return
+        text = self.edit.toPlainText()
+        if not text.strip():
+            text = self._saved_text
+        if not text.strip():
+            self.toggle.set_on(not on, animate=True)
+            self._set_status(tr("Промт пуст — нечего отключать."), "info")
+            return
+        if on:
+            ok = _oc_prompt_enable(text)
+            if not ok:
+                self.toggle.set_on(False, animate=True)
+                self._set_status(tr("Не удалось включить промт"), "error")
+                return
+            self._enabled = True
+            self._saved_text = _oc_prompt_read_for_ui()
+            self.edit.setPlainText(self._saved_text)
+            self._set_status(tr("Промт включён"), "ok")
+        else:
+            ok = _oc_prompt_disable(text)
+            if not ok:
+                _oc_prompt_remove_disabled()
+                self.toggle.set_on(True, animate=True)
+                self._set_status(tr("Не удалось отключить промт"), "error")
+                return
+            self._enabled = False
+            self._saved_text = text.strip("\r\n")
+            self.edit.setPlainText(self._saved_text)
+            self._set_status(tr("Промт отключён"), "ok")
+        self._update_state()
+        self._refresh_counter()
+
+    def _start_edit(self):
+        """Разблокирует поле и ставит курсор в конец текста."""
+        if self._editing:
+            self.edit.setFocus()
+            return
+        self._editing = True
+        self.edit.setReadOnly(False)
+        self.btn_edit.setEnabled(False)
+        self.btn_edit.setText(tr("Редактирование…"))
+        self._set_field_border(True)
+        self._set_status(tr("Можно дополнять и менять текст."), "info")
+        self.edit.setFocus()
+        try:
+            cur = self.edit.textCursor()
+            cur.movePosition(QTextCursor.End)
+            self.edit.setTextCursor(cur)
+        except Exception:
+            pass
+
+    def _finish_edit(self):
+        self._editing = False
+        self.edit.setReadOnly(True)
+        self.btn_edit.setEnabled(True)
+        self.btn_edit.setText(tr("Изменить"))
+        self._set_field_border(False)
+
+    def _set_status(self, text, kind="info"):
+        colors = {
+            "ok": "rgb(52, 211, 153)",
+            "error": "rgb(224, 90, 90)",
+            "info": "rgb(150, 150, 158)",
+        }
+        self.status.setText(text)
+        self.status.setStyleSheet(
+            "color: %s; background: transparent; border: none;"
+            % colors.get(kind, colors["info"]))
+        try:
+            self._status_timer.stop()
+        except Exception:
+            pass
+        if text:
+            self._status_timer.start(5000)
+
+    def _clear_status(self):
+        self.status.clear()
+
+    def _save(self):
+        text = self.edit.toPlainText()
+        empty = not text.strip()
+        if empty:
+            ok = _oc_prompt_clear()
+            if not ok:
+                self._set_status(tr("Не удалось сохранить промт"), "error")
+                return
+            self._enabled = True
+            self._saved_text = ""
+            self.edit.clear()
+            self._set_status(tr("Промт удалён"), "ok")
+        elif self._enabled:
+            ok = _oc_prompt_write(text)
+            if not ok:
+                self._set_status(tr("Не удалось сохранить промт"), "error")
+                return
+            # Показываем ровно то, что легло в файл (без лишних пустых строк).
+            self._saved_text = _oc_prompt_read()
+            self.edit.setPlainText(self._saved_text)
+            self._set_status(tr("Промт сохранён"), "ok")
+        else:
+            ok = _oc_prompt_save_disabled(text)
+            if ok:
+                ok = _oc_prompt_clear(keep_disabled=True)
+            if not ok:
+                self._enabled = _oc_prompt_state() != "off"
+                self._update_state()
+                self._set_status(tr("Не удалось сохранить промт"), "error")
+                return
+            self._saved_text = _oc_prompt_read_disabled()
+            self.edit.setPlainText(self._saved_text)
+            self._set_status(tr("Промт сохранён"), "ok")
+        self._finish_edit()
+        self._update_state()
+        try:
+            self.toggle.set_on(self._enabled, animate=True)
+        except Exception:
+            pass
+        self._refresh_counter()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_anim.start()
+        if not self._editing:
+            try:
+                self._enabled = _oc_prompt_state() != "off"
+                self._saved_text = _oc_prompt_read_for_ui()
+                self.edit.setPlainText(self._saved_text)
+                self.edit.setReadOnly(True)
+                self._set_field_border(False)
+                self.toggle.set_on(self._enabled, animate=False)
+                self._update_state()
+                self._refresh_counter()
+            except Exception:
+                pass
+        try:
+            parent_win = self.parent().window() if self.parent() else None
+            if parent_win is not None and parent_win.isVisible():
+                pg = parent_win.frameGeometry()
+                cx, cy = pg.center().x(), pg.center().y()
+            else:
+                screen = QGuiApplication.primaryScreen().availableGeometry()
+                cx, cy = screen.center().x(), screen.center().y()
+            self.move(cx - self.width() // 2, cy - self.height() // 2)
+        except Exception:
+            pass
+
+    def accept(self):
+        fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        fade.setDuration(200)
+        fade.setStartValue(self._opacity_effect.opacity())
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.finished.connect(
+            lambda: super(OcSystemPromptDialog, self).accept())
+        fade.start()
+        self._fade_out = fade
+
+    def reject(self):
+        self.accept()
+
+
 class OcSettingsDialog(QDialog):
-    """Маленькое окно настроек Custom URL: две строки — «Звуки» и «Тема».
-    Клик по строке открывает исходное окно соответствующей настройки."""
+    """Маленькое окно настроек Custom URL: три строки — «Звуки», «Тема»
+    и «Системный промт». Клик по строке открывает исходное окно
+    соответствующей настройки."""
 
     WIDTH = 420
 
@@ -25208,6 +26043,7 @@ class OcSettingsDialog(QDialog):
         self._rows = {}
         layout.addWidget(self._make_row("Speaker", tr("Звуки"), "oc_notify_enabled", self._open_sounds))
         layout.addWidget(self._make_row("Image", tr("Тема"), "oc_theme_enabled", self._open_theme))
+        layout.addWidget(self._make_row("Bot", tr("Системный промт"), "oc_system_prompt", self._open_prompt))
 
         main_layout.addWidget(container)
         self.setLayout(main_layout)
@@ -25328,15 +26164,39 @@ class OcSettingsDialog(QDialog):
     def _refresh_row(self, key):
         try:
             _card, icon, status = self._rows[key]
-            on = bool((self._settings or {}).get(key, False))
-            status.setText(tr("Вкл") if on else tr("Выкл"))
+            if key == "oc_system_prompt":
+                # Статус промта живёт не в settings, а в глобальном AGENTS.md
+                # (или в sidecar, пока промт выключен).
+                state = _oc_prompt_state()
+                if state == "on":
+                    status.setText(tr("Задан"))
+                    color = "rgb(52, 211, 153)"
+                    icon_color = (52, 211, 153)
+                elif state == "off":
+                    status.setText(tr("Отключён"))
+                    color = "rgb(232, 178, 90)"
+                    icon_color = (232, 178, 90)
+                else:
+                    status.setText(tr("Не задан"))
+                    color = "rgb(150, 150, 158)"
+                    icon_color = (150, 150, 158)
+                status.setStyleSheet(
+                    "color: %s; background: transparent; border: none;" % color)
+                try:
+                    icon.setPixmap(_paint_update_glyph("Bot", 20, icon_color))
+                except Exception:
+                    pass
+                return
+            else:
+                on = bool((self._settings or {}).get(key, False))
+                status.setText(tr("Вкл") if on else tr("Выкл"))
+                glyph = "Speaker" if key == "oc_notify_enabled" else "Image"
             status.setStyleSheet(
                 "color: %s; background: transparent; border: none;" % (
                     "rgb(52, 211, 153)" if on else "rgb(150, 150, 158)"))
             try:
                 icon.setPixmap(_paint_update_glyph(
-                    "Speaker" if key == "oc_notify_enabled" else "Image",
-                    20, (52, 211, 153) if on else (150, 150, 158)))
+                    glyph, 20, (52, 211, 153) if on else (150, 150, 158)))
             except Exception:
                 pass
         except Exception:
@@ -25356,6 +26216,13 @@ class OcSettingsDialog(QDialog):
     def _open_theme(self):
         try:
             OcThemeDialog(self._settings, self).exec()
+        except Exception:
+            pass
+        self._refresh_states()
+
+    def _open_prompt(self):
+        try:
+            OcSystemPromptDialog(self).exec()
         except Exception:
             pass
         self._refresh_states()
@@ -25395,19 +26262,23 @@ class OcSettingsDialog(QDialog):
 # БЕСПЛАТНЫЕ МОДЕЛИ OPCODE: история появления/убирания.
 # Снапшот списка хранится в oc_free_state.json рядом с настройками.
 # При каждом приходе свежего списка он сравнивается со снапшотом:
-# новички получают пометку NEW, убранные — строку в красном виджете
-# над списком «Бесплатные модели». У каждой красной записи свой срок —
-# _OC_FREE_REMOVED_TTL_DAYS (2 дня) с момента убирания; снимаются по
-# одной, новые записи срок старым не продлевают. Пометка NEW живёт
+# новички получают пометку NEW, а убранные и свежие релизы — общую
+# плашку изменений над списком «Бесплатные модели». У каждой красной
+# записи свой срок — _OC_FREE_REMOVED_TTL_DAYS (24 часа) с момента
+# убирания; снимаются по одной, новые записи срок старым не продлевают. Пометка NEW живёт
 # _OC_FREE_TTL_DAYS (4 дня) от даты релиза из каталога.
 # ============================================================
 
 _OC_FREE_STATE_FILE = os.path.join(SETTINGS_DIR, "oc_free_state.json")
 _OC_FREE_TTL_DAYS = 4
-# Срок жизни записи об убранной модели в красном виджете: 2 дня, потом
-# запись снимается сама (каждая по своему времени убирания — убранная
-# позже держится дольше).
-_OC_FREE_REMOVED_TTL_DAYS = 2
+# Срок жизни записи об убранной модели в плашке изменений: 24 часа (1
+# день), потом запись снимается сама (каждая по своему времени убирания —
+# убранная позже держится дольше).
+_OC_FREE_REMOVED_TTL_DAYS = 1
+# Отметка об удалении не может быть из будущего: если часы переводили
+# вперёд, а потом вернули назад, ждать такой срок нельзя — плашка висела
+# бы до «будущего» момента. Час оставлен как запас на рассинхрон часов.
+_OC_FREE_FUTURE_TS_SLACK = 3600.0
 
 
 def _oc_free_state_load():
@@ -25515,7 +26386,7 @@ def _oc_free_state_diff(free_ids):
     """Сравнивает свежий список бесплатных моделей opencode со снапшотом.
 
     Возвращает removed_view {id: ts} — убранные для красного виджета,
-    по _OC_FREE_REMOVED_TTL_DAYS (2 дня) на запись, каждая снимается
+    по _OC_FREE_REMOVED_TTL_DAYS (24 часа) на запись, каждая снимается
     независимо по своему времени убирания (убранная позже держится
     дольше). Даты «когда добавлено» локально НЕ хранятся и не
     изобретаются: они берутся из каталога самого opencode
@@ -25539,11 +26410,17 @@ def _oc_free_state_diff(free_ids):
         return {}
     was_seed = not known
     present = set(current)
-    # Красные записи старше своего срока снимаются сами.
+    # Красные записи старше своего срока снимаются сами. Модель при этом
+    # забывается (уходит из known): иначе следующий проход снова увидит
+    # «была известна, сейчас пропала» и заведёт запись заново — плашка
+    # висела бы бесконечно, обновляя себе срок.
     for rid in list(removed):
         t = _oc_free_state_ts(removed.get(rid))
-        if t is None or (now - t) >= ttl_rm:
+        if (t is None
+                or t > now + _OC_FREE_FUTURE_TS_SLACK
+                or (now - t) >= ttl_rm):
             del removed[rid]
+            known.pop(rid, None)
     # Вернувшаяся в список модель — красная запись снимается (без NEW:
     # «новизна» решает дата релиза из каталога opencode, см. _add_row).
     for mid in current:
@@ -25776,6 +26653,12 @@ class OcModelDialog(QDialog):
         self._loading = False
         self._overlay = _BusyOverlay(container, radius=16.0)
 
+        # Автоскрытие плашек: одноразовый таймер до ближайшего срока.
+        # Проверяем не реже раза в час, чтобы пережить сон/смену часов.
+        self._notice_expiry_timer = QTimer(self)
+        self._notice_expiry_timer.setSingleShot(True)
+        self._notice_expiry_timer.timeout.connect(self._on_notice_expiry)
+
         self._build_sections()
 
         # Авто-подстройка размера: растёт под контент, но ограничен максимумами
@@ -25801,9 +26684,9 @@ class OcModelDialog(QDialog):
         self._closing = False
 
     def _set_free_maps(self, free_removed):
-        """Красный виджет удалённых: {id: ts}. Просроченные записи (старше
-        _OC_FREE_REMOVED_TTL_DAYS) отбрасываются сразу — чтобы окно не
-        показывало пометки по устаревшему кэшу главного окна."""
+        """Красные строки удалённых в общей плашке: {id: ts}. Просроченные
+        записи (старше _OC_FREE_REMOVED_TTL_DAYS) отбрасываются сразу —
+        чтобы окно не показывало пометки по устаревшему кэшу главного окна."""
         now = time.time()
         ttl = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
 
@@ -25811,11 +26694,94 @@ class OcModelDialog(QDialog):
             out = {}
             for mid, ts in dict(mapping or {}).items():
                 t = _oc_free_state_ts(ts)
-                if t is not None and (now - t) < ttl:
+                if (t is not None
+                        and t <= now + _OC_FREE_FUTURE_TS_SLACK
+                        and (now - t) < ttl):
                     out[str(mid)] = t
             return out
 
         self._free_removed = _fresh(free_removed)
+
+    def _notice_expiry_deadlines(self, now):
+        """Будущие сроки видимых плашек: красная — удаление + 24 часа,
+        зелёная — релиз + 4 дня. Прошедшие сроки сюда не попадают."""
+        deadlines = []
+        ttl_rm = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
+        ttl_new = _OC_FREE_TTL_DAYS * 86400.0
+        for ts in (getattr(self, "_free_removed", {}) or {}).values():
+            t = _oc_free_state_ts(ts)
+            if t is not None:
+                deadline = t + ttl_rm
+                if deadline > now:
+                    deadlines.append(deadline)
+        meta_map = getattr(self, "_meta", {}) or {}
+        for mid in (getattr(self, "_free", []) or []):
+            meta = meta_map.get(str(mid)) or {}
+            t = _oc_free_state_ts(meta.get("released"))
+            if t is not None:
+                deadline = t + ttl_new
+                if deadline > now:
+                    deadlines.append(deadline)
+        return deadlines
+
+    def _schedule_notice_expiry(self):
+        """Ставит одноразовый таймер на ближайшее истечение плашки.
+        Не дальше часа: после сна/смены часов проверим фактическое время."""
+        timer = getattr(self, "_notice_expiry_timer", None)
+        if timer is None:
+            return
+        timer.stop()
+        if getattr(self, "_closing", False):
+            return
+        try:
+            now = time.time()
+            deadlines = self._notice_expiry_deadlines(now)
+        except Exception:
+            return
+        if not deadlines:
+            return
+        delay_ms = int((min(deadlines) - now) * 1000.0) + 500
+        timer.start(max(1000, min(delay_ms, 3600000)))
+
+    def _on_notice_expiry(self):
+        """Таймер: снимает истёкшие плашки, не дожидаясь «Обновить».
+        Пересобирает список только если что-то действительно истекло."""
+        try:
+            if getattr(self, "_closing", False):
+                return
+            if getattr(self, "_build_pending", False):
+                self._notice_expiry_timer.start(1000)
+                return
+            now = time.time()
+            ttl_rm = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
+            ttl_new = _OC_FREE_TTL_DAYS * 86400.0
+            original = dict(getattr(self, "_free_removed", {}) or {})
+            kept = {}
+            for mid, ts in original.items():
+                t = _oc_free_state_ts(ts)
+                if (t is not None
+                        and t <= now + _OC_FREE_FUTURE_TS_SLACK
+                        and (now - t) < ttl_rm):
+                    kept[mid] = t
+            self._free_removed = kept
+            red_changed = set(kept) != set(original)
+            green_changed = False
+            meta_map = getattr(self, "_meta", {}) or {}
+            for mid in (getattr(self, "_free", []) or []):
+                t = _oc_free_state_ts(
+                    (meta_map.get(str(mid)) or {}).get("released"))
+                if t is not None and (now - t) >= ttl_new:
+                    green_changed = True
+                    break
+            if not red_changed and not green_changed:
+                self._schedule_notice_expiry()
+                return
+            scroll_pos = self._scroll.verticalScrollBar().value()
+            self._clear_cards()
+            self._build_sections()
+            self._scroll.verticalScrollBar().setValue(scroll_pos)
+        except RuntimeError:
+            pass
 
     def _apply_preferred_size(self):
         """adjustSize() у QScrollArea часто выбирает минимальную ширину:
@@ -26042,112 +27008,39 @@ class OcModelDialog(QDialog):
             else:
                 last["rows"].append((row, haystack))
 
-    def _add_removed_notice(self, removed_map):
-        """Красный виджет над списком «Бесплатные модели»: по строке на
-        каждую удалённую модель — после названия «— удалена», без дат и
-        без точного времени (срок виден сам: запись живёт
-        _OC_FREE_REMOVED_TTL_DAYS дня с момента убирания и снимается
-        независимо, поэтому удалённая позже держится дольше: срок первой
-        записи новыми записями не продлевается)."""
+    def _add_notices(self, removed_map, free_ids):
+        """Единая плашка изменений над списком «Бесплатные модели»:
+        тёмно-серая плашка, жёлтый живой индикатор и заголовок
+        «ДОБАВЛЕННЫЕ | УДАЛЁННЫЕ» (зелёное и красное слова). Внутри —
+        прежние чипы: зелёные «добавлена <дата>» и красные «удалена».
+        Цвета самих чипов не меняются. Плашка появляется, если есть
+        хотя бы одна свежая запись. Добавленные — новее сверху, удалённые —
+        по времени убирания. Даты добавления — только release_date из
+        каталога, локально не хранятся."""
         now = time.time()
-        ttl = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
-        entries = []
-        for mid, ts in dict(removed_map or {}).items():
-            t = _oc_free_state_ts(ts)
-            if t is not None and (now - t) < ttl:
-                entries.append((str(mid), t))
-        if not entries:
-            return
-        entries.sort(key=lambda kv: kv[1])
-        box = QFrame()
-        box.setObjectName("ocRemovedNotice")
-        box.setStyleSheet(
-            "QFrame#ocRemovedNotice {"
-            " background: rgba(214, 86, 86, 0.10);"
-            " border: 2px solid rgba(214, 86, 86, 110);"
-            " border-radius: 10px; }")
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(12, 8, 12, 9)
-        lay.setSpacing(4)
-
-        title_row = QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(7)
-        indicator = _OcNoticeIndicator((214, 86, 86))
-        title_row.addWidget(indicator, 0, Qt.AlignVCenter)
-        title = QLabel(tr("Удалённые").upper())
-        title.setFont(QFont("Segoe UI", 8, QFont.Bold))
-        title.setStyleSheet(
-            "color: rgb(235, 140, 140);"
-            " background: transparent; border: none;")
-        title.setTextFormat(Qt.PlainText)
-        title_row.addWidget(title)
-        title_row.addStretch(1)
-        lay.addLayout(title_row)
-
-        haystacks = ["удалена removed"]
-        for mid, ts in entries:
-            meta = self._meta.get(mid) or {}
-            display = str(meta.get("name") or mid).strip() or mid
-            name_lbl = _ElidingLabel(display, Qt.ElideMiddle)
-            name_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
-            name_lbl.setStyleSheet(
-                "color: rgb(240, 152, 152);"
-                " background: transparent; border: none;")
-            name_lbl.setTextFormat(Qt.PlainText)
-            if display.lower() != mid.lower():
-                name_lbl.setToolTip(mid)
-            status_lbl = QLabel("— " + tr("удалена"))
-            status_lbl.setFont(QFont("Segoe UI", 8))
-            status_lbl.setStyleSheet(
-                "color: rgb(212, 128, 128);"
-                " background: transparent; border: none;")
-            status_lbl.setTextFormat(Qt.PlainText)
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(7)
-            name_lbl.setMinimumWidth(0)   # длинное имя элайдится, статус не вылетает
-            row.addWidget(name_lbl, 0, Qt.AlignVCenter)
-            row.addWidget(status_lbl, 0, Qt.AlignVCenter)
-            row.addStretch(1)
-            lay.addLayout(row)
-            haystacks.append("%s %s" % (mid, display))
-        self._cards_layout.addWidget(box)
-        self._cards_layout.addSpacing(1)
-        # Поисковый фильтр лечит виджет как строку секции, а счётчик
-        # моделей он не увеличивает — маркер is_notice.
-        box.is_notice = True
-        if self._filter_sections:
-            self._filter_sections[-1]["rows"].append(
-                (box, " ".join(haystacks).strip().lower()))
-
-    def _add_new_notice(self, free_ids):
-        """Зелёный виджет «НОВЫЕ» над списком «Бесплатные модели» —
-        зеркальный красному: по строке на каждую СВЕЖУЮ бесплатную
-        модель (дата релиза из каталога opencode младше
-        _OC_FREE_TTL_DAYS дней — тот же признак новизны, что у чипа NEW
-        и жёлтой окантовки). После названия — та же дата, что подписана
-        под самой карточкой: «— сегодня» / «— вчера» / «— 17.10.2026»,
-        без времени (так просили). Новые сверху, старые ниже. Даты
-        локально не хранятся и не изобретаются — только release_date
-        из каталога."""
-        now = time.time()
-        ttl = _OC_FREE_TTL_DAYS * 86400.0
-        entries = []
+        ttl_new = _OC_FREE_TTL_DAYS * 86400.0
+        ttl_removed = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
+        added = []
         for mid in list(free_ids or []):
             meta = self._meta.get(str(mid)) or {}
             t = _oc_free_state_ts(meta.get("released"))
-            if t is not None and (now - t) < ttl:
-                entries.append((str(mid), t))
-        if not entries:
+            if t is not None and (now - t) < ttl_new:
+                added.append((str(mid), t))
+        removed = []
+        for mid, ts in dict(removed_map or {}).items():
+            t = _oc_free_state_ts(ts)
+            if t is not None and (now - t) < ttl_removed:
+                removed.append((str(mid), t))
+        if not added and not removed:
             return
-        entries.sort(key=lambda kv: kv[1], reverse=True)
+        added.sort(key=lambda kv: kv[1], reverse=True)
+        removed.sort(key=lambda kv: kv[1])
         box = QFrame()
-        box.setObjectName("ocAddedNotice")
+        box.setObjectName("ocNoticePanel")
         box.setStyleSheet(
-            "QFrame#ocAddedNotice {"
-            " background: rgba(86, 182, 122, 0.10);"
-            " border: 2px solid rgba(86, 182, 122, 110);"
+            "QFrame#ocNoticePanel {"
+            " background: rgba(16, 17, 22, 0.82);"
+            " border: 2px solid rgba(126, 128, 140, 110);"
             " border-radius: 10px; }")
         lay = QVBoxLayout(box)
         lay.setContentsMargins(12, 8, 12, 9)
@@ -26155,55 +27048,107 @@ class OcModelDialog(QDialog):
 
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(7)
-        indicator = _OcNoticeIndicator((86, 182, 122))
+        title_row.setSpacing(6)
+        indicator = _OcNoticeIndicator((226, 190, 88))
         title_row.addWidget(indicator, 0, Qt.AlignVCenter)
-        title = QLabel(tr("Новые").upper())
-        title.setFont(QFont("Segoe UI", 8, QFont.Bold))
-        title.setStyleSheet(
+        title_added = QLabel(tr("Добавленные").upper())
+        title_added.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        title_added.setStyleSheet(
             "color: rgb(142, 216, 170);"
             " background: transparent; border: none;")
-        title.setTextFormat(Qt.PlainText)
-        title_row.addWidget(title)
+        title_added.setTextFormat(Qt.PlainText)
+        title_row.addWidget(title_added)
+        title_sep = QLabel("|")
+        title_sep.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        title_sep.setStyleSheet(
+            "color: rgb(126, 128, 140);"
+            " background: transparent; border: none;")
+        title_sep.setTextFormat(Qt.PlainText)
+        title_row.addWidget(title_sep)
+        title_removed = QLabel(tr("Удалённые").upper())
+        title_removed.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        title_removed.setStyleSheet(
+            "color: rgb(235, 140, 140);"
+            " background: transparent; border: none;")
+        title_removed.setTextFormat(Qt.PlainText)
+        title_row.addWidget(title_removed)
         title_row.addStretch(1)
         lay.addLayout(title_row)
 
-        haystacks = ["новая new добавлена добавлены"]
-        for mid, ts in entries:
-            meta = self._meta.get(mid) or {}
-            display = str(meta.get("name") or mid).strip() or mid
-            name_lbl = _ElidingLabel(display, Qt.ElideMiddle)
-            name_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
-            name_lbl.setStyleSheet(
-                "color: rgb(154, 214, 172);"
-                " background: transparent; border: none;")
-            name_lbl.setTextFormat(Qt.PlainText)
-            if display.lower() != mid.lower():
-                name_lbl.setToolTip(mid)
-            when = _oc_free_when_text(ts, now, with_time=False)
-            status_lbl = QLabel("— " + (when or "—"))
-            status_lbl.setFont(QFont("Segoe UI", 8))
-            status_lbl.setStyleSheet(
-                "color: rgb(120, 186, 146);"
-                " background: transparent; border: none;")
-            status_lbl.setTextFormat(Qt.PlainText)
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(7)
-            name_lbl.setMinimumWidth(0)   # длинное имя элайдится, дата не вылетает
-            row.addWidget(name_lbl, 0, Qt.AlignVCenter)
-            row.addWidget(status_lbl, 0, Qt.AlignVCenter)
-            row.addStretch(1)
-            lay.addLayout(row)
-            haystacks.append("%s %s" % (mid, display))
+        haystacks = [
+            "новая new добавлена добавлены added",
+            "удалена removed",
+        ]
+        for mid, ts in added:
+            haystacks.append(self._add_notice_chip(lay, mid, ts, True, now))
+        for mid, ts in removed:
+            haystacks.append(self._add_notice_chip(lay, mid, ts, False, now))
         self._cards_layout.addWidget(box)
         self._cards_layout.addSpacing(1)
-        # Поисковый фильтр лечит виджет как строку секции, а счётчик
-        # моделей он не увеличивает — маркер is_notice.
+        # Поисковый фильтр лечит плашку как строку секции, а счётчик
+        # моделей она не увеличивает — маркер is_notice.
         box.is_notice = True
         if self._filter_sections:
             self._filter_sections[-1]["rows"].append(
                 (box, " ".join(haystacks).strip().lower()))
+
+    def _add_notice_chip(self, lay, mid, ts, is_added, now):
+        """Один чип внутри общей плашки. Цвет чипа задаёт статус:
+        зелёный — добавлена (с датой релиза), красный — удалена.
+        Возвращает строку для поиска."""
+        meta = self._meta.get(mid) or {}
+        display = str(meta.get("name") or mid).strip() or mid
+        if is_added:
+            object_name = "ocAddedChip"
+            name_color = "rgb(154, 214, 172)"
+            status_color = "rgb(144, 204, 164)"
+            dot_color = "rgb(142, 216, 170)"
+            background = "rgba(86, 182, 122, 22)"
+            border = "rgba(86, 182, 122, 100)"
+            when = _oc_free_when_text(ts, now, with_time=False) or "—"
+            chip_text = tr("добавлена") + " " + when
+        else:
+            object_name = "ocRemovedChip"
+            name_color = "rgb(240, 152, 152)"
+            status_color = "rgb(226, 154, 154)"
+            dot_color = "rgb(235, 140, 140)"
+            background = "rgba(214, 86, 86, 24)"
+            border = "rgba(214, 86, 86, 100)"
+            chip_text = tr("удалена")
+        name_lbl = _ElidingLabel(display, Qt.ElideMiddle, full_hint=True)
+        name_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        name_lbl.setStyleSheet(
+            "color: %s; background: transparent; border: none;" % name_color)
+        name_lbl.setTextFormat(Qt.PlainText)
+        if display.lower() != mid.lower():
+            name_lbl.setToolTip(mid)
+        status_lbl = QLabel(chip_text)
+        status_lbl.setFont(QFont("Segoe UI", 8, QFont.DemiBold))
+        status_lbl.setTextFormat(Qt.PlainText)
+        status_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        status_lbl.setStyleSheet(
+            "color: %s; background: transparent; border: none;" % status_color)
+        dot = QLabel("•")
+        dot.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        dot.setTextFormat(Qt.PlainText)
+        dot.setStyleSheet(
+            "color: %s; background: transparent; border: none;" % dot_color)
+        # Чип по ширине содержимого: имя, точка и статус/дата.
+        host = QFrame()
+        host.setObjectName(object_name)
+        host.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        host.setStyleSheet(
+            "QFrame#%s { background: %s; border: 1.5px solid %s;"
+            " border-radius: 8px; }" % (object_name, background, border))
+        row = QHBoxLayout(host)
+        row.setContentsMargins(9, 4, 9, 4)
+        row.setSpacing(6)
+        name_lbl.setMinimumWidth(0)
+        row.addWidget(name_lbl, 0, Qt.AlignVCenter)
+        row.addWidget(dot, 0, Qt.AlignVCenter)
+        row.addWidget(status_lbl, 0, Qt.AlignVCenter)
+        lay.addWidget(host, 0, Qt.AlignLeft)
+        return "%s %s %s" % (mid, display, chip_text)
 
     def update_models(self, endpoint_models, free_models, provider_name="",
                       model_meta=None, free_removed=None):
@@ -26215,11 +27160,7 @@ class OcModelDialog(QDialog):
         if model_meta is not None:
             self._meta = _oc_normalize_meta_map(model_meta)
         self._set_free_maps(free_removed)
-        while self._cards_layout.count():
-            item = self._cards_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
+        self._clear_cards()
         self._build_sections()
         self._scroll.setMaximumHeight(self.MAX_H - 231)
         self._apply_preferred_size()
@@ -26265,6 +27206,15 @@ class OcModelDialog(QDialog):
     BUILD_SYNC_MAX = 30
     BUILD_SLICE_MS = 12.0
 
+    def _clear_cards(self):
+        """Убирает из layout старые карточки/плашки перед пересборкой."""
+        while self._cards_layout.count():
+            item = self._cards_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.deleteLater()
+
     def _build_sections(self):
         combined = self._endpoint + self._free
         # Коллекции живого поиска пересобираются вместе со списком:
@@ -26278,11 +27228,8 @@ class OcModelDialog(QDialog):
         if self._free:
             queue.append(("header", (tr("Бесплатные модели"),
                                      len(self._free), "", "UNLIMIT")))
-            if self._free_removed:
-                # Красный виджет убранных из бесплатных — сразу под шапкой.
-                queue.append(("removed", self._free_removed))
-            # Зелёный виджет свежих (NEW) — под красным, над строками.
-            queue.append(("added", self._free))
+            # Общая плашка изменений (добавленные + удалённые) — под шапкой.
+            queue.append(("notices", (self._free_removed, self._free)))
             queue.extend(("row", (m, True)) for m in self._free)
         if self._endpoint:
             queue.append(("header", (tr("Модели провайдера"),
@@ -26334,10 +27281,8 @@ class OcModelDialog(QDialog):
                     self._add_section_header(*payload)
                 elif kind == "subheader":
                     self._add_family_header(*payload)
-                elif kind == "removed":
-                    self._add_removed_notice(payload)
-                elif kind == "added":
-                    self._add_new_notice(payload)
+                elif kind == "notices":
+                    self._add_notices(*payload)
                 elif kind == "row":
                     self._add_row(payload[0], is_free=payload[1])
                 elif kind == "empty":
@@ -26385,6 +27330,7 @@ class OcModelDialog(QDialog):
         self.search_edit.setVisible(self._build_combined)
         self._build_pending = False
         self._apply_filter(self.search_edit.text())
+        self._schedule_notice_expiry()
 
     def _apply_filter(self, text):
         """Живой поиск: прячет строки, не совпавшие с запросом, подзаголовки
@@ -26407,7 +27353,7 @@ class OcModelDialog(QDialog):
             for row, haystack in section["rows"]:
                 match = (not query) or (query in haystack)
                 row.setVisible(match)
-                # Красный виджет убранных участвует в поиске как строка,
+                # Плашка изменений участвует в поиске как строка,
                 # но в счётчике моделей секции не значится.
                 if match and not getattr(row, "is_notice", False):
                     visible += 1
@@ -26536,6 +27482,14 @@ class _OcModelsLoader(QThread):
             except Exception:
                 model_ids, endpoint_meta = [], {}
             if model_ids:
+                # Контекст для добавленного провайдера — только его собственный.
+                # Снимок до merge с capabilities/models.dev: если шлюз не дал
+                # context_length, каталог не должен подставлять чужой лимит.
+                provider_context = {}
+                for mid in model_ids:
+                    mm = endpoint_meta.get(mid)
+                    provider_context[str(mid)] = (
+                        mm.get("context") if isinstance(mm, dict) else None)
                 try:
                     cfg_path = self._owner._write_oc_provider_config(
                         self._base_url, self._api_key, list(model_ids)
@@ -26554,6 +27508,8 @@ class _OcModelsLoader(QThread):
                         model_ids, endpoint_meta, provider=self._provider)
                 except Exception:
                     pass
+                endpoint_meta = _oc_keep_provider_context(
+                    endpoint_meta, provider_context)
         free_ids, free_meta = [], {}
         try:
             free_ids, free_meta = self._owner._oc_fetch_free_catalog()
@@ -26834,11 +27790,13 @@ class KeyToggle(QWidget):
     _OFF_COL = (224, 90, 90)   # красный
     _ON_COL = (52, 211, 153)   # новый зелёный
 
-    def __init__(self, on=False, parent=None):
+    def __init__(self, on=False, parent=None, off_label=None, on_label=None):
         super().__init__(parent)
         self.setFixedSize(78, 22)
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
+        self._off_label = "OFF" if off_label is None else str(off_label)
+        self._on_label = "ON" if on_label is None else str(on_label)
         self._on = bool(on)
         self._progress = 1.0 if self._on else 0.0
         self._target = self._progress
@@ -26950,7 +27908,8 @@ class KeyToggle(QWidget):
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(QRectF(pill_x, pad, pill_w, h - pad * 2), pill_r, pill_r)
 
-        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        p.setFont(QFont("Segoe UI", getattr(self, "_label_font_pt", 8),
+                        QFont.Bold))
 
         # OFF (левая) — яркая когда t=0
         if (1.0 - t) > 0.5:
@@ -26966,7 +27925,7 @@ class KeyToggle(QWidget):
                 int(base.blue()  + (hb - base.blue())  * hov),
             )
         p.setPen(off_pen)
-        p.drawText(QRectF(0, 0, w / 2, h), Qt.AlignCenter, "OFF")
+        p.drawText(QRectF(0, 0, w / 2, h), Qt.AlignCenter, self._off_label)
 
         # ON (правая) — яркая когда t=1
         if t > 0.5:
@@ -26982,8 +27941,19 @@ class KeyToggle(QWidget):
                 int(base.blue()  + (hb - base.blue())  * hov),
             )
         p.setPen(on_pen)
-        p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignCenter, "ON")
+        p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignCenter, self._on_label)
         p.end()
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -26995,10 +27965,15 @@ class _ElidingLabel(QLabel):
     показывается целиком. Нужен, потому что внешний resizeEvent карточки
     срабатывает ДО того, как внутренняя раскладка выдаст лейблу финальную ширину,
     и однократный элид «не успевал»."""
-    def __init__(self, text="", elide_mode=Qt.ElideRight, parent=None):
+    def __init__(self, text="", elide_mode=Qt.ElideRight, parent=None,
+                 *, full_hint=False):
         super().__init__(parent)
         self._full = text or ""
         self._elide_mode = elide_mode
+        # full_hint: sizeHint считаем по полному тексту, а не по уже
+        # сокращённому. Нужно чипам, которые обжимают содержимое: иначе
+        # каждая раскладка укорачивала бы текст и чип полз бы к «…».
+        self._full_hint = bool(full_hint)
         super().setText(self._full)
 
     def setText(self, text):
@@ -27007,6 +27982,19 @@ class _ElidingLabel(QLabel):
 
     def fullText(self):
         return self._full
+
+    def minimumSizeHint(self):
+        """Полный текст не должен раздувать окно: при нехватке места
+        лейбл элидирует его, а минимальная ширина остаётся нулевой."""
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
+
+    def sizeHint(self):
+        if self._full_hint:
+            fm = QFontMetrics(self.font())
+            hint = super().sizeHint()
+            return QSize(fm.horizontalAdvance(self._full), hint.height())
+        return super().sizeHint()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -37508,7 +38496,7 @@ class ClaudeManager(QMainWindow):
             pass
 
     def _oc_open_settings(self):
-        """Маленькое окно настроек Custom URL: звуки и тема."""
+        """Маленькое окно настроек Custom URL: звуки, тема и системный промт."""
         if not self._is_oc_installed():
             return
         dlg = OcSettingsDialog(self.settings, self)
@@ -38825,7 +39813,7 @@ class ClaudeManager(QMainWindow):
         # Снимаем блок PowerShell ExecutionPolicy для этой сессии — если у пользователя
         # стоит Restricted, claude.ps1 без этого не запустится. Scope Process действует
         # только внутри этого powershell-процесса, ничего глобально не меняем.
-        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+        ps_prefix = PS_EXEC_BYPASS
 
         try:
             spawn_powershell_session(
@@ -38910,7 +39898,7 @@ class ClaudeManager(QMainWindow):
 
         # Снимаем блок PowerShell ExecutionPolicy для этой сессии — как и в
         # остальных режимах, Scope Process ничего не меняет глобально.
-        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+        ps_prefix = PS_EXEC_BYPASS
         try:
             spawn_powershell_session(
                 working_dir,
@@ -38996,7 +39984,7 @@ class ClaudeManager(QMainWindow):
             f'-c model="{model}" '
             f'-c model_reasoning_effort="{effort}"'
         )
-        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+        ps_prefix = PS_EXEC_BYPASS
         try:
             spawn_powershell_session(
                 working_dir,
@@ -39214,7 +40202,7 @@ class ClaudeManager(QMainWindow):
                 "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
                 "$prefixes = @('" + _pfx + "'); "
                 "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
-                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "if ($npmCmd) { try { $g = @(npm.cmd prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
                 "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
                 "foreach ($pfx in $prefixes) { "
                 "  if (Test-Path $pfx) { "
@@ -39222,9 +40210,9 @@ class ClaudeManager(QMainWindow):
                 "  } "
                 "} "
                 "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
-                "npm uninstall -g @openai/codex 2>$null; "
+                "npm.cmd uninstall -g @openai/codex 2>$null; "
                 "Write-Host '[4/4] Installing latest (@openai/codex)...' -ForegroundColor Cyan; "
-                "npm install -g @openai/codex; "
+                + _ps_npm_install("@openai/codex") +
                 "Write-Host ''; Write-Host 'Done. Check: codex -V' -ForegroundColor Green; "
                 "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
@@ -39330,17 +40318,17 @@ class ClaudeManager(QMainWindow):
                 # Все npm-папки пользователя: реальный префикс npm + кастомные места
                 "$prefixes = @('" + _pfx + "'); "
                 "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
-                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "if ($npmCmd) { try { $g = @(npm.cmd prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
                 "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
                 "Write-Host '[2/3] Removing Codex CLI (npm)...' -ForegroundColor Cyan; "
-                "npm uninstall -g @openai/codex; "
+                "npm.cmd uninstall -g @openai/codex; "
                 "$pkgRel = 'node_modules\\@openai\\codex'; "
                 "$any = $false; foreach ($pfx in $prefixes) { if (Test-Path (Join-Path $pfx $pkgRel)) { $any = $true } } "
                 "if ($any) { "
                 "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
-                "  npm uninstall -g @openai/codex; "
+                "  npm.cmd uninstall -g @openai/codex; "
                 "} "
                 "$left = $false; "
                 "foreach ($pfx in $prefixes) { "
@@ -40104,7 +41092,7 @@ class ClaudeManager(QMainWindow):
                 "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
                 "$prefixes = @('" + _pfx + "'); "
                 "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
-                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "if ($npmCmd) { try { $g = @(npm.cmd prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
                 "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
                 "foreach ($pfx in $prefixes) { "
                 "  if (Test-Path $pfx) { "
@@ -40112,10 +41100,10 @@ class ClaudeManager(QMainWindow):
                 "  } "
                 "} "
                 "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
-                "npm uninstall -g opencode-ai 2>$null; "
-                "npm uninstall -g @opencode/cli 2>$null; "
+                "npm.cmd uninstall -g opencode-ai 2>$null; "
+                "npm.cmd uninstall -g @opencode/cli 2>$null; "
                 "Write-Host '[4/4] Installing latest (@opencode/cli)...' -ForegroundColor Cyan; "
-                "npm install -g @opencode/cli; "
+                + _ps_npm_install("@opencode/cli") +
                 "Write-Host ''; Write-Host 'Done. Check: opencode -v' -ForegroundColor Green; "
                 "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
@@ -40221,11 +41209,11 @@ class ClaudeManager(QMainWindow):
                 # Все npm-папки пользователя: реальный префикс npm + кастомные места
                 "$prefixes = @('" + _pfx + "'); "
                 "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
-                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "if ($npmCmd) { try { $g = @(npm.cmd prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
                 "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
                 "Write-Host '[2/3] Removing opencode (npm)...' -ForegroundColor Cyan; "
-                "npm uninstall -g @opencode/cli 2>$null; "
-                "npm uninstall -g opencode-ai 2>$null; "
+                "npm.cmd uninstall -g @opencode/cli 2>$null; "
+                "npm.cmd uninstall -g opencode-ai 2>$null; "
                 "$pkgRel = 'node_modules\\@opencode\\cli'; "
                 "$pkgRelLegacy = 'node_modules\\opencode-ai'; "
                 "$any = $false; foreach ($pfx in $prefixes) { if ((Test-Path (Join-Path $pfx $pkgRel)) -or (Test-Path (Join-Path $pfx $pkgRelLegacy))) { $any = $true } } "
@@ -40233,8 +41221,8 @@ class ClaudeManager(QMainWindow):
                 "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
-                "  npm uninstall -g @opencode/cli 2>$null; "
-                "  npm uninstall -g opencode-ai 2>$null; "
+                "  npm.cmd uninstall -g @opencode/cli 2>$null; "
+                "  npm.cmd uninstall -g opencode-ai 2>$null; "
                 "} "
                 "$left = $false; "
                 "foreach ($pfx in $prefixes) { "
@@ -40562,7 +41550,8 @@ class ClaudeManager(QMainWindow):
         # NB: ключ "theme" сюда НЕ пишем — в opencode.json тема deprecated
         # и игнорируется, выбор темы читается только из tui.json
         # (см. _oc_tui_theme_set). Было проверено по документации.
-        config = _oc_custom_provider_doc(base_url, api_key, model_ids, v2=v2)
+        config = _oc_custom_provider_doc(
+            base_url, api_key, model_ids, v2=v2)
         try:
             os.makedirs(SETTINGS_DIR, exist_ok=True)
             path = os.path.join(SETTINGS_DIR, "opencode-provider.json")
@@ -40684,7 +41673,7 @@ class ClaudeManager(QMainWindow):
                     env["OPENCODE_CONFIG"] = scoped
         except Exception:
             pass
-        ps_prefix = "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; "
+        ps_prefix = PS_EXEC_BYPASS
         launch_cmd = "opencode"
         # OPENCODE_TUI_CONFIG живёт только на время работы opencode: ставим
         # его в скрипте и чистим после выхода — иначе повторные ручные запуски
@@ -41633,7 +42622,7 @@ class ClaudeManager(QMainWindow):
                 "Write-Host '[2/4] Cleaning broken npm shims...' -ForegroundColor Cyan; "
                 "$prefixes = @('" + _pfx + "'); "
                 "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
-                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "if ($npmCmd) { try { $g = @(npm.cmd prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
                 "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
                 "foreach ($pfx in $prefixes) { "
                 "  if (Test-Path $pfx) { "
@@ -41642,10 +42631,10 @@ class ClaudeManager(QMainWindow):
                 "} "
                 # 2) Remove old version via npm
                 "Write-Host '[3/4] Removing old version (npm uninstall)...' -ForegroundColor Cyan; "
-                "npm uninstall -g @anthropic-ai/claude-code 2>$null; "
+                "npm.cmd uninstall -g @anthropic-ai/claude-code 2>$null; "
                 # 3) Install/update latest via npm
                 "Write-Host '[4/4] Installing latest (@anthropic-ai/claude-code)...' -ForegroundColor Cyan; "
-                "npm install -g @anthropic-ai/claude-code@latest; "
+                + _ps_npm_install("@anthropic-ai/claude-code") +
                 "Write-Host ''; Write-Host 'Done. Check: claude --version' -ForegroundColor Green; "
                 "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
                 "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
@@ -42391,11 +43380,11 @@ class ClaudeManager(QMainWindow):
                 # 2) Все npm-папки пользователя: реальный префикс npm + кастомные места
                 "$prefixes = @('" + _pfx + "'); "
                 "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
-                "if ($npmCmd) { try { $g = @(npm prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
+                "if ($npmCmd) { try { $g = @(npm.cmd prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
                 "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
                 # 3) Main npm removal attempt
                 "Write-Host '[2/5] Removing Claude Code (npm)...' -ForegroundColor Cyan;"
-                "npm uninstall -g @anthropic-ai/claude-code; "
+                "npm.cmd uninstall -g @anthropic-ai/claude-code; "
                 # 4) If the file is still locked — retry after a pause
                 "$pkgRel = 'node_modules\\@anthropic-ai\\claude-code'; "
                 "$any = $false; foreach ($pfx in $prefixes) { if (Test-Path (Join-Path $pfx $pkgRel)) { $any = $true } } "
@@ -42403,7 +43392,7 @@ class ClaudeManager(QMainWindow):
                 "  Write-Host ''; Write-Host 'Retrying (file was locked)...' -ForegroundColor Yellow; "
                 "  Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "  Start-Sleep -Seconds 2; "
-                "  npm uninstall -g @anthropic-ai/claude-code; "
+                "  npm.cmd uninstall -g @anthropic-ai/claude-code; "
                 "} "
                 "$leftNpm = $false; "
                 "foreach ($pfx in $prefixes) { "
