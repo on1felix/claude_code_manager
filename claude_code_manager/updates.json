@@ -2,16 +2,56 @@
  "comment": "История обновлений Claude Code Manager. Показывается в окне «Обновления» (кнопка-«!» у названия программы). Новую запись добавлять СВЕРХУ (самая свежая — первая): поля id (уникальный, латиница), version (версия приложения с этим обновлением), dateISO (UTC-момент выхода, суффикс Z), icon (имя иконки), ru/en (title, features[{icon,text}], optimizations[text] или [{title,points}] — фиолетовая панель «Оптимизация», fixes[text], note{title,points,tone} — необязательные блоки можно опускать; tone: red | purple). Иконки: Sparkles, Cpu, KeyRound, Columns2, Palette, Maximize2, Terminal, RefreshCw, Languages, Check, Network, Bot, Download, PlugZap, Wallet, SlidersHorizontal, Globe.",
  "updates": [
   {
+   "id": "own-agent-608",
+   "version": "6.0.8",
+   "dateISO": "2026-10-26T12:01:43Z",
+   "icon": "Sparkles",
+   "ru": {
+    "title": "Свой агент с нуля",
+    "features": [
+     {
+      "icon": "Sparkles",
+      "text": "Создать своего агента прямо в приложении: в настройках Custom URL — строка «Создать агента». Пишете промпт, сохраняете — в ~/.config/opencode/agents/ccm.md появляется агент ccm с готовым frontmatter."
+     },
+     {
+      "icon": "Bot",
+      "text": "Применить просто: в чате opencode наберите /agents и выберите ccm — он работает с вашим промптом."
+     },
+     {
+      "icon": "Check",
+      "text": "Промпт можно отключить без потери текста: ccm.md удаляется, агент исчезает из /agents, а текст возвращается при включении. Пустое поле + «Сохранить» очищает тело, оставляя frontmatter."
+     }
+    ]
+   },
+   "en": {
+    "title": "Your own agent from scratch",
+    "features": [
+     {
+      "icon": "Sparkles",
+      "text": "Create your own agent right in the app: Settings → Custom URL → “Create agent”. Write the prompt, hit Save — an agent named ccm appears in ~/.config/opencode/agents/ccm.md with ready frontmatter."
+     },
+     {
+      "icon": "Bot",
+      "text": "To use it, type /agents in the opencode chat and pick ccm — it runs with your prompt."
+     },
+     {
+      "icon": "Check",
+      "text": "Turn the prompt off without losing the text: ccm.md is removed, the agent disappears from /agents, and the text comes back when you re-enable it. Empty field + Save clears the body and keeps the frontmatter."
+     }
+    ]
+   }
+  },
+  {
    "id": "oc-models-607",
    "version": "6.0.7",
    "dateISO": "2026-10-24T14:04:54Z",
    "icon": "SlidersHorizontal",
    "ru": {
-    "title": "Системный промт",
+    "title": "Системный промпт",
     "features": [
      {
       "icon": "Bot",
-      "text": "Свой системный промт для opencode: кнопка «Системный промт» находится в настройках на вкладке Custom URL. Дополнительные правила пишутся там же, хранятся в ~/.config/opencode/AGENTS.md и действуют во всех проектах. Промт можно отключить без потери текста, а пустое поле + «Сохранить» удаляет его."
+      "text": "Свой системный промпт для opencode: кнопка «Системный промпт» находится в настройках на вкладке Custom URL. Дополнительные правила пишутся там же, хранятся в ~/.config/opencode/AGENTS.md и действуют во всех проектах. Промпт можно отключить без потери текста, а пустое поле + «Сохранить» удаляет его."
      },
      {
       "icon": "Globe",

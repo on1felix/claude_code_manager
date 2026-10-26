@@ -29,7 +29,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QText
 from PySide6.QtCore import QPointF, QRectF, QRect, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "6.0.7"  # Для обновлений
+APP_VERSION = "6.0.8"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -1316,24 +1316,32 @@ TRANSLATIONS = {
     "Не удалось добавить звук: копия не создана.": "Could not add sound: copy was not created.",
     "Тема": "Theme",
     "Настройки": "Settings",
-    "Системный промт": "System prompt",
+    "Системный промпт": "System prompt",
     "Задан": "Set",
     "Отключён": "Disabled",
     "Включён": "Enabled",
-    "Использовать промт": "Use prompt",
+    "Использовать промпт": "Use prompt",
+    "Промпт агента ccm. Хранится в ~/.config/opencode/agents/ccm.md.": "ccm agent prompt. Stored in ~/.config/opencode/agents/ccm.md.",
     "Дополнительные правила для ИИ во всех проектах. Хранятся в ~/.config/opencode/AGENTS.md.": "Extra rules for the AI in every project. Stored in ~/.config/opencode/AGENTS.md.",
+    "Создать агента": "Create agent",
+    "Как применить: в чате opencode наберите /agents и выберите ccm Prompt created with Claude Code Manager.": "How to apply: type /agents in the opencode chat and pick ccm Prompt created with Claude Code Manager.",
     "Напишите, что ИИ должен соблюдать…": "Write what the AI should follow…",
     "Можно дополнять и менять текст.": "You can add to and change the text.",
-    "Пустое поле + «Сохранить» — промт удалится.": "An empty field + Save removes the prompt.",
+    "Пустое поле + «Сохранить» — тело промпта очистится.": "An empty field + Save clears the prompt body.",
+    "Пустое поле + «Сохранить» — промпт удалится.": "An empty field + Save removes the prompt.",
+    "Выключение удалит ccm.md — текст вернётся при включении.": "Turning it off deletes ccm.md — the text comes back when you turn it on.",
+    "Выключение уберёт блок из AGENTS.md — текст вернётся при включении.": "Turning it off removes the block from AGENTS.md — the text comes back when you turn it on.",
+    "Выключение удаляет ccm.md: агент пропадает из /agents. Текст остаётся здесь и вернётся при включении.": "Turning it off deletes ccm.md: the agent disappears from /agents. The text stays here and returns when you turn it on.",
+    "Выключение убирает блок из AGENTS.md; пустой файл удаляется. Текст остаётся здесь и вернётся при включении.": "Turning it off removes the block from AGENTS.md; an empty file is deleted. The text stays here and returns when you turn it on.",
     "Редактирование…": "Editing…",
-    "Промт сохранён": "Prompt saved",
-    "Промт удалён": "Prompt removed",
-    "Не удалось сохранить промт": "Could not save the prompt",
-    "Промт отключён": "Prompt disabled",
-    "Промт включён": "Prompt enabled",
-    "Не удалось отключить промт": "Could not disable the prompt",
-    "Не удалось включить промт": "Could not enable the prompt",
-    "Промт пуст — нечего отключать.": "The prompt is empty — nothing to disable.",
+    "Промпт сохранён": "Prompt saved",
+    "Промпт удалён": "Prompt removed",
+    "Не удалось сохранить промпт": "Could not save the prompt",
+    "Промпт отключён": "Prompt disabled",
+    "Промпт включён": "Prompt enabled",
+    "Не удалось отключить промпт": "Could not disable the prompt",
+    "Не удалось включить промпт": "Could not enable the prompt",
+    "Промпт пуст — нечего отключать.": "The prompt is empty — nothing to disable.",
     "Выключение сохраняет текст — включение вернёт его обратно.": "Turning it off keeps the text — turning it on brings it back.",
     "Примерная оценка: кириллица ≈ 2.6 символа на токен, латиница ≈ 4.": "Rough estimate: Cyrillic ≈ 2.6 chars per token, Latin ≈ 4.",
     "Вкл": "On",
@@ -25281,22 +25289,46 @@ class OcThemeDialog(QDialog):
 
 
 # ============================================================
-# СИСТЕМНЫЙ ПРОМТ OPENCODE (глобальный AGENTS.md)
-# Промт хранится отдельным управляемым блоком в
-# ~/.config/opencode/AGENTS.md: он дополняет штатные инструкции opencode
-# и действует во всех проектах. Чужой текст вокруг блока не трогаем.
-# Очистка убирает только наш блок; если файл стал пустым — удаляем его.
+# СИСТЕМНЫЕ ПРОМТЫ OPENCODE — две независимые цели
+# global: глобальный ~/.config/opencode/AGENTS.md, управляемый блок между
+#   маркерами. Дополняет штатные инструкции opencode во всех проектах.
+# agent: тело файла агента ~/.config/opencode/agents/ccm.md. Заменяет
+#   базовый промпт провайдера для этого агента. Frontmatter не трогаем.
+# Обе цели умеют выключаться: текст уезжает в свой sidecar.
 # ============================================================
+
+_OC_PROMPT_GLOBAL = "global"
+_OC_PROMPT_AGENT = "agent"
 
 _OC_PROMPT_BEGIN = "<!-- BEGIN claude-code-manager: system prompt -->"
 _OC_PROMPT_END = "<!-- END claude-code-manager: system prompt -->"
 
+_OC_AGENT_FILENAME = "ccm.md"
 
-def _oc_prompt_path():
-    """Глобальный AGENTS.md opencode: один на все проекты пользователя."""
+_OC_PROMPT_DEFAULT_FRONTMATTER = (
+    "---\n"
+    "description: Prompt created with Claude Code Manager\n"
+    "---\n"
+)
+
+_OC_PROMPT_DISABLED_FILES = {
+    _OC_PROMPT_GLOBAL: "oc_system_prompt_disabled.md",
+    _OC_PROMPT_AGENT: "oc_agent_prompt_disabled.md",
+}
+
+
+def _oc_prompt_is_agent(target):
+    return target == _OC_PROMPT_AGENT
+
+
+def _oc_prompt_path(target=_OC_PROMPT_GLOBAL):
+    """Файл цели: AGENTS.md для global, файл агента для agent."""
     try:
-        return os.path.join(os.path.expanduser("~"),
-                            ".config", "opencode", "AGENTS.md")
+        home = os.path.expanduser("~")
+        if _oc_prompt_is_agent(target):
+            return os.path.join(home, ".config", "opencode", "agents",
+                                _OC_AGENT_FILENAME)
+        return os.path.join(home, ".config", "opencode", "AGENTS.md")
     except Exception:
         return ""
 
@@ -25317,12 +25349,39 @@ def _oc_prompt_bounds(lines):
     return None
 
 
-def _oc_prompt_load():
+def _oc_prompt_split_block(raw):
+    """Текст до и после управляемого блока (маркеры вырезаны)."""
+    text = str(raw or "")
+    lines = text.splitlines(keepends=True)
+    bounds = _oc_prompt_bounds(lines)
+    if bounds is None:
+        return text, ""
+    start, end = bounds
+    return "".join(lines[:start]), "".join(lines[end + 1:])
+
+
+def _oc_prompt_split_frontmatter(raw):
+    """(frontmatter, body). frontmatter — вместе с обеими строками ---.
+    Нет frontmatter или он не закрыт — ("", весь текст): такой файл
+    считаем обычным текстом и не калечим."""
+    text = str(raw or "").lstrip("\ufeff")
+    if not text:
+        return "", ""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return "", text
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return "".join(lines[:i + 1]), "".join(lines[i + 1:])
+    return "", text
+
+
+def _oc_prompt_load(target=_OC_PROMPT_GLOBAL):
     """(текст файла, кодировка для обратной записи).
     (None, "utf-8") — прочитать не удалось. UTF-16 (PowerShell/Out-File)
-    и UTF-8 BOM сохраняем, чтобы не испортить чужой AGENTS.md."""
+    и UTF-8 BOM сохраняем, чтобы не испортить чужой файл."""
     try:
-        p = _oc_prompt_path()
+        p = _oc_prompt_path(target)
         if not p or not os.path.exists(p):
             return "", "utf-8"
         with open(p, "rb") as f:
@@ -25340,22 +25399,14 @@ def _oc_prompt_load():
         return None, "utf-8"
 
 
-def _oc_prompt_split(raw):
-    """Текст до и после управляемого блока (маркеры вырезаны)."""
-    text = str(raw or "")
-    lines = text.splitlines(keepends=True)
-    bounds = _oc_prompt_bounds(lines)
-    if bounds is None:
-        return text, ""
-    start, end = bounds
-    return "".join(lines[:start]), "".join(lines[end + 1:])
-
-
-def _oc_prompt_read():
-    """Текст кастомного промта; "" — промт не задан."""
-    raw, _enc = _oc_prompt_load()
+def _oc_prompt_read(target=_OC_PROMPT_GLOBAL):
+    """Текст промпта цели; "" — промпт не задан."""
+    raw, _enc = _oc_prompt_load(target)
     if raw is None:
         return ""
+    if _oc_prompt_is_agent(target):
+        _fm, body = _oc_prompt_split_frontmatter(raw)
+        return body.strip("\r\n")
     lines = raw.splitlines()
     bounds = _oc_prompt_bounds(lines)
     if bounds is None:
@@ -25364,22 +25415,24 @@ def _oc_prompt_read():
     return "\n".join(lines[start + 1:end]).strip("\r\n")
 
 
-def _oc_prompt_has():
-    """Задан ли непустой кастомный промт (блок в AGENTS.md)."""
-    return bool(_oc_prompt_read().strip())
+def _oc_prompt_has(target=_OC_PROMPT_GLOBAL):
+    """Задан ли непустой промпт цели."""
+    return bool(_oc_prompt_read(target).strip())
 
 
-def _oc_prompt_disabled_path():
-    """Копия промта, пока он выключен: AGENTS.md остаётся без нашего блока."""
+def _oc_prompt_disabled_path(target=_OC_PROMPT_GLOBAL):
+    """Копия промпта, пока он выключен: своя для каждой цели."""
     try:
-        return os.path.join(SETTINGS_DIR, "oc_system_prompt_disabled.md")
+        name = _OC_PROMPT_DISABLED_FILES.get(
+            target, _OC_PROMPT_DISABLED_FILES[_OC_PROMPT_GLOBAL])
+        return os.path.join(SETTINGS_DIR, name)
     except Exception:
         return ""
 
 
-def _oc_prompt_read_disabled():
+def _oc_prompt_read_disabled(target=_OC_PROMPT_GLOBAL):
     try:
-        p = _oc_prompt_disabled_path()
+        p = _oc_prompt_disabled_path(target)
         if not p or not os.path.exists(p):
             return ""
         with open(p, "r", encoding="utf-8-sig") as f:
@@ -25388,9 +25441,9 @@ def _oc_prompt_read_disabled():
         return ""
 
 
-def _oc_prompt_remove_disabled():
+def _oc_prompt_remove_disabled(target=_OC_PROMPT_GLOBAL):
     try:
-        p = _oc_prompt_disabled_path()
+        p = _oc_prompt_disabled_path(target)
         if p and os.path.exists(p):
             os.remove(p)
         return True
@@ -25398,13 +25451,14 @@ def _oc_prompt_remove_disabled():
         return False
 
 
-def _oc_prompt_save_disabled(text):
-    """Кладёт выключенный промт в sidecar рядом с настройками приложения."""
+def _oc_prompt_save_disabled(text, target=_OC_PROMPT_GLOBAL):
+    """Кладёт выключенный промпт в sidecar рядом с настройками приложения."""
     text = str(text or "").strip("\r\n")
     if not text.strip():
-        return _oc_prompt_remove_disabled()
+        return _oc_prompt_remove_disabled(target)
+    tmp = ""
     try:
-        p = _oc_prompt_disabled_path()
+        p = _oc_prompt_disabled_path(target)
         if not p:
             return False
         parent = os.path.dirname(p)
@@ -25417,48 +25471,80 @@ def _oc_prompt_save_disabled(text):
         return True
     except Exception:
         try:
-            if os.path.exists(tmp):
+            if tmp and os.path.exists(tmp):
                 os.remove(tmp)
         except Exception:
             pass
         return False
 
 
-def _oc_prompt_state():
-    """'on' — блок активен; 'off' — текст сохранён выключенным; 'empty'."""
-    if _oc_prompt_has():
+def _oc_prompt_state(target=_OC_PROMPT_GLOBAL):
+    """'on' — промпт активен; 'off' — сохранён выключенным; 'empty'."""
+    if _oc_prompt_has(target):
         return "on"
-    if _oc_prompt_read_disabled().strip():
+    if _oc_prompt_read_disabled(target).strip():
         return "off"
     return "empty"
 
 
-def _oc_prompt_read_for_ui():
-    """Текст для окна: активный блок, иначе сохранённый выключенный."""
-    if _oc_prompt_has():
-        return _oc_prompt_read()
-    return _oc_prompt_read_disabled()
+def _oc_prompt_read_for_ui(target=_OC_PROMPT_GLOBAL):
+    """Текст для окна: активный промпт, иначе сохранённый выключенный."""
+    if _oc_prompt_has(target):
+        return _oc_prompt_read(target)
+    return _oc_prompt_read_disabled(target)
 
 
-def _oc_prompt_disable(text=None):
-    """Выключает промт, не теряя текст. В AGENTS.md чистится только наш
-    блок; если файл стал пустым — удаляется. Чужой текст не трогаем."""
-    text = _oc_prompt_read() if text is None else str(text or "")
+def _oc_prompt_delete_file(target=_OC_PROMPT_GLOBAL):
+    """Удаляет файл цели целиком. Для агента это единственный способ
+    убрать его из списка opencode; текст при этом уже лежит в sidecar."""
+    try:
+        p = _oc_prompt_path(target)
+        tmp = (p + ".tmp") if p else ""
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
+        if p and os.path.exists(p):
+            os.remove(p)
+        return True
+    except Exception:
+        return False
+
+
+def _oc_prompt_drop(target=_OC_PROMPT_GLOBAL):
+    """Убирает промпт цели из его файла. Если в файле не остаётся ничего,
+    кроме пустых строк, файл удаляется целиком. Чужой текст в AGENTS.md
+    не даёт удалить файл — тогда вырезается только наш блок."""
+    raw, _enc = _oc_prompt_load(target)
+    if raw is None:
+        return False
+    if _oc_prompt_is_agent(target):
+        return _oc_prompt_delete_file(target)
+    before, after = _oc_prompt_split_block(raw)
+    if not before.strip() and not after.strip():
+        return _oc_prompt_delete_file(target)
+    return _oc_prompt_clear(target, keep_disabled=True)
+
+
+def _oc_prompt_disable(text=None, target=_OC_PROMPT_GLOBAL):
+    """Выключает промпт, не теряя текст. Текст уезжает в sidecar цели.
+    Агент: файл ccm.md удаляется полностью — агент исчезает из opencode.
+    Global: файл AGENTS.md удаляется, если в нём не было ничего, кроме
+    нашего блока; иначе вырезается только блок, чужой текст остаётся."""
+    text = _oc_prompt_read(target) if text is None else str(text or "")
     if text.strip():
-        if not _oc_prompt_save_disabled(text):
+        if not _oc_prompt_save_disabled(text, target):
             return False
-    else:
-        if not _oc_prompt_remove_disabled():
-            return False
-    return _oc_prompt_clear(keep_disabled=True)
+    # Пустой текст — не повод стирать уже сохранённый sidecar: там может
+    # лежать предыдущий промпт, который вернётся при включении.
+    return _oc_prompt_drop(target)
 
 
-def _oc_prompt_enable(text=None):
-    """Возвращает сохранённый выключенный промт в AGENTS.md."""
-    text = _oc_prompt_read_disabled() if text is None else str(text or "")
+def _oc_prompt_enable(text=None, target=_OC_PROMPT_GLOBAL):
+    """Возвращает сохранённый выключенный промпт в его файл."""
+    text = (_oc_prompt_read_disabled(target) if text is None
+            else str(text or ""))
     if not text.strip():
         return False
-    return _oc_prompt_write(text)
+    return _oc_prompt_write(text, target)
 
 
 def _oc_prompt_token_estimate(text):
@@ -25502,31 +25588,39 @@ def _oc_prompt_usage_text(tokens, chars):
         chars, _oc_prompt_ru_plural(chars, "символ", "символа", "символов"))
 
 
-def _oc_prompt_write(text):
-    """Пишет промт управляемым блоком, сохраняя чужой текст AGENTS.md.
-    Пустой текст означает удаление промта. True — записано."""
+def _oc_prompt_write(text, target=_OC_PROMPT_GLOBAL):
+    """Пишет промпт цели. global — управляемый блок в AGENTS.md, agent —
+    тело файла агента с сохранением frontmatter.
+    Пустой текст равносилен очистке. True — записано."""
     text = str(text or "").strip("\r\n")
     if not text.strip():
-        return _oc_prompt_clear()
-    raw, enc = _oc_prompt_load()
+        return _oc_prompt_clear(target)
+    raw, enc = _oc_prompt_load(target)
     if raw is None:
         return False
-    p = _oc_prompt_path()
+    p = _oc_prompt_path(target)
     if not p:
         return False
-    before, after = _oc_prompt_split(raw)
-    nl = "\r\n" if "\r\n" in raw else "\n"
-    head = before.rstrip("\r\n")
-    tail = after.strip("\r\n")
-    parts = []
-    if head:
-        parts.extend((head, ""))
-    parts.append(_OC_PROMPT_BEGIN)
-    parts.extend(text.splitlines())
-    parts.append(_OC_PROMPT_END)
-    if tail:
-        parts.extend(("", tail))
-    out = nl.join(parts) + nl
+    if _oc_prompt_is_agent(target):
+        fm, _body = _oc_prompt_split_frontmatter(raw)
+        if not fm.strip():
+            fm = _OC_PROMPT_DEFAULT_FRONTMATTER
+        nl = "\r\n" if "\r\n" in fm else "\n"
+        out = fm.rstrip("\r\n") + nl + nl + text + nl
+    else:
+        before, after = _oc_prompt_split_block(raw)
+        nl = "\r\n" if "\r\n" in raw else "\n"
+        head = before.rstrip("\r\n")
+        tail = after.strip("\r\n")
+        parts = []
+        if head:
+            parts.extend((head, ""))
+        parts.append(_OC_PROMPT_BEGIN)
+        parts.extend(text.splitlines())
+        parts.append(_OC_PROMPT_END)
+        if tail:
+            parts.extend(("", tail))
+        out = nl.join(parts) + nl
     tmp = p + ".tmp"
     try:
         parent = os.path.dirname(p)
@@ -25535,7 +25629,7 @@ def _oc_prompt_write(text):
         with open(tmp, "w", encoding=enc, newline="") as f:
             f.write(out)
         os.replace(tmp, p)
-        _oc_prompt_remove_disabled()
+        _oc_prompt_remove_disabled(target)
         return True
     except Exception:
         try:
@@ -25546,42 +25640,55 @@ def _oc_prompt_write(text):
         return False
 
 
-def _oc_prompt_clear(keep_disabled=False):
-    """Убирает только наш блок. Если в AGENTS.md больше ничего нет —
-    удаляет и сам файл. Чужой текст остаётся нетронутым.
-    keep_disabled=True — не трогать sidecar выключенного промта."""
-    raw, enc = _oc_prompt_load()
+def _oc_prompt_clear(target=_OC_PROMPT_GLOBAL, keep_disabled=False):
+    """Убирает промпт цели, не ломая чужое.
+    global — вырезает управляемый блок; пустой после этого файл удаляется.
+    agent — очищает тело, оставляя frontmatter и права.
+    keep_disabled=True — не трогать sidecar выключенного промпта."""
+    raw, enc = _oc_prompt_load(target)
     if raw is None:
         return False
-    p = _oc_prompt_path()
+    p = _oc_prompt_path(target)
     if not p:
         return False
     if not os.path.exists(p):
-        return True if keep_disabled else _oc_prompt_remove_disabled()
-    if _oc_prompt_bounds(raw.splitlines()) is None:
-        # нашего блока нет — файл не трогаем
-        return True if keep_disabled else _oc_prompt_remove_disabled()
-    before, after = _oc_prompt_split(raw)
-    head = before.rstrip("\r\n")
-    tail = after.strip("\r\n")
-    if not head.strip() and not tail.strip():
-        try:
-            os.remove(p)
-            return True if keep_disabled else _oc_prompt_remove_disabled()
-        except Exception:
-            return False
-    nl = "\r\n" if "\r\n" in raw else "\n"
-    out = head
-    if head.strip() and tail.strip():
-        out += nl + nl
-    out += tail
-    out += nl
+        return True if keep_disabled else _oc_prompt_remove_disabled(target)
+    if _oc_prompt_is_agent(target):
+        fm, _body = _oc_prompt_split_frontmatter(raw)
+        if not fm.strip():
+            # frontmatter нет — файл считается обычным текстом
+            try:
+                os.remove(p)
+                return True if keep_disabled else _oc_prompt_remove_disabled(target)
+            except Exception:
+                return False
+        nl = "\r\n" if "\r\n" in fm else "\n"
+        out = fm.rstrip("\r\n") + nl
+    else:
+        if _oc_prompt_bounds(raw.splitlines()) is None:
+            # нашего блока нет — файл не трогаем
+            return True if keep_disabled else _oc_prompt_remove_disabled(target)
+        before, after = _oc_prompt_split_block(raw)
+        head = before.rstrip("\r\n")
+        tail = after.strip("\r\n")
+        if not head.strip() and not tail.strip():
+            try:
+                os.remove(p)
+                return True if keep_disabled else _oc_prompt_remove_disabled(target)
+            except Exception:
+                return False
+        nl = "\r\n" if "\r\n" in raw else "\n"
+        out = head
+        if head.strip() and tail.strip():
+            out += nl + nl
+        out += tail
+        out += nl
     tmp = p + ".tmp"
     try:
         with open(tmp, "w", encoding=enc, newline="") as f:
             f.write(out)
         os.replace(tmp, p)
-        return True if keep_disabled else _oc_prompt_remove_disabled()
+        return True if keep_disabled else _oc_prompt_remove_disabled(target)
     except Exception:
         try:
             if os.path.exists(tmp):
@@ -25592,25 +25699,25 @@ def _oc_prompt_clear(keep_disabled=False):
 
 
 class OcSystemPromptDialog(QDialog):
-    """Окно кастомного системного промта opencode (вкладка Custom URL).
+    """Окно промпта opencode. Две цели: глобальный AGENTS.md и агент ccm.
 
-    Текст хранится управляемым блоком в глобальном
-    ~/.config/opencode/AGENTS.md и дополняет штатные инструкции opencode
-    во всех проектах. Пока окно открыто, текст только для чтения: кнопка
-    «Изменить» разблокирует поле, «Сохранить» пишет изменения. Пустое поле
-    + «Сохранить» убирает блок (и файл, если он стал пустым)."""
+    Пока окно открыто, текст только для чтения: кнопка «Изменить»
+    разблокирует поле, «Сохранить» пишет изменения, пустое поле убирает
+    промпт (для агента — только тело, frontmatter остаётся)."""
 
     WIDTH = 620
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, target=_OC_PROMPT_GLOBAL):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
         self._editing = False
-        state = _oc_prompt_state()
+        self._target = target or _OC_PROMPT_GLOBAL
+        self._agent = _oc_prompt_is_agent(self._target)
+        state = _oc_prompt_state(self._target)
         self._enabled = state != "off"
-        self._saved_text = _oc_prompt_read_for_ui()
+        self._saved_text = _oc_prompt_read_for_ui(self._target)
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -25635,7 +25742,8 @@ class OcSystemPromptDialog(QDialog):
         left_spacer.setFixedSize(28, 28)
         left_spacer.setStyleSheet("background: transparent; border: none;")
         title_row.addWidget(left_spacer)
-        title = QLabel(tr("Системный промт"))
+        title = QLabel(tr("Создать агента") if self._agent
+                       else tr("Системный промпт"))
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(
@@ -25646,8 +25754,13 @@ class OcSystemPromptDialog(QDialog):
         title_row.addWidget(self.btn_close)
         layout.addLayout(title_row)
 
-        hint = QLabel(tr("Дополнительные правила для ИИ во всех проектах. "
-                         "Хранятся в ~/.config/opencode/AGENTS.md."))
+        if self._agent:
+            hint_text = tr("Промпт агента ccm. Хранится в "
+                           "~/.config/opencode/agents/ccm.md.")
+        else:
+            hint_text = tr("Дополнительные правила для ИИ во всех проектах. "
+                           "Хранятся в ~/.config/opencode/AGENTS.md.")
+        hint = QLabel(hint_text)
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignCenter)
         hint.setFont(QFont("Segoe UI", 9))
@@ -25655,17 +25768,32 @@ class OcSystemPromptDialog(QDialog):
             "color: rgb(160, 160, 168); background: transparent; border: none;")
         layout.addWidget(hint)
 
+        if self._agent:
+            self.apply_hint = QLabel(tr(
+                "Как применить: в чате opencode наберите /agents и выберите "
+                "ccm Prompt created with Claude Code Manager."))
+            self.apply_hint.setWordWrap(True)
+            self.apply_hint.setAlignment(Qt.AlignCenter)
+            self.apply_hint.setFont(QFont("Segoe UI", 8))
+            self.apply_hint.setStyleSheet(
+                "color: rgb(120, 170, 210); background: transparent;"
+                " border: none;")
+            layout.addWidget(self.apply_hint)
+
         toggle_row = QHBoxLayout()
         toggle_row.setContentsMargins(2, 0, 2, 0)
         toggle_row.setSpacing(10)
-        use_label = QLabel(tr("Использовать промт"))
+        use_label = QLabel(tr("Использовать промпт"))
         use_label.setFont(QFont("Segoe UI", 9, QFont.Bold))
         use_label.setStyleSheet(
             "color: rgb(205, 205, 214); background: transparent; border: none;")
         toggle_row.addWidget(use_label)
         self.toggle = KeyToggle(on=self._enabled, parent=container)
-        self.toggle.setToolTip(tr(
-            "Выключение сохраняет текст — включение вернёт его обратно."))
+        self.toggle.setToolTip(
+            tr("Выключение удалит ccm.md — текст вернётся при включении.")
+            if self._agent
+            else tr("Выключение уберёт блок из AGENTS.md — текст вернётся "
+                    "при включении."))
         self.toggle.toggled.connect(self._on_toggle)
         toggle_row.addWidget(self.toggle)
         self.state_label = QLabel("")
@@ -25675,6 +25803,22 @@ class OcSystemPromptDialog(QDialog):
         toggle_row.addWidget(self.state_label)
         toggle_row.addStretch(1)
         layout.addLayout(toggle_row)
+
+        if self._agent:
+            self.delete_hint = QLabel(tr(
+                "Выключение удаляет ccm.md: агент пропадает из /agents. "
+                "Текст остаётся здесь и вернётся при включении."))
+        else:
+            self.delete_hint = QLabel(tr(
+                "Выключение убирает блок из AGENTS.md; пустой файл удаляется. "
+                "Текст остаётся здесь и вернётся при включении."))
+        self.delete_hint.setWordWrap(True)
+        self.delete_hint.setAlignment(Qt.AlignCenter)
+        self.delete_hint.setFont(QFont("Segoe UI", 8))
+        self.delete_hint.setStyleSheet(
+            "color: rgb(200, 150, 90); background: transparent;"
+            " border: none;")
+        layout.addWidget(self.delete_hint)
 
         # Поле прозрачное: сквозь него виден фирменный узор самого окна.
         # Своя подложка не нужна — только рамка, чтобы поле читалось.
@@ -25733,7 +25877,9 @@ class OcSystemPromptDialog(QDialog):
         status_row.addWidget(self.counter)
         layout.addLayout(status_row)
 
-        clear_hint = QLabel(tr("Пустое поле + «Сохранить» — промт удалится."))
+        clear_hint = QLabel(tr(
+            "Пустое поле + «Сохранить» — тело промпта очистится." if self._agent
+            else "Пустое поле + «Сохранить» — промпт удалится."))
         clear_hint.setFont(QFont("Segoe UI", 8))
         clear_hint.setAlignment(Qt.AlignRight)
         clear_hint.setStyleSheet(
@@ -25825,7 +25971,7 @@ class OcSystemPromptDialog(QDialog):
             pass
 
     def _on_toggle(self, on):
-        """Мгновенно выключает/включает промт, не теряя текст.
+        """Мгновенно выключает/включает промпт, не теряя текст.
 
         Для выключения берём текущий текст из поля (даже несохранённый);
         если поле пустое — последний сохранённый. При ошибке файловой
@@ -25838,29 +25984,29 @@ class OcSystemPromptDialog(QDialog):
             text = self._saved_text
         if not text.strip():
             self.toggle.set_on(not on, animate=True)
-            self._set_status(tr("Промт пуст — нечего отключать."), "info")
+            self._set_status(tr("Промпт пуст — нечего отключать."), "info")
             return
         if on:
-            ok = _oc_prompt_enable(text)
+            ok = _oc_prompt_enable(text, self._target)
             if not ok:
                 self.toggle.set_on(False, animate=True)
-                self._set_status(tr("Не удалось включить промт"), "error")
+                self._set_status(tr("Не удалось включить промпт"), "error")
                 return
             self._enabled = True
-            self._saved_text = _oc_prompt_read_for_ui()
+            self._saved_text = _oc_prompt_read_for_ui(self._target)
             self.edit.setPlainText(self._saved_text)
-            self._set_status(tr("Промт включён"), "ok")
+            self._set_status(tr("Промпт включён"), "ok")
         else:
-            ok = _oc_prompt_disable(text)
+            ok = _oc_prompt_disable(text, self._target)
             if not ok:
-                _oc_prompt_remove_disabled()
+                _oc_prompt_remove_disabled(self._target)
                 self.toggle.set_on(True, animate=True)
-                self._set_status(tr("Не удалось отключить промт"), "error")
+                self._set_status(tr("Не удалось отключить промпт"), "error")
                 return
             self._enabled = False
             self._saved_text = text.strip("\r\n")
             self.edit.setPlainText(self._saved_text)
-            self._set_status(tr("Промт отключён"), "ok")
+            self._set_status(tr("Промпт отключён"), "ok")
         self._update_state()
         self._refresh_counter()
 
@@ -25914,35 +26060,35 @@ class OcSystemPromptDialog(QDialog):
         text = self.edit.toPlainText()
         empty = not text.strip()
         if empty:
-            ok = _oc_prompt_clear()
+            ok = _oc_prompt_clear(self._target)
             if not ok:
-                self._set_status(tr("Не удалось сохранить промт"), "error")
+                self._set_status(tr("Не удалось сохранить промпт"), "error")
                 return
             self._enabled = True
             self._saved_text = ""
             self.edit.clear()
-            self._set_status(tr("Промт удалён"), "ok")
+            self._set_status(tr("Промпт удалён"), "ok")
         elif self._enabled:
-            ok = _oc_prompt_write(text)
+            ok = _oc_prompt_write(text, self._target)
             if not ok:
-                self._set_status(tr("Не удалось сохранить промт"), "error")
+                self._set_status(tr("Не удалось сохранить промпт"), "error")
                 return
             # Показываем ровно то, что легло в файл (без лишних пустых строк).
-            self._saved_text = _oc_prompt_read()
+            self._saved_text = _oc_prompt_read(self._target)
             self.edit.setPlainText(self._saved_text)
-            self._set_status(tr("Промт сохранён"), "ok")
+            self._set_status(tr("Промпт сохранён"), "ok")
         else:
-            ok = _oc_prompt_save_disabled(text)
+            ok = _oc_prompt_save_disabled(text, self._target)
             if ok:
-                ok = _oc_prompt_clear(keep_disabled=True)
+                ok = _oc_prompt_clear(self._target, keep_disabled=True)
             if not ok:
-                self._enabled = _oc_prompt_state() != "off"
+                self._enabled = _oc_prompt_state(self._target) != "off"
                 self._update_state()
-                self._set_status(tr("Не удалось сохранить промт"), "error")
+                self._set_status(tr("Не удалось сохранить промпт"), "error")
                 return
-            self._saved_text = _oc_prompt_read_disabled()
+            self._saved_text = _oc_prompt_read_disabled(self._target)
             self.edit.setPlainText(self._saved_text)
-            self._set_status(tr("Промт сохранён"), "ok")
+            self._set_status(tr("Промпт сохранён"), "ok")
         self._finish_edit()
         self._update_state()
         try:
@@ -25956,8 +26102,8 @@ class OcSystemPromptDialog(QDialog):
         self._fade_anim.start()
         if not self._editing:
             try:
-                self._enabled = _oc_prompt_state() != "off"
-                self._saved_text = _oc_prompt_read_for_ui()
+                self._enabled = _oc_prompt_state(self._target) != "off"
+                self._saved_text = _oc_prompt_read_for_ui(self._target)
                 self.edit.setPlainText(self._saved_text)
                 self.edit.setReadOnly(True)
                 self._set_field_border(False)
@@ -25995,7 +26141,7 @@ class OcSystemPromptDialog(QDialog):
 
 class OcSettingsDialog(QDialog):
     """Маленькое окно настроек Custom URL: три строки — «Звуки», «Тема»
-    и «Системный промт». Клик по строке открывает исходное окно
+    и «Системный промпт». Клик по строке открывает исходное окно
     соответствующей настройки."""
 
     WIDTH = 420
@@ -26043,7 +26189,8 @@ class OcSettingsDialog(QDialog):
         self._rows = {}
         layout.addWidget(self._make_row("Speaker", tr("Звуки"), "oc_notify_enabled", self._open_sounds))
         layout.addWidget(self._make_row("Image", tr("Тема"), "oc_theme_enabled", self._open_theme))
-        layout.addWidget(self._make_row("Bot", tr("Системный промт"), "oc_system_prompt", self._open_prompt))
+        layout.addWidget(self._make_row("Bot", tr("Системный промпт"), "oc_system_prompt", self._open_prompt))
+        layout.addWidget(self._make_row("Sparkles", tr("Создать агента"), "oc_agent_prompt", self._open_agent_prompt))
 
         main_layout.addWidget(container)
         self.setLayout(main_layout)
@@ -26164,10 +26311,13 @@ class OcSettingsDialog(QDialog):
     def _refresh_row(self, key):
         try:
             _card, icon, status = self._rows[key]
-            if key == "oc_system_prompt":
-                # Статус промта живёт не в settings, а в глобальном AGENTS.md
-                # (или в sidecar, пока промт выключен).
-                state = _oc_prompt_state()
+            if key in ("oc_system_prompt", "oc_agent_prompt"):
+                # Статус промпта живёт не в settings, а в его файле
+                # (или в sidecar, пока промпт выключен).
+                target = (_OC_PROMPT_AGENT if key == "oc_agent_prompt"
+                          else _OC_PROMPT_GLOBAL)
+                glyph = "Sparkles" if target == _OC_PROMPT_AGENT else "Bot"
+                state = _oc_prompt_state(target)
                 if state == "on":
                     status.setText(tr("Задан"))
                     color = "rgb(52, 211, 153)"
@@ -26183,7 +26333,7 @@ class OcSettingsDialog(QDialog):
                 status.setStyleSheet(
                     "color: %s; background: transparent; border: none;" % color)
                 try:
-                    icon.setPixmap(_paint_update_glyph("Bot", 20, icon_color))
+                    icon.setPixmap(_paint_update_glyph(glyph, 20, icon_color))
                 except Exception:
                     pass
                 return
@@ -26223,6 +26373,13 @@ class OcSettingsDialog(QDialog):
     def _open_prompt(self):
         try:
             OcSystemPromptDialog(self).exec()
+        except Exception:
+            pass
+        self._refresh_states()
+
+    def _open_agent_prompt(self):
+        try:
+            OcSystemPromptDialog(self, target=_OC_PROMPT_AGENT).exec()
         except Exception:
             pass
         self._refresh_states()
@@ -26498,7 +26655,7 @@ class OcModelDialog(QDialog):
 
     MAX_W = 720
     MAX_H = 700
-    MIN_W = 420
+    MIN_W = 460
 
     def __init__(self, endpoint_models, free_models, model_meta=None,
                  provider_name="", parent=None, free_removed=None):
@@ -38496,7 +38653,8 @@ class ClaudeManager(QMainWindow):
             pass
 
     def _oc_open_settings(self):
-        """Маленькое окно настроек Custom URL: звуки, тема и системный промт."""
+        """Маленькое окно настроек Custom URL: звуки, тема, системный промпт
+        и создание своего агента."""
         if not self._is_oc_installed():
             return
         dlg = OcSettingsDialog(self.settings, self)
