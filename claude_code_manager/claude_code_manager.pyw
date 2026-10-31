@@ -25,11 +25,220 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                 QComboBox, QLineEdit, QDialog, QScrollArea, QTextEdit, QFileDialog, QStyledItemDelegate, QMessageBox, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QProgressBar, QCheckBox, QSizePolicy, QSlider,
                                 QGraphicsScene, QGraphicsPixmapItem, QGraphicsBlurEffect)
 from PySide6.QtCore import Qt, QTimer, Signal, QPropertyAnimation, QEasingCurve, QAbstractListModel, QModelIndex, Property, QObject, QThread, QSize, QEvent, QLockFile
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QImage, QImageReader, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics, QIntValidator, QCursor, QGuiApplication, QHelpEvent
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QTextCursor, QIcon, QPixmap, QImage, QImageReader, QLinearGradient, QRadialGradient, QPainterPath, QFontMetrics, QIntValidator, QCursor, QGuiApplication, QHelpEvent, QTextBlockUserData, QTextBlockFormat
 from PySide6.QtCore import QPointF, QRectF, QRect, QUrl, QPoint
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "6.0.8"  # Для обновлений
+# ============================================================
+# ЕДИНЫЙ НАБОР ВЕКТОРНЫХ ИКОНОК
+# ------------------------------------------------------------
+# Галочки, крестики, стрелки и «!» рисуются геометрически, а не
+# шрифтом: глифы не зависят от темы, DPI и наличия символа в шрифте.
+# Один набор используется и в окне установки, и во всех остальных
+# диалогах приложения.
+# ============================================================
+
+_VECTOR_ICON_ALIASES = {
+    "✔": "check", "check": "check", "done": "check",
+    "success": "check",
+    "✕": "cross", "✖": "cross", "×": "cross", "x": "cross",
+    "cross": "cross", "fail": "cross", "failed": "cross", "close": "cross",
+    "!": "alert", "alert": "alert", "warn": "alert", "warning": "alert",
+    "↑": "up", "up": "up", "update": "up",
+    "↓": "down", "down": "down", "download": "down",
+    ">_": "terminal", "terminal": "terminal", "console": "terminal",
+    "⌁": "wave", "wave": "wave", "statusline": "wave",
+    "🔑": "key", "key": "key",
+    "🛡": "shield", "shield": "shield",
+    "⚙": "gear", "gear": "gear", "settings": "gear",
+    "■": "stop", "stop": "stop",
+    "↻": "refresh", "refresh": "refresh", "restart": "refresh",
+    "page": "document", "log": "document", "document": "document",
+}
+
+
+def _paint_vector_glyph(painter, glyph, rect, rgb, weight=None):
+    """Рисует векторный глиф в rect. Единый стиль для всего приложения."""
+    key = _VECTOR_ICON_ALIASES.get(str(glyph or "").strip().lower(), "dot")
+    x, y = rect.x(), rect.y()
+    w, h = rect.width(), rect.height()
+    size = min(w, h)
+    if size <= 1:
+        return
+
+    def _pen(ratio):
+        pen = QPen(QColor(*rgb), weight if weight else max(1.2, size * ratio))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+    if key == "check":
+        _pen(0.135)
+        path = QPainterPath()
+        path.moveTo(x + w * 0.22, y + h * 0.52)
+        path.lineTo(x + w * 0.42, y + h * 0.73)
+        path.lineTo(x + w * 0.80, y + h * 0.27)
+        painter.drawPath(path)
+    elif key == "cross":
+        _pen(0.115)
+        painter.drawLine(QPointF(x + w * 0.26, y + h * 0.26),
+                         QPointF(x + w * 0.74, y + h * 0.74))
+        painter.drawLine(QPointF(x + w * 0.74, y + h * 0.26),
+                         QPointF(x + w * 0.26, y + h * 0.74))
+    elif key == "alert":
+        _pen(0.105)
+        painter.drawLine(QPointF(x + w * 0.5, y + h * 0.24),
+                         QPointF(x + w * 0.5, y + h * 0.61))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(*rgb))
+        painter.drawEllipse(QPointF(x + w * 0.5, y + h * 0.76),
+                            size * 0.052, size * 0.052)
+    elif key == "up":
+        _pen(0.10)
+        painter.drawLine(QPointF(x + w * 0.5, y + h * 0.76),
+                         QPointF(x + w * 0.5, y + h * 0.24))
+        painter.drawLine(QPointF(x + w * 0.27, y + h * 0.47),
+                         QPointF(x + w * 0.5, y + h * 0.24))
+        painter.drawLine(QPointF(x + w * 0.5, y + h * 0.24),
+                         QPointF(x + w * 0.73, y + h * 0.47))
+    elif key == "down":
+        _pen(0.10)
+        painter.drawLine(QPointF(x + w * 0.5, y + h * 0.24),
+                         QPointF(x + w * 0.5, y + h * 0.76))
+        painter.drawLine(QPointF(x + w * 0.27, y + h * 0.53),
+                         QPointF(x + w * 0.5, y + h * 0.76))
+        painter.drawLine(QPointF(x + w * 0.5, y + h * 0.76),
+                         QPointF(x + w * 0.73, y + h * 0.53))
+    elif key == "terminal":
+        _pen(0.09)
+        path = QPainterPath()
+        path.moveTo(x + w * 0.25, y + h * 0.31)
+        path.lineTo(x + w * 0.46, y + h * 0.5)
+        path.lineTo(x + w * 0.25, y + h * 0.69)
+        painter.drawPath(path)
+        painter.drawLine(QPointF(x + w * 0.55, y + h * 0.69),
+                         QPointF(x + w * 0.76, y + h * 0.69))
+    elif key == "wave":
+        _pen(0.09)
+        path = QPainterPath()
+        path.moveTo(x + w * 0.22, y + h * 0.58)
+        path.lineTo(x + w * 0.34, y + h * 0.42)
+        path.lineTo(x + w * 0.44, y + h * 0.62)
+        path.lineTo(x + w * 0.56, y + h * 0.36)
+        path.lineTo(x + w * 0.66, y + h * 0.54)
+        path.lineTo(x + w * 0.78, y + h * 0.44)
+        painter.drawPath(path)
+    elif key == "key":
+        _pen(0.095)
+        painter.drawEllipse(QPointF(x + w * 0.36, y + h * 0.38),
+                            size * 0.145, size * 0.145)
+        painter.drawLine(QPointF(x + w * 0.46, y + h * 0.48),
+                         QPointF(x + w * 0.78, y + h * 0.80))
+        painter.drawLine(QPointF(x + w * 0.63, y + h * 0.65),
+                         QPointF(x + w * 0.72, y + h * 0.56))
+        painter.drawLine(QPointF(x + w * 0.71, y + h * 0.73),
+                         QPointF(x + w * 0.80, y + h * 0.64))
+    elif key == "shield":
+        _pen(0.085)
+        path = QPainterPath()
+        path.moveTo(x + w * 0.5, y + h * 0.18)
+        path.lineTo(x + w * 0.78, y + h * 0.30)
+        path.lineTo(x + w * 0.72, y + h * 0.58)
+        path.lineTo(x + w * 0.5, y + h * 0.82)
+        path.lineTo(x + w * 0.28, y + h * 0.58)
+        path.lineTo(x + w * 0.22, y + h * 0.30)
+        path.closeSubpath()
+        painter.setBrush(QColor(rgb[0], rgb[1], rgb[2], 24))
+        painter.drawPath(path)
+    elif key == "gear":
+        _pen(0.09)
+        painter.drawEllipse(QPointF(x + w * 0.5, y + h * 0.5),
+                            size * 0.19, size * 0.19)
+        painter.drawEllipse(QPointF(x + w * 0.5, y + h * 0.5),
+                            size * 0.055, size * 0.055)
+        for _i in range(8):
+            _a = math.radians(_i * 45.0)
+            _dx, _dy = math.cos(_a), math.sin(_a)
+            painter.drawLine(
+                QPointF(x + w * 0.5 + _dx * size * 0.23,
+                        y + h * 0.5 + _dy * size * 0.23),
+                QPointF(x + w * 0.5 + _dx * size * 0.32,
+                        y + h * 0.5 + _dy * size * 0.32))
+    elif key == "stop":
+        _pen(0.09)
+        painter.setBrush(QColor(rgb[0], rgb[1], rgb[2], 40))
+        painter.drawRoundedRect(
+            QRectF(x + w * 0.30, y + h * 0.30, w * 0.40, h * 0.40),
+            size * 0.08, size * 0.08)
+    elif key == "refresh":
+        _pen(0.09)
+        cx, cy = x + w * 0.5, y + h * 0.5
+        rx, ry = w * 0.27, h * 0.27
+        painter.drawArc(QRectF(cx - rx, cy - ry, rx * 2, ry * 2),
+                        35 * 16, 290 * 16)
+        _a = math.radians(35.0)
+        _tip = QPointF(cx + rx * math.cos(_a), cy - ry * math.sin(_a))
+        _tx, _ty = -math.sin(_a), -math.cos(_a)
+        _nx, _ny = math.cos(_a), -math.sin(_a)
+        _s = size * 0.11
+        painter.drawLine(
+            _tip, QPointF(_tip.x() - _tx * _s + _nx * _s * 0.8,
+                          _tip.y() - _ty * _s + _ny * _s * 0.8))
+        painter.drawLine(
+            _tip, QPointF(_tip.x() - _tx * _s - _nx * _s * 0.8,
+                          _tip.y() - _ty * _s - _ny * _s * 0.8))
+    elif key == "document":
+        _pen(0.085)
+        fold = 0.18
+        path = QPainterPath()
+        path.moveTo(x + w * 0.28, y + h * 0.16)
+        path.lineTo(x + w * (0.72 - fold), y + h * 0.16)
+        path.lineTo(x + w * 0.72, y + h * (0.16 + fold))
+        path.lineTo(x + w * 0.72, y + h * 0.84)
+        path.lineTo(x + w * 0.28, y + h * 0.84)
+        path.closeSubpath()
+        painter.drawPath(path)
+        painter.drawLine(QPointF(x + w * (0.72 - fold), y + h * 0.16),
+                         QPointF(x + w * (0.72 - fold),
+                                 y + h * (0.16 + fold)))
+        painter.drawLine(QPointF(x + w * (0.72 - fold),
+                                 y + h * (0.16 + fold)),
+                         QPointF(x + w * 0.72, y + h * (0.16 + fold)))
+        for _yy in (0.45, 0.57, 0.69):
+            painter.drawLine(QPointF(x + w * 0.38, y + h * _yy),
+                             QPointF(x + w * 0.62, y + h * _yy))
+    else:
+        _pen(0.12)
+        painter.setBrush(QColor(*rgb))
+        painter.drawEllipse(QPointF(x + w * 0.5, y + h * 0.5),
+                            size * 0.055, size * 0.055)
+
+
+def _vector_icon_pixmap(glyph, rgb, size=50, inset=0.16):
+    """Прозрачный pixmap с векторным глифом — для QLabel вместо текста."""
+    size = max(8, int(size))
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pad = size * float(inset)
+    _paint_vector_glyph(
+        painter, glyph, QRectF(pad, pad, size - 2 * pad, size - 2 * pad), rgb)
+    painter.end()
+    return pm
+
+
+def _apply_vector_icon(label, glyph, rgb, size=50, inset=0.16):
+    """Ставит на QLabel векторную иконку вместо текстового глифа."""
+    try:
+        label.setText("")
+        label.setPixmap(_vector_icon_pixmap(glyph, rgb, size, inset))
+    except Exception:
+        pass
+
+
+APP_VERSION = "6.0.9"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -1185,9 +1394,9 @@ TRANSLATIONS = {
     "Удаление": "Uninstalling",
     "Обновление": "Updating",
     "Установка": "Installing",
-    "удалён ✓": "uninstalled ✓",
-    "обновлён ✓": "updated ✓",
-    "установлен ✓": "installed ✓",
+    "удалён ✔": "uninstalled ✔",
+    "обновлён ✔": "updated ✔",
+    "установлен ✔": "installed ✔",
     "Запустить Codex CLI": "Start Codex CLI",
     "Выберите рабочую директорию": "Select working directory",
     "npm установит последнюю версию Codex CLI.": "npm will install the latest Codex CLI version.",
@@ -1215,6 +1424,44 @@ TRANSLATIONS = {
     "Не всё удалось удалить — закрой все окна Codex и попробуй снова.":
         "Some files could not be removed — close all Codex windows and try again.",
     "Codex CLI полностью удалён.": "Codex CLI has been fully uninstalled.",
+    # ── окно установки/обновления/удаления CLI (этапы и скрытый PowerShell)
+    "Показать консоль PowerShell": "Show PowerShell console",
+    "Идёт установка…": "Installing…",
+    "Идёт обновление…": "Updating…",
+    "Идёт удаление…": "Uninstalling…",
+    "Запускаю…": "Starting…",
+    "Выполняю…": "Working…",
+    "Этап": "Step",
+    "Останавливаю запущенные процессы": "Stopping running processes",
+    "Чищу сломанные npm-шимы": "Cleaning broken npm shims",
+    "Удаляю прежнюю версию": "Removing the previous version",
+    "Удаляю файлы установки": "Removing installation files",
+    "Проверяю удаление": "Verifying removal",
+    "Проверяю установку": "Verifying installation",
+    "Проверяю winget": "Checking winget",
+    "Проверяю node и npm": "Checking node and npm",
+    "Скачиваю Node.js LTS": "Downloading Node.js LTS",
+    "Удаляю opencode (npm)": "Removing opencode (npm)",
+    "Удаляю Codex CLI (npm)": "Removing Codex CLI (npm)",
+    "Удаляю Claude Code (npm)": "Removing Claude Code (npm)",
+    "Ставлю Node.js LTS через winget": "Installing Node.js LTS via winget",
+    "Ставлю последнюю версию": "Installing the latest version",
+    "Скачано %d МБ": "Downloaded %d MB",
+    "%d / %d МБ": "%d / %d MB",
+    "Распаковка %d%%": "Unpacking %d%%",
+    "Распаковка…": "Unpacking…",
+    "Настройка…": "Finishing…",
+    "Операция завершилась с ошибкой.": "The operation failed.",
+    "Операция завершилась с ошибкой. Попробуйте ещё раз.":
+        "The operation failed. Please try again.",
+    "Операция прервана. Можно попробовать снова.":
+        "The operation was interrupted. You can try again.",
+    "Не всё удалилось — закрой все окна CLI и попробуй снова.":
+        "Not everything was removed — close all CLI windows and try again.",
+    "npm завершился с ошибкой.": "npm exited with an error.",
+    "winget завершился с ошибкой.": "winget exited with an error.",
+    "Node.js установлен, но node или npm не запускаются. Проверь PATH или перезапусти приложение.":
+        "Node.js was installed, but node or npm does not run. Check PATH or restart the app.",
     # ── главное окно: кнопки шапки
     "Установить Claude Code": "Install Claude Code",
     "Удалить Claude Code": "Uninstall Claude Code",
@@ -1273,6 +1520,12 @@ TRANSLATIONS = {
     "убран %d дн. назад": "removed %dd ago",
     "Модели не найдены": "No models found",
     "Проверьте Base URL и ключ доступа.": "Check the Base URL and access key.",
+    "Не удалось загрузить модели": "Could not load models",
+    "Произошла ошибка или вы ввели неправильный Base URL / API ключ.": "An error occurred, or the Base URL / API key is incorrect.",
+    "Проблема может быть связана с провайдером:": "The issue may be related to the provider:",
+    "ошибка": "error",
+    "Бесплатные": "Free",
+    "Бесплатные модели opencode": "Free opencode models",
     "Каталог opencode и модели вашего эндпоинта": "The opencode catalog and your endpoint models",
     "Как сменить модель": "How to change the model",
     "Введите /model в терминале opencode и выберите нужную модель. Список обновляется при запуске приложения; кнопка «Обновить» — вручную.": "Type /model in the opencode terminal and pick the model you need. The list refreshes at app startup; the Update button refreshes it manually.",
@@ -1569,19 +1822,22 @@ TRANSLATIONS = {
     "Внимание": "Attention",
     "Установка status line": "Installing status line",
     "Подготовка…": "Preparing…",
-    "Status line установлен ✓": "Status line installed ✓",
+    "Status line установлен ✔": "Status line installed ✔",
     "Не удалось установить": "Installation failed",
     "Обновляем": "Updating",
+    "Скачивание обновления…": "Downloading update…",
     "Обновление скачано!": "Update downloaded!",
     "Завершаем обновление…": "Finalizing update…",
     "Ошибка скачивания": "Download error",
+    "Загрузка оборвалась: получено %d из %d байт":
+        "Download interrupted: received %d of %d bytes",
     "Ошибка": "Error",
     "МБ": "MB",
     "Удаление status line": "Removing status line",
-    "Status line удалён ✓": "Status line removed ✓",
-    "Claude исправлен ✓": "Claude fixed ✓",
-    "Claude Code обновлён ✓": "Claude Code updated ✓",
-    "Claude Code установлен ✓": "Claude Code installed ✓",
+    "Status line удалён ✔": "Status line removed ✔",
+    "Claude исправлен ✔": "Claude fixed ✔",
+    "Claude Code обновлён ✔": "Claude Code updated ✔",
+    "Claude Code установлен ✔": "Claude Code installed ✔",
     # ── баннеры
     "Запуск без прав администратора": "Running without administrator rights",
     "Рекомендуется запустить\nот имени администратора": "Recommended to run\nas administrator",
@@ -1617,9 +1873,9 @@ TRANSLATIONS = {
         "Updating…\nDo not close the PowerShell window.",
     "Идёт удаление…\nНе закрывайте окно PowerShell.":
         "Uninstalling…\nDo not close the PowerShell window.",
-    "Claude Code установлен ✓": "Claude Code installed ✓",
-    "Claude Code обновлён ✓": "Claude Code updated ✓",
-    "Claude Code удалён ✓": "Claude Code uninstalled ✓",
+    "Claude Code установлен ✔": "Claude Code installed ✔",
+    "Claude Code обновлён ✔": "Claude Code updated ✔",
+    "Claude Code удалён ✔": "Claude Code uninstalled ✔",
     "Удаление Claude Code": "Uninstall Claude Code",
     "Удаление не завершено": "Uninstall not completed",
     "Удаление завершено успешно.": "Uninstall completed successfully.",
@@ -1810,27 +2066,27 @@ TRANSLATIONS = {
     "установлен": "installed",
     # ── npm dialog
     "В системе не найден npm — он входит в состав Node.js. "
-    "Без npm Claude Code установить нельзя.\n\n"
-    "Нажми «Установить Node.js» — откроется окно PowerShell, "
+    "Без npm нельзя установить или обновить Claude Code, Codex CLI и opencode.\n\n"
+    "Нажми «Установить Node.js» — откроется окно установки, "
     "в котором winget автоматически скачает и поставит Node.js LTS "
     "с официального источника (OpenJS.NodeJS.LTS).\n\n"
     "После окончания установки закрой и заново открой это приложение, "
     "чтобы оно увидело npm в обновлённом PATH.":
         "npm was not found on the system — it ships with Node.js. "
-        "Without npm Claude Code cannot be installed.\n\n"
-        "Press «Install Node.js» — a PowerShell window will open "
-        "in which winget will automatically download and install Node.js LTS "
+        "Without npm, Claude Code, Codex CLI and opencode cannot be installed or updated.\n\n"
+        "Press «Install Node.js» — the install window will open, "
+        "where winget will automatically download and install Node.js LTS "
         "from the official source (OpenJS.NodeJS.LTS).\n\n"
         "After installation completes, close and reopen this app "
         "so it picks up npm in the updated PATH.",
     "В системе не найден npm — он входит в состав Node.js. "
-    "Без npm Claude Code установить нельзя.\n\n"
+    "Без npm нельзя установить или обновить Claude Code, Codex CLI и opencode.\n\n"
     "На твоей системе нет winget, поэтому установить автоматически не получится. "
-    "Нажми «Скачать Node.js» — откроется офици  льная страница "
+    "Нажми «Скачать Node.js» — откроется официальная страница "
     "nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, "
     "поставь его и перезапусти это приложение.":
         "npm was not found on the system — it ships with Node.js. "
-        "Without npm Claude Code cannot be installed.\n\n"
+        "Without npm, Claude Code, Codex CLI and opencode cannot be installed or updated.\n\n"
         "Your system has no winget, so automatic install is not possible. "
         "Press «Download Node.js» — the official "
         "nodejs.org/en/download page will open. Download the Windows Installer (.msi) LTS, "
@@ -1935,7 +2191,7 @@ TRANSLATIONS = {
     "Установка Windows Terminal...": "Installing Windows Terminal...",
     "Запуск установщика...": "Starting the installer...",
     "Идёт установка — это может занять пару минут...": "Installing — this may take a couple of minutes...",
-    "Терминал успешно установлен": "Terminal installed successfully",
+    "Терминал успешно установлен ✔": "Terminal installed successfully ✔",
     "Не удалось установить Terminal": "Terminal installation failed",
     "winget не найден — установи Terminal вручную из Microsoft Store.":
         "winget was not found — install Terminal manually from the Microsoft Store.",
@@ -1960,7 +2216,6 @@ TRANSLATIONS = {
     "Не удалось добавить npm в PATH автоматически: {}": "Failed to add npm to PATH automatically: {}",
     "opencode установлен, но его папка не в PATH — команда не видна новым терминалам":
         "opencode is installed but its folder is not in PATH — new terminals cannot see the command",
-    "В системе не найден npm — он входит в состав Node.js. Без npm Claude Code установить нельзя.\n\nНа твоей системе нет winget, поэтому установить автоматически не получится. Нажми «Скачать Node.js» — откроется официальная страница nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, поставь его и перезапусти это приложение.": "npm was not found on this system — it ships with Node.js. Without npm, Claude Code cannot be installed.\n\nwinget is not available on your system, so automatic installation is not possible. Click “Download Node.js” — the official nodejs.org/en/download page will open. Download the Windows Installer (.msi) LTS, install it and restart this app.",
     "Вы действительно хотите переустановить status line? Ваш текущий блок statusLine в ~/.claude/settings.json и файл ~/.claude/statusline-command.sh будут полностью перезаписаны нашей версией. Откатить это нельзя.": "Do you really want to reinstall the status line? Your current statusLine block in ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be fully overwritten with our version. This cannot be undone.",
     "Вы действительно хотите удалить status line? Блок statusLine уйдёт из ~/.claude/settings.json, а файл ~/.claude/statusline-command.sh — будет стёрт. Остальные настройки Claude Code останутся как есть.": "Do you really want to remove the status line? The statusLine block will be removed from ~/.claude/settings.json and the ~/.claude/statusline-command.sh file will be erased. Other Claude Code settings stay as they are.",
     "Сейчас приложение работает в обычном режиме и часть\nопераций может завершаться ошибкой PermissionDenied.\n\nБез админ-прав могут не сработать:\n  •  установка Node.js (инсталлятор пишет в %ProgramFiles%)\n  •  установка Claude Code (npm i -g в системные папки)\n  •  полное удаление Claude Code и чистка залоченных файлов\n  •  запись в системные папки (%ProgramFiles%, %ProgramData%)\n  •  правки в чужих профилях и общих директориях\n\nБазовые сценарии — Fix Claude, смена модели и API-ключа —\nработают и без админа.": "The app is running in normal mode and some\noperations may fail with PermissionDenied.\n\nWithout admin rights these may not work:\n  •  installing Node.js (the installer writes to %ProgramFiles%)\n  •  installing Claude Code (npm i -g into system folders)\n  •  fully uninstalling Claude Code and cleaning locked files\n  •  writing to system folders (%ProgramFiles%, %ProgramData%)\n  •  editing other users' profiles and shared directories\n\nBasic scenarios — Fix Claude, model and API key switching —\nwork without admin as well.",
@@ -2149,6 +2404,249 @@ def _npm_prefix_cached():
         except Exception:
             pass
     return val
+
+
+# ── Живой прогресс npm-установки: скачанные МБ и распаковка ──────────────
+
+def _dir_bytes(path):
+    """Суммарный размер файлов в папке. Ошибки (залоченные файлы, длинные
+    пути) молча пропускаем: прогресс не должен ронять установку."""
+    total = 0
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        total += _dir_bytes(entry.path)
+                    else:
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _npmrc_value(key):
+    """Значение ключа из ~/.npmrc (cache=, prefix=...). '' — не задано."""
+    try:
+        path = os.path.join(os.path.expanduser("~"), ".npmrc")
+        with open(path, encoding="utf-8-sig", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line[0] in "#;":
+                    continue
+                k, eq, val = line.partition("=")
+                if not eq or k.strip().lower() != str(key).lower():
+                    continue
+                val = val.strip().strip('"').strip("'")
+                val = os.path.expanduser(os.path.expandvars(val))
+                if val:
+                    return os.path.normpath(val)
+    except Exception:
+        pass
+    return ""
+
+
+def _npm_cache_dir():
+    """Папка npm-кэша этого пользователя (env → .npmrc → стандарт)."""
+    val = (os.environ.get("npm_config_cache") or "").strip()
+    if not val:
+        val = _npmrc_value("cache")
+    if not val:
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local")
+        val = os.path.join(base, "npm-cache")
+    try:
+        return os.path.normpath(os.path.expanduser(os.path.expandvars(val)))
+    except Exception:
+        return val
+
+
+def _npm_payload_prefixes():
+    """Все реальные npm-префиксы пользователя — где может лежать пакет."""
+    out = []
+
+    def add(value):
+        value = str(value or "").strip().strip('"').strip("'")
+        if not value:
+            return
+        try:
+            value = os.path.normpath(
+                os.path.expanduser(os.path.expandvars(value)))
+        except Exception:
+            return
+        if value and value not in out:
+            out.append(value)
+
+    add(os.environ.get("npm_config_prefix"))
+    add(_npm_prefix_from_npmrc())
+    try:
+        add(_npm_prefix_cached())
+    except Exception:
+        pass
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        add(os.path.join(appdata, "npm"))
+    program_files = os.environ.get("ProgramFiles")
+    if program_files:
+        add(os.path.join(program_files, "nodejs"))
+    add(os.path.join(os.path.expanduser("~"), "npm-global"))
+    try:
+        npm_path = shutil.which("npm")
+        if npm_path:
+            add(os.path.dirname(npm_path))
+    except Exception:
+        pass
+    return out
+
+
+def _npm_payload_pkg_dir(pkg, prefix):
+    """node_modules установленного пакета внутри npm-префикса."""
+    parts = [p for p in str(pkg or "").replace("\\", "/").split("/") if p]
+    return os.path.join(str(prefix or ""), "node_modules", *parts)
+
+
+def _npm_registry_json(name, version="latest"):
+    """Метаданные пакета из registry.npmjs.org."""
+    from urllib.parse import quote
+    url = ("https://registry.npmjs.org/" + quote(str(name), safe="") + "/"
+           + quote(str(version or "latest"), safe=""))
+    req = Request(url, headers={"User-Agent": "ClaudeManager-Updater"})
+    with urlopen(req, timeout=8, context=_ssl_context) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _http_total_bytes(url):
+    """Полный размер файла по URL. HEAD у registry не отдаёт Content-Length,
+    поэтому запасной путь — Range GET bytes=0-0 и Content-Range."""
+    url = str(url or "").strip()
+    if not url:
+        return 0
+    headers = {"User-Agent": "ClaudeManager-Updater"}
+    try:
+        req = Request(url, method="HEAD", headers=headers)
+        with urlopen(req, timeout=8, context=_ssl_context) as resp:
+            size = int(resp.headers.get("Content-Length") or 0)
+            if size > 0:
+                return size
+    except Exception:
+        pass
+    try:
+        headers["Range"] = "bytes=0-0"
+        req = Request(url, headers=headers)
+        with urlopen(req, timeout=8, context=_ssl_context) as resp:
+            content_range = resp.headers.get("Content-Range") or ""
+            if "/" in content_range:
+                return int(content_range.rsplit("/", 1)[1])
+            size = int(resp.headers.get("Content-Length") or 0)
+            return size if size > 0 else 0
+    except Exception:
+        return 0
+
+
+def _npm_alias_target(spec):
+    """npm-алиас `npm:@openai/codex@0.166.0-win32-x64` → (имя, версия).
+    Для обычной версии возвращает ('', spec)."""
+    value = str(spec or "").strip()
+    if not value.lower().startswith("npm:"):
+        return "", value
+    value = value[4:]
+    at = value.rfind("@")
+    if at > 0:
+        return value[:at], value[at + 1:]
+    return value, ""
+
+
+def _npm_cache_content_path(cache_dir, integrity):
+    """Путь файла в cacache по integrity из registry (sha512-<base64>)."""
+    try:
+        import base64
+        alg, sep, b64 = str(integrity or "").partition("-")
+        if not sep or alg not in ("sha512", "sha256", "sha1") or not b64:
+            return ""
+        digest = base64.b64decode(b64)
+        if not digest:
+            return ""
+        hex_digest = digest.hex()
+        return os.path.join(str(cache_dir), "_cacache", "content-v2", alg,
+                            hex_digest[:2], hex_digest[2:4], hex_digest[4:])
+    except Exception:
+        return ""
+
+
+def _npm_platform_arch():
+    """Архитектура для имён платформенных npm-пакетов."""
+    arch = (os.environ.get("PROCESSOR_ARCHITEW6432")
+            or os.environ.get("PROCESSOR_ARCHITECTURE") or "").lower()
+    if "arm64" in arch or "aarch64" in arch:
+        return "arm64"
+    return "x64"
+
+
+def _npm_payload_plan(pkg):
+    """План последнего этапа: сколько всего скачать и распаковать.
+
+    Возвращает {} при любой сетевой/структурной проблеме — окно тогда
+    мягко деградирует до «Скачано N МБ» / «Распаковка…»."""
+    pkg = str(pkg or "").strip()
+    if not pkg:
+        return {}
+    try:
+        root = _npm_registry_json(pkg, "latest")
+    except Exception:
+        return {}
+    entries = [{"meta": root, "root": True}]
+    arch = _npm_platform_arch()
+    matched = 0
+    for dep_name, spec in (root.get("optionalDependencies") or {}).items():
+        low = str(dep_name).lower()
+        if ("win32-" + arch) not in low and ("windows-" + arch) not in low:
+            continue
+        alias_name, alias_version = _npm_alias_target(spec)
+        target_name = alias_name or str(dep_name)
+        target_version = alias_version or str(spec)
+        try:
+            meta = _npm_registry_json(target_name, target_version or "latest")
+        except Exception:
+            return {}
+        entries.append({"meta": meta, "root": False})
+        matched += 1
+    if not matched:
+        return {}
+
+    cache_dir = _npm_cache_dir()
+    download_total = 0
+    unpack_total = 0
+    cache_files = []
+    for entry in entries:
+        dist = entry["meta"].get("dist") or {}
+        integrity = str(dist.get("integrity") or "")
+        path = _npm_cache_content_path(cache_dir, integrity)
+        size = 0
+        if path:
+            try:
+                if os.path.isfile(path):
+                    size = int(os.path.getsize(path))
+            except OSError:
+                size = 0
+        if size <= 0:
+            size = _http_total_bytes(str(dist.get("tarball") or ""))
+        if size <= 0:
+            return {}
+        download_total += size
+        if path:
+            cache_files.append((path, size))
+        if not entry["root"]:
+            unpack_total += int(dist.get("unpackedSize") or 0)
+    if unpack_total <= 0:
+        return {}
+    return {
+        "download_total": download_total,
+        "unpack_total": unpack_total,
+        "cache_files": cache_files,
+        "cache_dir": cache_dir,
+    }
 
 
 # Кэш поиска шимов по PATH: shutil.which — ~9 мс на вызов, а при переключении
@@ -2870,6 +3368,411 @@ def spawn_setup_session(ps_body, env=None, working_dir=None):
          "-Command", _ps_with_bypass(ps_body)],
         env=env
     )
+
+
+# ── Скрытая установка: PowerShell без окна, вывод — в приложение ──────
+# При установке/обновлении/удалении CLI окно PowerShell больше не
+# открывается: процесс стартует скрыто (CREATE_NO_WINDOW) и пишет всё
+# в stdout. Приложение читает строки и рисует этапы в своём окне, а
+# видимое окно PowerShell появляется только при ошибке — с полным логом.
+
+_CREATE_NO_WINDOW = 0x08000000
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_SETUP_STAGE_RE = re.compile(r"^\[(\d+)\s*/\s*(\d+)\]\s*(.*)$")
+_SETUP_DONE_RE = re.compile(r"^\[done\]\s*(.*)$", re.IGNORECASE)
+_SETUP_ERROR_RE = re.compile(r"^\[error\]\s*(.*)$", re.IGNORECASE)
+
+# Подписи этапов: скрипты пишут их по-английски (чистый ASCII в .ps1),
+# а в окне показываем по-русски (или по-английски при LANG = en).
+_SETUP_STAGE_PREFIXES = (
+    ("stopping running", "Останавливаю запущенные процессы"),
+    ("cleaning broken npm shims", "Чищу сломанные npm-шимы"),
+    ("removing old version", "Удаляю прежнюю версию"),
+    ("removing claude code (install.ps1)", "Удаляю файлы установки"),
+    ("verifying removal", "Проверяю удаление"),
+    ("downloading node.js", "Скачиваю Node.js LTS"),
+    ("verifying node.js", "Проверяю установку"),
+)
+_SETUP_STAGE_EXACT = {
+    "removing opencode (npm)": "Удаляю opencode (npm)",
+    "removing codex cli (npm)": "Удаляю Codex CLI (npm)",
+    "removing claude code (npm)": "Удаляю Claude Code (npm)",
+    "installing node.js lts via winget": "Ставлю Node.js LTS через winget",
+    "checking winget": "Проверяю winget",
+    "verifying node and npm": "Проверяю node и npm",
+}
+_SETUP_ERROR_TEXT = {
+    "left": "Не всё удалилось — закрой все окна CLI и попробуй снова.",
+    "npm": "npm завершился с ошибкой.",
+    "winget": "winget завершился с ошибкой.",
+    "node": "Node.js установлен, но node или npm не запускаются. "
+            "Проверь PATH или перезапусти приложение.",
+}
+
+
+def _clean_setup_line(text):
+    """Убирает ANSI-цвета, BOM и хвосты CR из строки PowerShell."""
+    line = _ANSI_ESCAPE_RE.sub("", str(text or ""))
+    return line.replace("\ufeff", "").replace("\x00", "").rstrip()
+
+
+def _decode_setup_bytes(raw):
+    """Декодирует байты вывода: UTF-8 (его включает скрипт), иначе cp866 —
+    так PowerShell печатает собственные ошибки до смены кодировки."""
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("cp866", "replace")
+
+
+def parse_setup_line(text):
+    """Разбирает строку вывода установщика.
+
+    Возвращает (kind, payload):
+      ("stage", (номер, всего, текст)) — «[2/4] Installing...»;
+      ("done", текст)                  — «[done]»;
+      ("error", текст)                 — «[error] left»;
+      ("log", текст)                   — обычная строка (вывод npm и т.п.)."""
+    line = _clean_setup_line(text)
+    if not line:
+        return ("empty", "")
+    m = _SETUP_STAGE_RE.match(line)
+    if m:
+        try:
+            num = int(m.group(1))
+            total = int(m.group(2))
+        except ValueError:
+            return ("log", line)
+        if total <= 0 or num <= 0:
+            return ("log", line)
+        return ("stage", (min(num, total), total, m.group(3).strip()))
+    m = _SETUP_DONE_RE.match(line)
+    if m:
+        return ("done", m.group(1).strip())
+    m = _SETUP_ERROR_RE.match(line)
+    if m:
+        return ("error", m.group(1).strip())
+    return ("log", line)
+
+
+def setup_stage_label(text):
+    """Человеческая подпись этапа из английской строки скрипта."""
+    raw = str(text or "").strip()
+    low = raw.lower().rstrip(". ")
+    if low in _SETUP_STAGE_EXACT:
+        return tr(_SETUP_STAGE_EXACT[low])
+    for prefix, ru in _SETUP_STAGE_PREFIXES:
+        if low.startswith(prefix):
+            return tr(ru)
+    if low.startswith("installing latest"):
+        pkg = ""
+        trimmed = raw.rstrip(". ")
+        if "(" in trimmed and trimmed.endswith(")"):
+            pkg = trimmed[trimmed.rfind("(") + 1:-1].strip()
+        base = tr("Ставлю последнюю версию")
+        return (base + " · " + pkg) if pkg else base
+    return raw
+
+
+def setup_error_text(code):
+    """Локализованный текст ошибки по короткому коду из скрипта."""
+    key = str(code or "").strip().lower()
+    ru = _SETUP_ERROR_TEXT.get(key)
+    if not ru:
+        return str(code or "").strip() or tr("Операция завершилась с ошибкой.")
+    return tr(ru)
+
+
+# Финальные «нажми любую клавишу» из старых скриптов — в скрытом режиме
+# они не нужны: процесс должен просто завершиться.
+_PS_PAUSE_READKEY_RE = re.compile(
+    r"\$null\s*=\s*\$Host\.UI\.RawUI\.ReadKey\([^)]*\)\s*;?")
+_PS_PAUSE_PROMPT_RE = re.compile(
+    r"Write-Host\s+''\s*;\s*Write-Host\s+'[^']*"
+    r"(?:Press any key|Нажмите любую клавишу)[^']*'[^;]*;?")
+
+
+def _strip_setup_pause(ps_body):
+    """Выкидывает ожидание клавиши из тела установщика (если осталось)."""
+    body = str(ps_body or "")
+    body = _PS_PAUSE_PROMPT_RE.sub("", body)
+    body = _PS_PAUSE_READKEY_RE.sub("", body)
+    return body.strip()
+
+
+class SetupStreamProcess(QObject):
+    """Скрытый установщик: PowerShell без окна, строка за строкой.
+
+    Окно не показывается вообще — весь вывод идёт в пайп и разбирается
+    в GUI. wait() совместим с Popen (его ждут рабочие потоки установки),
+    а lineReady/finished доставляются из фонового потока как Qt-события."""
+
+    lineReady = Signal(str)
+    finished = Signal(int)
+
+    def __init__(self, ps_body, working_dir=None, env=None, parent=None):
+        super().__init__(parent)
+        self.returncode = None
+        self._log_tail = []
+        stamp = "{}_{}".format(os.getpid(), int(time.time() * 1000))
+        self._script = os.path.join(tempfile.gettempdir(),
+                                    "ccm_setup_{}.ps1".format(stamp))
+        # Тот же вывод пишем в файл: кнопка-листочек в окне установки
+        # открывает видимую консоль PowerShell, которая дочитывает его
+        # вживую. done-файл говорит консоли, что процесс завершился.
+        self._log_path = os.path.join(tempfile.gettempdir(),
+                                      "ccm_setup_{}.log".format(stamp))
+        self._done_path = os.path.join(tempfile.gettempdir(),
+                                       "ccm_setup_{}.done".format(stamp))
+        self._log_file = None
+        try:
+            self._log_file = open(self._log_path, "w", encoding="utf-8",
+                                  buffering=1)
+        except OSError:
+            self._log_file = None
+        body = _strip_setup_pause(_ps_with_bypass(ps_body))
+        # Кодировка и тишина прогресс-баров — до первой строки скрипта.
+        head = ("chcp 65001 > $null; "
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                "$OutputEncoding = [System.Text.Encoding]::UTF8; "
+                "$ProgressPreference = 'SilentlyContinue'; "
+                "[Threading.Thread]::CurrentThread.CurrentUICulture = "
+                "[Globalization.CultureInfo]::GetCultureInfo('en-US'); ")
+        try:
+            with open(self._script, "w", encoding="utf-8-sig") as f:
+                f.write(head + body)
+        except OSError:
+            self._script = None
+        args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+        if self._script:
+            args += ["-File", self._script]
+        else:
+            args += ["-Command", head + body]
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0          # SW_HIDE
+        self._proc = subprocess.Popen(
+            args, cwd=working_dir or os.path.expanduser("~"),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, env=env,
+            creationflags=_CREATE_NO_WINDOW, startupinfo=si)
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def _pump(self):
+        try:
+            for raw in iter(self._proc.stdout.readline, b""):
+                line = _decode_setup_bytes(raw).rstrip("\r\n")
+                if not line:
+                    continue
+                self._log_tail.append(line)
+                if len(self._log_tail) > 500:
+                    del self._log_tail[:-500]
+                if self._log_file is not None:
+                    try:
+                        self._log_file.write(line + "\n")
+                    except OSError:
+                        pass
+                try:
+                    self.lineReady.emit(line)
+                except Exception:
+                    pass
+        finally:
+            try:
+                self._proc.wait(timeout=5)
+            except Exception:
+                pass
+            self.returncode = self._proc.returncode
+            if self._log_file is not None:
+                try:
+                    self._log_file.close()
+                except OSError:
+                    pass
+                self._log_file = None
+            try:
+                with open(self._done_path, "w", encoding="utf-8") as f:
+                    f.write("done\n")
+            except OSError:
+                pass
+            try:
+                self.finished.emit(int(self.returncode or 0))
+            except Exception:
+                pass
+            try:
+                if self._script:
+                    os.remove(self._script)
+            except OSError:
+                pass
+            self._schedule_log_cleanup()
+
+    def _schedule_log_cleanup(self):
+        """Лог и маркер завершения живут час — чтобы листочек в окне
+        успел открыть консоль даже после финала."""
+        def _cleanup():
+            for path in (self._log_path, self._done_path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        try:
+            timer = threading.Timer(3600.0, _cleanup)
+            timer.daemon = True
+            timer.start()
+        except Exception:
+            pass
+
+    @property
+    def log_path(self):
+        return self._log_path
+
+    @property
+    def done_path(self):
+        return self._done_path
+
+    def wait(self, timeout=None):
+        """Как Popen.wait(): ждёт завершения скрипта."""
+        try:
+            self._thread.join(timeout)
+        except Exception:
+            pass
+        return self.returncode
+
+    @property
+    def log_text(self):
+        return "\n".join(self._log_tail)
+
+    def kill(self):
+        try:
+            self._proc.kill()
+        except Exception:
+            pass
+
+
+def spawn_setup_stream(ps_body, working_dir=None, env=None):
+    """Запускает установщик скрыто. Если совсем не вышло — падаем обратно
+    на видимое окно PowerShell, чтобы установка не пропала молча."""
+    try:
+        return SetupStreamProcess(ps_body, working_dir=working_dir, env=env)
+    except Exception:
+        return spawn_setup_session(ps_body, env=env, working_dir=working_dir)
+
+
+def open_powershell_log_window(title, log_text="", error=False,
+                               tail_path=None, done_path=None):
+    """Открывает видимое окно PowerShell с выводом установщика.
+
+    error=True — красная шапка ошибки; иначе спокойный вид консоли.
+    Если переданы tail_path/done_path, окно дочитывает лог вживую до
+    появления done-файла: листочек можно нажать прямо во время установки.
+    Вся консоль — на английском, независимо от языка интерфейса."""
+    title = str(title or "").strip() or "Claude Code Manager — PowerShell"
+    log_text = str(log_text or "").strip()
+    stamp = "{}_{}".format(os.getpid(), int(time.time() * 1000))
+    script_path = os.path.join(tempfile.gettempdir(),
+                               "ccm_console_{}.ps1".format(stamp))
+    live = bool(tail_path and done_path and os.path.isfile(tail_path))
+    shown_log = ""
+    if not live:
+        shown_log = os.path.join(tempfile.gettempdir(),
+                                 "ccm_console_{}.log".format(stamp))
+        try:
+            with open(shown_log, "w", encoding="utf-8-sig") as f:
+                f.write((log_text or "No output yet.") + "\n")
+        except OSError:
+            return False
+
+    safe_title = title.replace("'", "''")
+    head_color = "Red" if error else "Cyan"
+    header = ("The operation failed. Full log below." if error
+              else "PowerShell console output.")
+    body = (
+        "chcp 65001 > $null\n"
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
+        "$OutputEncoding = [System.Text.Encoding]::UTF8\n"
+        "[Threading.Thread]::CurrentThread.CurrentUICulture = "
+        "[Globalization.CultureInfo]::GetCultureInfo('en-US')\n"
+        "try { $Host.UI.RawUI.WindowTitle = '@@TITLE@@' } catch {}\n"
+        "Write-Host ''\n"
+        "Write-Host '@@TITLE@@' -ForegroundColor @@COLOR@@\n"
+        "Write-Host '@@HEADER@@' -ForegroundColor DarkGray\n"
+        "Write-Host ('-' * 64) -ForegroundColor DarkGray\n"
+    )
+    if live:
+        body += (
+            "$logPath = '@@LOG@@'\n"
+            "$donePath = '@@DONE@@'\n"
+            "$printed = 0\n"
+            "while ($true) {\n"
+            "    if (Test-Path -LiteralPath $logPath) {\n"
+            "        $lines = @(Get-Content -LiteralPath $logPath "
+            "-Encoding UTF8 -ErrorAction SilentlyContinue)\n"
+            "        if ($lines.Count -gt $printed) {\n"
+            "            for ($i = $printed; $i -lt $lines.Count; $i++) "
+            "{ Write-Host $lines[$i] }\n"
+            "            $printed = $lines.Count\n"
+            "        }\n"
+            "    }\n"
+            "    if (Test-Path -LiteralPath $donePath) { break }\n"
+            "    Start-Sleep -Milliseconds 300\n"
+            "}\n"
+            "Write-Host ('-' * 64) -ForegroundColor DarkGray\n"
+            "Write-Host ''\n"
+            "Read-Host 'Press Enter to close'\n"
+            "Remove-Item -LiteralPath '@@SCRIPT@@' -Force "
+            "-ErrorAction SilentlyContinue\n"
+        )
+        body = (body.replace("@@LOG@@", tail_path.replace("'", "''"))
+                    .replace("@@DONE@@", done_path.replace("'", "''")))
+    else:
+        body += (
+            "Get-Content -LiteralPath '@@LOG@@' -Encoding UTF8 | "
+            "ForEach-Object { Write-Host $_ }\n"
+            "Write-Host ('-' * 64) -ForegroundColor DarkGray\n"
+            "Write-Host ''\n"
+            "Read-Host 'Press Enter to close'\n"
+            "Remove-Item -LiteralPath '@@SCRIPT@@' -Force "
+            "-ErrorAction SilentlyContinue\n"
+        )
+        body = body.replace("@@LOG@@", shown_log.replace("'", "''"))
+
+    body = (body.replace("@@TITLE@@", safe_title)
+                .replace("@@HEADER@@", header)
+                .replace("@@COLOR@@", head_color)
+                .replace("@@SCRIPT@@", script_path.replace("'", "''")))
+    try:
+        with open(script_path, "w", encoding="utf-8-sig") as f:
+            f.write(body)
+    except OSError:
+        return False
+
+    args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", script_path]
+    wt = find_windows_terminal()
+    if wt:
+        args = [wt, "-d", os.path.expanduser("~")] + args
+    try:
+        subprocess.Popen(args)
+    except Exception:
+        return False
+
+    def _cleanup():
+        for path_ in (script_path, shown_log):
+            try:
+                os.remove(path_)
+            except OSError:
+                pass
+
+    timer = threading.Timer(3600.0, _cleanup)
+    timer.daemon = True
+    timer.start()
+    return True
+
+
+def open_powershell_error_window(title, log_text):
+    """Ошибка установки: то же окно консоли, но с красной шапкой."""
+    return open_powershell_log_window(title, log_text, error=True)
 
 
 def check_app_update():
@@ -3783,36 +4686,162 @@ class OcModelInfoButton(StyledButton):
         self._alert = StatusIndicator(self)
         self._alert.set_state("warn")
         self._alert.setToolTip(tr("Изменения в бесплатных моделях"))
+        self._alert.setFixedSize(16, 16)
+        self._alert.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._alert.hide()
+        self._alert_on = False
+        # Цветные сводки вместо одной строки текста: зелёная — бесплатные
+        # модели, в цвете провайдера — его модели. Это дочерние QLabel:
+        # клик по ним проходит сквозь них в кнопку.
+        self._free_chip = self._make_chip()
+        self._provider_chip = self._make_chip()
+        self._chips_shown = False
+
+    def _make_chip(self):
+        chip = QLabel(self)
+        chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        chip.setAlignment(Qt.AlignCenter)
+        chip.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        chip.setTextFormat(Qt.PlainText)
+        chip.setFixedHeight(28)
+        chip.hide()
+        return chip
+
+    def show_summary(self, free_text, provider_text=None, provider_rgb=None,
+                     provider_error=False):
+        """Показывает цветные чипы вместо текста кнопки.
+
+        free_text — «Бесплатные модели · 12» (пустая строка — чипа нет);
+        provider_text — «api.host · 7» или «api.host · ошибка»;
+        provider_rgb — цвет провайдера из окна моделей;
+        provider_error — слово «ошибка» красным, без всяких точек."""
+        self.setText("")
+        self._chips_shown = True
+        self._free_text = str(free_text or "")
+        self._update_free_chip()
+        if provider_text and provider_rgb:
+            self._set_chip(self._provider_chip, provider_text,
+                           tuple(provider_rgb),
+                           tr("Модели провайдера"),
+                           error=bool(provider_error))
+        else:
+            self._provider_chip.hide()
+        self._layout_chips()
+
+    def _update_free_chip(self):
+        """Перерисовывает зелёный чип: место под жёлтую точку резервируется
+        только когда она реально есть."""
+        self._set_chip(
+            self._free_chip, getattr(self, "_free_text", ""),
+            (140, 220, 150),
+            (tr("Изменения в бесплатных моделях") if self._alert_on
+             else tr("Бесплатные модели opencode")),
+            right_extra=(20 if self._alert_on else 0),
+            align_left=bool(self._alert_on))
+
+    def clear_summary(self):
+        """Возвращает кнопку к обычному тексту (загрузка, нет CLI и т.п.)."""
+        self._chips_shown = False
+        self._free_chip.hide()
+        self._provider_chip.hide()
+        self._alert.hide()
+
+    def _set_chip(self, chip, text, rgb, tooltip, error=False,
+                  right_extra=0, align_left=False):
+        text = str(text or "")
+        if not text:
+            chip.hide()
+            return
+        r, g, b = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+        chip.setToolTip(tooltip)
+        chip.setAlignment((Qt.AlignLeft | Qt.AlignVCenter) if align_left
+                          else Qt.AlignCenter)
+        chip.setFixedWidth(chip.fontMetrics().horizontalAdvance(text)
+                           + 26 + int(right_extra))
+        if error:
+            # Имя провайдера — его цветом, слово «ошибка» — красным.
+            head = text.rsplit(" · ", 1)[0]
+            tail = text[len(head) + 3:]
+            safe_head = (head.replace("&", "&amp;").replace("<", "&lt;")
+                         .replace(">", "&gt;"))
+            safe_tail = (tail.replace("&", "&amp;").replace("<", "&lt;")
+                         .replace(">", "&gt;"))
+            chip.setTextFormat(Qt.RichText)
+            chip.setText(
+                '%s <span style="color: rgb(240, 138, 138);">· %s</span>'
+                % (safe_head, safe_tail))
+        else:
+            chip.setTextFormat(Qt.PlainText)
+            chip.setText(text)
+        chip.setStyleSheet(
+            "QLabel { color: rgb(%d, %d, %d);"
+            " background: rgba(%d, %d, %d, 18);"
+            " border: 2px solid rgba(%d, %d, %d, 95);"
+            " border-radius: 9px; padding: 2px 8px; }"
+            % (r, g, b, r, g, b, r, g, b))
+        chip.show()
+
+    def _layout_chips(self):
+        if not self._chips_shown:
+            return
+        # Провайдер — слева, бесплатные — справа (порядок важен: он же
+        # определяет раскладку).
+        chips = [c for c in (self._provider_chip, self._free_chip)
+                 if c.isVisible()]
+        if not chips:
+            return
+        gap = 10
+        total = sum(c.width() for c in chips) + gap * (len(chips) - 1)
+        x = max(10, (self.width() - total) // 2)
+        for chip in chips:
+            chip.move(x, (self.height() - chip.height()) // 2)
+            chip.raise_()
+            x += chip.width() + gap
+        self._place_alert()
 
     def showEvent(self, event):
         super().showEvent(event)
         self._place_spinner()
-        self._place_alert()
+        self._layout_chips()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._place_spinner()
-        self._place_alert()
+        self._layout_chips()
 
     def _place_alert(self):
-        if self._alert is None or not self._alert.isVisible():
+        """Жёлтая пульсирующая точка — внутри чипа бесплатных моделей,
+        в самом конце строки: «Бесплатные модели · 8  ●»."""
+        if not self._alert_on:
+            self._alert.hide()
             return
-        # Прижат к правому краю с отступом (зеркально спиннеру слева):
-        # текст по центру, индикатор рядом с текстом не стоит — он за
-        # его границей и никогда не наезжает на буквы.
-        self._alert.move(self.width() - self._alert.width() - 12,
-                         (self.height() - self._alert.height()) // 2)
+        if not (self._chips_shown and self._free_chip.isVisible()):
+            self._alert.hide()
+            return
+        try:
+            if self._alert.parent() is not self._free_chip:
+                self._alert.setParent(self._free_chip)
+        except Exception:
+            return
+        self._alert.move(self._free_chip.width() - self._alert.width() - 9,
+                         (self._free_chip.height() - self._alert.height()) // 2)
+        self._alert.show()
         self._alert.raise_()
 
     def set_alert(self, on):
         """Показ/скрытие жёлтого знака «есть изменения в бесплатных»."""
-        on = bool(on)
-        if on == bool(self._alert.isVisible()):
+        self._alert_on = bool(on)
+        if not self._alert_on:
+            self._alert.hide()
+            if self._chips_shown:
+                self._update_free_chip()
+                self._layout_chips()
             return
-        if on:
-            self._alert.show()
-            self._place_alert()
+        # Если чипы сейчас не видны (загрузка/нет CLI) — точка просто
+        # подождёт: она живёт в зелёном чипе, когда тот появится.
+        if self._chips_shown and self._free_chip.isVisible():
+            self._update_free_chip()
+            self._layout_chips()
         else:
             self._alert.hide()
 
@@ -5135,8 +6164,9 @@ class ConfirmDeleteDialog(QDialog):
 
         # Иконка-«!» в круге — как у StatusLineInstallDialog, но красная
         # (удаление): глиф ⚠ в Segoe UI рисуется дефолтным символом.
-        icon_label = QLabel("!")
+        icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
+        _apply_vector_icon(icon_label, "alert", (224, 90, 90), 50)
         icon_label.setStyleSheet("""
             QLabel {
                 color: rgb(224, 90, 90);
@@ -5259,8 +6289,9 @@ class OfficialModeWarningDialog(QDialog):
         layout.setContentsMargins(32, 26, 32, 26)
         layout.setSpacing(12)
 
-        icon_label = QLabel("!")
+        icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
+        _apply_vector_icon(icon_label, "alert", (217, 119, 87), 50)
         icon_label.setStyleSheet("""
             QLabel {
                 color: rgb(217, 119, 87);
@@ -5431,10 +6462,10 @@ class AdminWarningDialog(QDialog):
         layout.addWidget(top_banner)
 
         # Иконка — щит с восклицательным знаком
-        icon_label = QLabel("🛡")
-        icon_label.setFont(QFont("Segoe UI Emoji", 38))
+        icon_label = QLabel()
         icon_label.setStyleSheet("background: transparent; border: none;")
         icon_label.setAlignment(Qt.AlignCenter)
+        _apply_vector_icon(icon_label, "shield", (245, 196, 74), 54, 0.06)
         layout.addWidget(icon_label)
 
         # Главный заголовок
@@ -5586,7 +6617,7 @@ class ConfirmActionDialog(QDialog):
         layout.setSpacing(14)
 
         ir, ig, ib = icon_color
-        icon_label = QLabel(icon)
+        icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
         icon_label.setStyleSheet(f"""
             QLabel {{
@@ -5602,6 +6633,7 @@ class ConfirmActionDialog(QDialog):
                 max-height: 50px;
             }}
         """)
+        _apply_vector_icon(icon_label, icon, icon_color, 50)
         icon_row = QHBoxLayout()
         icon_row.addStretch()
         icon_row.addWidget(icon_label)
@@ -5762,7 +6794,7 @@ class TerminalCheckDialog(QDialog):
         layout.setContentsMargins(30, 25, 30, 25)
         layout.setSpacing(14)
 
-        self.icon_label = QLabel(">_")
+        self.icon_label = QLabel("")
         self.icon_label.setAlignment(Qt.AlignCenter)
         self._set_icon(">_", (235, 150, 90))
         icon_row = QHBoxLayout()
@@ -5866,8 +6898,12 @@ class TerminalCheckDialog(QDialog):
 
     def _set_icon(self, text, rgb):
         r, g, b = rgb
-        self.icon_label.setText(text)
         self.icon_label.setStyleSheet(self._ICON_STYLE.format(r=r, g=g, b=b))
+        key = _VECTOR_ICON_ALIASES.get(str(text or "").strip().lower())
+        if key:
+            _apply_vector_icon(self.icon_label, key, rgb, 50)
+        else:
+            self.icon_label.setText(text)
 
     def _on_install_clicked(self):
         self.title_label.setText(tr("Установка Windows Terminal..."))
@@ -6231,8 +7267,8 @@ class TerminalCheckDialog(QDialog):
         """Экран успеха установки терминала (после дотяжки бара)."""
         try:
             self.bar.set_progress(100)
-            self._set_icon("✓", (52, 211, 153))
-            self.title_label.setText(tr("Терминал успешно установлен"))
+            self._set_icon("✔", (52, 211, 153))
+            self.title_label.setText(tr("Терминал успешно установлен ✔"))
             self.status_label.hide()
         except Exception:
             pass
@@ -26658,7 +27694,8 @@ class OcModelDialog(QDialog):
     MIN_W = 460
 
     def __init__(self, endpoint_models, free_models, model_meta=None,
-                 provider_name="", parent=None, free_removed=None):
+                 provider_name="", parent=None, free_removed=None,
+                 provider_failed=False):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -26669,6 +27706,9 @@ class OcModelDialog(QDialog):
         # чтобы не показывать их дважды.
         self._free = [m for m in (free_models or []) if m not in self._endpoint]
         self._provider_name = provider_name
+        # Провайдер задан, но своих моделей не отдал: вместо списка — цветной
+        # виджет с причиной. Бесплатные при этом остаются сверху.
+        self._provider_failed = bool(provider_failed) and not self._endpoint
         self._meta = _oc_normalize_meta_map(model_meta)
         # Пометки бесплатных моделей: убранные (красный виджет под шапкой
         # секции). Даты «когда добавлено» приходят прямо в мете моделей
@@ -27308,12 +28348,17 @@ class OcModelDialog(QDialog):
         return "%s %s %s" % (mid, display, chip_text)
 
     def update_models(self, endpoint_models, free_models, provider_name="",
-                      model_meta=None, free_removed=None):
+                      model_meta=None, free_removed=None,
+                      provider_failed=None):
         """Перестраивает карточки моделей, когда фоновый loader принёс свежие
         данные (установка/удаление/обновление opencode и т.п.)."""
         self._endpoint = list(endpoint_models or [])
         self._free = [m for m in (free_models or []) if m not in self._endpoint]
         self._provider_name = provider_name or ""
+        if provider_failed is None:
+            self._provider_failed = self._provider_failed and not self._endpoint
+        else:
+            self._provider_failed = bool(provider_failed) and not self._endpoint
         if model_meta is not None:
             self._meta = _oc_normalize_meta_map(model_meta)
         self._set_free_maps(free_removed)
@@ -27321,6 +28366,54 @@ class OcModelDialog(QDialog):
         self._build_sections()
         self._scroll.setMaximumHeight(self.MAX_H - 231)
         self._apply_preferred_size()
+
+    def _add_provider_error(self):
+        """Цветной виджет вместо списка моделей провайдера: объясняет, что
+        эндпоинт не ответил. Имя провайдера — то же, что в шапке секции."""
+        frame = QFrame()
+        frame.setObjectName("ocProviderError")
+        frame.setStyleSheet(
+            "QFrame#ocProviderError {"
+            " background: rgba(40, 24, 26, 150);"
+            " border: 2px dashed rgba(214, 86, 86, 150);"
+            " border-radius: 12px; }")
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(8)
+
+        title = QLabel(tr("Не удалось загрузить модели"))
+        title.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        title.setStyleSheet(
+            "color: rgb(235, 150, 150); background: transparent; border: none;")
+        title.setTextFormat(Qt.PlainText)
+        lay.addWidget(title)
+
+        body = QLabel(tr("Произошла ошибка или вы ввели неправильный "
+                         "Base URL / API ключ."))
+        body.setWordWrap(True)
+        body.setFont(QFont("Segoe UI", 9))
+        body.setStyleSheet(
+            "color: rgb(178, 170, 172); background: transparent; border: none;")
+        body.setTextFormat(Qt.PlainText)
+        lay.addWidget(body)
+
+        provider = str(self._provider_name or "").strip()
+        if provider:
+            prov = QLabel(tr("Проблема может быть связана с провайдером:")
+                          + " " + provider)
+            prov.setWordWrap(True)
+            prov.setFont(QFont("Segoe UI", 9, QFont.Bold))
+            prov.setStyleSheet(
+                "color: rgb(214, 140, 140); background: transparent;"
+                " border: none;")
+            prov.setTextFormat(Qt.PlainText)
+            lay.addWidget(prov)
+
+        self._cards_layout.addWidget(frame)
+        # Живой поиск не должен прятать объяснение ошибки, когда запрос
+        # пуст: секция обязана оставаться видимой даже без строк моделей.
+        if self._filter_sections:
+            self._filter_sections[-1]["error_widget"] = frame
 
     def _add_empty_state(self):
         frame = QFrame()
@@ -27373,6 +28466,10 @@ class OcModelDialog(QDialog):
                 w.deleteLater()
 
     def _build_sections(self):
+        # Секция провайдера есть и тогда, когда он не отдал ни одной модели:
+        # в этом случае вместо списка — цветной виджет с причиной.
+        has_provider = bool(self._endpoint) or bool(
+            self._provider_failed and self._provider_name)
         combined = self._endpoint + self._free
         # Коллекции живого поиска пересобираются вместе со списком:
         # _add_section_header кладёт шапку, _add_row — строки секции.
@@ -27409,7 +28506,11 @@ class OcModelDialog(QDialog):
                     queue.append(("subheader", (fam, j - i)))
                 queue.extend(("row", (m, False)) for m in grouped[i:j])
                 i = j
-        if not combined:
+        elif self._provider_failed and self._provider_name:
+            queue.append(("header", (tr("Модели провайдера"),
+                                     0, self._provider_name, "")))
+            queue.append(("provider_error", None))
+        if not combined and not has_provider:
             queue.append(("empty", None))
         self._build_queue = queue
         self._build_combined = bool(combined)
@@ -27442,6 +28543,8 @@ class OcModelDialog(QDialog):
                     self._add_notices(*payload)
                 elif kind == "row":
                     self._add_row(payload[0], is_free=payload[1])
+                elif kind == "provider_error":
+                    self._add_provider_error()
                 elif kind == "empty":
                     self._add_empty_state()
             except Exception:
@@ -27516,8 +28619,19 @@ class OcModelDialog(QDialog):
                     visible += 1
             section["count"].setText(
                 str(section.get("count_prefix", "")) + str(visible))
-            section["host"].setVisible(visible > 0)
-            if visible:
+            # Виджет ошибки провайдера виден только без поискового запроса;
+            # секция при этом остаётся видимой, даже когда строк моделей
+            # нет — иначе объяснение причины исчезало бы.
+            error_widget = section.get("error_widget")
+            if error_widget is not None:
+                try:
+                    error_widget.setVisible(not query)
+                except RuntimeError:
+                    pass
+            section_visible = visible > 0 or (error_widget is not None
+                                              and not query)
+            section["host"].setVisible(section_visible)
+            if section_visible:
                 any_visible = True
         label = getattr(self, "_no_results", None)
         if label is not None:
@@ -30395,7 +31509,7 @@ class _CloseButton(QPushButton):
     """Крестик с плавной анимацией рамки и фона при наведении."""
 
     def __init__(self, parent=None):
-        super().__init__("✕", parent)
+        super().__init__("", parent)
         self.setFixedSize(28, 28)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.NoFocus)
@@ -30483,9 +31597,9 @@ class _CloseButton(QPushButton):
         painter.setBrush(QColor(r, g, b, bg_alpha))
         painter.setPen(QPen(QColor(r, g, b, int(80 + 175 * p)), 2))
         painter.drawRoundedRect(rect, 6, 6)
-        painter.setPen(QColor(txt_alpha, txt_alpha, txt_alpha))
-        painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        painter.drawText(rect, Qt.AlignCenter, "✕")
+        cross_rect = QRectF(rect).adjusted(4, 4, -4, -4)
+        _paint_vector_glyph(painter, "cross", cross_rect,
+                            (txt_alpha, txt_alpha, txt_alpha), weight=2.0)
         if self._press_t > 0.01:
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(0, 0, 0, int(110 * self._press_t)))
@@ -31479,8 +32593,9 @@ class OcApiKeyDialog(QDialog):
         layout.setContentsMargins(30, 25, 30, 25)
         layout.setSpacing(14)
 
-        icon_label = QLabel("🔑")
+        icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
+        _apply_vector_icon(icon_label, "key", (52, 211, 153), 50)
         icon_label.setStyleSheet("""
             QLabel {
                 color: rgb(52, 211, 153);
@@ -32782,8 +33897,9 @@ class UpdateAppDialog(QDialog):
         cl.setSpacing(15)
 
         # Иконка
-        icon = QLabel("↑")
+        icon = QLabel()
         icon.setAlignment(Qt.AlignCenter)
+        _apply_vector_icon(icon, "up", (100, 180, 255), 50)
         icon.setStyleSheet("""
             QLabel {
                 color: #64B4FF;
@@ -33055,118 +34171,667 @@ class CubeGridSpinner(QWidget):
 # МОДАЛЬНОЕ ОКНО ПРОЦЕССА УСТАНОВКИ / ОБНОВЛЕНИЯ CLAUDE CODE
 # ============================================================
 
+class _SetupBadge(QWidget):
+    """Бейдж этапа: скруглённый квадрат с пунктирным контуром.
+
+    Галочка и крестик рисуются вектором, а не шрифтом, поэтому стоят
+    ровно по центру при любом DPI и любой теме."""
+
+    def __init__(self, rgb=(52, 211, 153), size=18, parent=None):
+        super().__init__(parent)
+        self._rgb = tuple(rgb)
+        self._state = "pending"
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def set_color(self, rgb):
+        self._rgb = tuple(rgb)
+        self.update()
+
+    def set_state(self, state):
+        self._state = str(state or "pending")
+        self.update()
+
+    def state(self):
+        return self._state
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = float(min(self.width(), self.height()))
+        if w <= 2:
+            return
+        lw = max(1.3, w / 12.0)
+        rect = QRectF(lw / 2.0 + 0.5, lw / 2.0 + 0.5,
+                      w - lw - 1.0, w - lw - 1.0)
+        radius = w * 0.30
+
+        if self._state == "failed":
+            rgb = (235, 90, 90)
+            fill_alpha, line_alpha = 26, 145
+        elif self._state == "done":
+            rgb = (126, 192, 140)      # зелёная галочка, как в обновлении
+            fill_alpha, line_alpha = 24, 135
+        else:
+            rgb = (132, 134, 146)
+            fill_alpha, line_alpha = 10, 95
+
+        border = QPen(QColor(*rgb, line_alpha), lw)
+        border.setStyle(Qt.CustomDashLine)
+        border.setDashPattern([1.3, 1.2])
+        border.setCapStyle(Qt.FlatCap)
+        p.setPen(border)
+        p.setBrush(QColor(*rgb, fill_alpha))
+        p.drawRoundedRect(rect, radius, radius)
+
+        if self._state == "done":
+            _paint_vector_glyph(
+                p, "check", QRectF(w * 0.10, w * 0.10, w * 0.80, w * 0.80),
+                (126, 192, 140), weight=max(2.0, w / 7.0))
+        elif self._state == "failed":
+            _paint_vector_glyph(
+                p, "cross", QRectF(w * 0.12, w * 0.12, w * 0.76, w * 0.76),
+                (238, 120, 120), weight=max(1.8, w / 8.0))
+        elif self._state == "pending":
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(132, 134, 146, 120))
+            p.drawEllipse(QPointF(w / 2.0, w / 2.0), w * 0.070, w * 0.070)
+
+
+class _SetupGlyphBadge(QWidget):
+    """Иконка в шапке окна: скруглённый квадрат + векторный глиф.
+
+    Крестик, стрелки и восклицательный знак рисуются геометрически,
+    поэтому визуальный центр всегда совпадает с центром плашки."""
+
+    def __init__(self, glyph, rgb=(52, 211, 153), size=42, parent=None):
+        super().__init__(parent)
+        self._glyph = str(glyph or "")
+        self._rgb = tuple(rgb)
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def set_glyph(self, glyph):
+        self._glyph = str(glyph or "")
+        self.update()
+
+    def set_accent(self, rgb):
+        self._rgb = tuple(rgb)
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = float(min(self.width(), self.height()))
+        if w <= 4:
+            return
+        r, g, b = self._rgb
+        rect = QRectF(1.0, 1.0, w - 2.0, w - 2.0)
+        p.setBrush(QColor(r, g, b, 26))
+        p.setPen(QPen(QColor(r, g, b, 86), 2.0))
+        p.drawRoundedRect(rect, w * 0.285, w * 0.285)
+
+        _paint_vector_glyph(
+            p, self._glyph,
+            QRectF(w * 0.18, w * 0.18, w * 0.64, w * 0.64),
+            (r, g, b), weight=max(2.4, w / 13.0))
+
+
+class _SetupLogButton(QPushButton):
+    """Кнопка-листочек в шапке: открывает консоль PowerShell с логом.
+
+    Во время работы консоль дочитывает файл вживую, после финала
+    показывает накопленный лог. Рисуется вектором, как остальные иконки."""
+
+    def __init__(self, rgb=(52, 211, 153), parent=None):
+        super().__init__("", parent)
+        self._rgb = tuple(rgb)
+        self.setFixedSize(30, 30)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(tr("Показать консоль PowerShell"))
+        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
+        self._progress = 0.0
+        self._hovered = False
+        self._pressed = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(20)
+
+    def enterEvent(self, event):
+        self._hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._pressed = True
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._pressed = False
+        super().mouseReleaseEvent(event)
+
+    def _tick(self):
+        target = 1.0 if self._hovered else 0.0
+        if abs(self._progress - target) > 0.01:
+            step = HOVER_STEP_20 if target > self._progress else -HOVER_STEP_20
+            self._progress = max(0.0, min(1.0, self._progress + step))
+            self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r, g, b = self._rgb
+        w, h = float(self.width()), float(self.height())
+        rect = QRectF(0.7, 0.7, w - 1.4, h - 1.4)
+        bg_alpha = int(16 + 34 * self._progress)
+        line_alpha = int(45 + 95 * self._progress)
+        if self._pressed:
+            bg_alpha += 26
+        p.setBrush(QColor(r, g, b, bg_alpha))
+        p.setPen(QPen(QColor(r, g, b, line_alpha), 1.4))
+        p.drawRoundedRect(rect, 8, 8)
+        glyph = QRectF(w * 0.21, h * 0.21, w * 0.58, h * 0.58)
+        _paint_vector_glyph(p, "document", glyph, (r, g, b),
+                            weight=max(1.4, w / 17.0))
+
+
+class _SetupStageSpinner(QWidget):
+    """Тонкая бегущая дуга — «палочка», которая крутится слева от этапа.
+    Живёт только у активного этапа, чтобы не жечь CPU на весь список."""
+
+    def __init__(self, rgb=(52, 211, 153), size=18, parent=None):
+        super().__init__(parent)
+        self._rgb = tuple(rgb)
+        self._angle = 0.0
+        self.setFixedSize(size, size)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):
+        if not self._timer.isActive():
+            self._timer.start(28)
+        self.show()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def set_color(self, rgb):
+        self._rgb = tuple(rgb)
+        self.update()
+
+    def _tick(self):
+        self._angle = (self._angle + 26.0) % 360.0
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = min(self.width(), self.height())
+        pen_w = max(2.0, w / 7.5)
+        rect = QRectF(pen_w / 2.0 + 0.5, pen_w / 2.0 + 0.5,
+                      w - pen_w - 1.0, w - pen_w - 1.0)
+        r, g, b = self._rgb
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(r, g, b, 52), pen_w))
+        p.drawEllipse(rect)
+        pen = QPen(QColor(r, g, b), pen_w)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawArc(rect, int(-self._angle * 16), int(-250 * 16))
+
+
+class _SetupStageRow(QWidget):
+    """Строка этапа: спиннер/галочка слева, подпись, состояние справа."""
+
+    def __init__(self, rgb, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedHeight(32)
+        self._rgb = tuple(rgb)
+        self._state = "pending"
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 0, 12, 0)
+        lay.setSpacing(10)
+
+        self._slot = QWidget(self)
+        self._slot.setFixedSize(20, 20)
+        self._slot.setStyleSheet("background: transparent; border: none;")
+
+        # Спиннер и бейдж живут в одном слоте: виден один из них.
+        # Дуга чуть меньше слота (18 из 20), чтобы по размеру совпадать
+        # с галочкой, которая рисуется с отступом внутри бейджа.
+        self._spinner = _SetupStageSpinner(self._rgb, 18, self._slot)
+        self._spinner.move(1, 1)
+        self._badge = _SetupBadge(self._rgb, 20, self._slot)
+        self._badge.move(0, 0)
+
+        lay.addWidget(self._slot, 0, Qt.AlignVCenter)
+
+        self._title = QLabel("")
+        self._title.setFont(QFont("Segoe UI", 9))
+        self._title.setTextFormat(Qt.PlainText)
+        lay.addWidget(self._title, 1)
+
+        # Правый лейбл живого прогресса — только у последнего этапа
+        # установки: «132 / 156 МБ» → «Распаковка 46%» → «Настройка…».
+        self._info = QLabel("")
+        self._info.setFont(QFont("Consolas", 8))
+        self._info.setFixedWidth(112)
+        self._info.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._info.setTextFormat(Qt.PlainText)
+        r, g, b = self._rgb
+        self._info.setStyleSheet(
+            "color: rgba(%d, %d, %d, 190); background: transparent;"
+            " border: none;" % (r, g, b))
+        self._info.hide()
+        lay.addWidget(self._info, 0, Qt.AlignVCenter)
+
+        self.set_pending()
+
+    def title_text(self):
+        return self._title.text()
+
+    def set_title(self, text):
+        self._title.setText(str(text or ""))
+
+    def info_text(self):
+        return self._info.text()
+
+    def set_info(self, text):
+        """Показать/скрыть правую подпись. Пустая строка — скрыть."""
+        text = str(text or "")
+        if text:
+            self._info.setText(text)
+            self._info.show()
+        else:
+            self._info.clear()
+            self._info.hide()
+
+    def _row_style(self, bg_alpha=0, radius=9):
+        r, g, b = self._rgb
+        return ("background: rgba(%d, %d, %d, %d); border: none;"
+                " border-radius: %dpx;" % (r, g, b, int(bg_alpha), radius))
+
+    def set_pending(self):
+        self._state = "pending"
+        self._spinner.stop()
+        self._badge.set_state("pending")
+        self._badge.show()
+        self._info.hide()
+        self._title.setStyleSheet(
+            "color: rgba(160, 162, 172, 170); background: transparent;"
+            " border: none;")
+        self.setStyleSheet(self._row_style(0))
+
+    def set_active(self):
+        self._state = "active"
+        self._badge.hide()
+        self._spinner.start()
+        self._info.hide()
+        self._title.setStyleSheet(
+            "color: rgb(236, 237, 242); background: transparent; border: none;")
+        self.setStyleSheet(self._row_style(18))
+
+    def set_done(self):
+        self._state = "done"
+        self._spinner.stop()
+        self._badge.set_state("done")
+        self._badge.show()
+        self._info.hide()
+        self._title.setStyleSheet(
+            "color: rgba(190, 194, 202, 205); background: transparent;"
+            " border: none;")
+        self.setStyleSheet(self._row_style(0))
+
+    def set_failed(self):
+        self._state = "failed"
+        self._spinner.stop()
+        self._badge.set_state("failed")
+        self._badge.show()
+        self._info.hide()
+        self._title.setStyleSheet(
+            "color: rgb(238, 152, 152); background: transparent; border: none;")
+        self.setStyleSheet(self._row_style(20))
+
+    def state(self):
+        return self._state
+
+
+class _SetupProgressBar(QWidget):
+    """Тонкая полоса прогресса с градиентом, бликом и плавной догонкой."""
+
+    valueChanged = Signal(float)
+
+    def __init__(self, rgb=(52, 211, 153), parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(10)
+        self._rgb = tuple(rgb)
+        self._value = 0.0
+        self._target = 0.0
+        self._shimmer = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+
+    def set_color(self, rgb):
+        self._rgb = tuple(rgb)
+        self.update()
+
+    def value(self):
+        return self._value
+
+    def target(self):
+        return self._target
+
+    def set_target(self, value, instant=False):
+        value = max(0.0, min(100.0, float(value)))
+        self._target = value
+        if instant:
+            self._value = value
+            self.valueChanged.emit(self._value)
+            self.update()
+            return
+        if not self._timer.isActive():
+            self._timer.start(16)
+
+    def freeze(self):
+        """Остановить догонку и блик, оставив полосу на текущем значении."""
+        self._target = self._value
+        self._timer.stop()
+        self.update()
+
+    def _tick(self):
+        diff = self._target - self._value
+        if abs(diff) > 0.08:
+            self._value += diff * 0.16
+        else:
+            self._value = self._target
+        if self._value < 99.9:
+            self._shimmer = (self._shimmer + 0.008) % 1.0
+        self.valueChanged.emit(self._value)
+        self.update()
+        if abs(self._target - self._value) <= 0.08 and self._value >= 99.9:
+            self._timer.stop()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), float(self.height())
+        radius = h / 2.0
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 16))
+        p.drawRoundedRect(QRectF(0, 0, w, h), radius, radius)
+
+        if self._value <= 0.15:
+            return
+
+        fw = max(h, w * self._value / 100.0)
+        r, g, b = self._rgb
+        grad = QLinearGradient(0, 0, max(fw, 1.0), 0)
+        grad.setColorAt(0.0, QColor(r, g, b, 165))
+        grad.setColorAt(0.55, QColor(min(255, r + 28), min(255, g + 28),
+                                     min(255, b + 28), 235))
+        grad.setColorAt(1.0, QColor(min(255, r + 50), min(255, g + 50),
+                                    min(255, b + 50), 255))
+        p.setBrush(QBrush(grad))
+        p.drawRoundedRect(QRectF(0, 0, fw, h), radius, radius)
+
+        # Бегущий блик — только пока полоса не заполнена.
+        if self._value < 99.5:
+            p.save()
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(0, 0, fw, h), radius, radius)
+            p.setClipPath(path)
+            band = max(18.0, fw * 0.28)
+            x = -band + (fw + band * 2.0) * self._shimmer
+            sg = QLinearGradient(x, 0, x + band, 0)
+            sg.setColorAt(0.0, QColor(255, 255, 255, 0))
+            sg.setColorAt(0.5, QColor(255, 255, 255, 64))
+            sg.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.setBrush(QBrush(sg))
+            p.drawRect(QRectF(x, 0, band, h))
+            p.restore()
+
+        # Светящаяся точка на конце заливки.
+        p.setBrush(QColor(255, 255, 255, 205))
+        p.drawEllipse(QRectF(fw - h * 1.15, h * 0.22, h * 0.56, h * 0.56))
+
+
+# ============================================================
+# МОДАЛЬНОЕ ОКНО ПРОЦЕССА УСТАНОВКИ / ОБНОВЛЕНИЯ CLI
+# ============================================================
+
 class ClaudeInstallProgressDialog(QDialog):
-    """Показывает прогресс установки/обновления/удаления, ждёт закрытия PowerShell."""
+    """Живое окно установки/обновления/удаления CLI.
+
+    PowerShell работает скрыто: строки его вывода приходят в on_line(),
+    где превращаются в этапы. Слева у каждого этапа — бегущий спиннер,
+    справа — галочка или крестик, снизу общий прогресс. У последнего этапа
+    установки справа живёт счётчик «X / Y МБ», который на распаковке
+    сменяется процентами, а затем «Настройка…». Видимое окно PowerShell
+    открывается только при ошибке — с полным логом."""
 
     def __init__(self, is_update=False, old_version="", new_version="",
-                 is_uninstall=False, parent=None, product="Claude Code"):
+                 is_uninstall=False, parent=None, product="Claude Code",
+                 stage_total=4, auto_finish=False, payload_pkg=None):
         super().__init__(parent)
         self._is_update = is_update
         self._is_uninstall = is_uninstall
         self._old_version = old_version
         self._new_version = new_version
         self._product = product
+        self._auto_finish = bool(auto_finish)
         self._finished = False
 
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        # Живой прогресс последнего этапа (npm-пакет): МБ → распаковка %.
+        self._payload_pkg = str(payload_pkg or "").strip()
+        self._payload_active = False
+        self._payload_row = None
+        self._payload_plan = {}
+        self._payload_cache_dir = ""
+        self._payload_tmp_base = 0
+        self._payload_cache_base = 0
+        self._payload_prefixes = []
+        self._payload_stale = {}
+        self._payload_unpack_dir = ""
+        self._payload_phase = "download"
+        self._payload_phase_started = 0.0
+        self._payload_dl_total = 0
+        self._payload_dl_target = 0.0
+        self._payload_disp_dl = 0.0
+        self._payload_unpack_total = 0
+        self._payload_unpack_target = 0.0
+        self._payload_disp_pct = 0.0
+        self._payload_unpack_seen = False
+        self._payload_last_unpack = 0
+        self._payload_last_unpack_change = 0.0
+        self._payload_unpack_done_at = None
+        self._payload_last_text = ""
+        self._payload_poll_count = 0
+
+        self._stage_rows = []
+        self._stage_index = -1
+        self._stage_total = 0
+        self._stage_expected = max(1, int(stage_total or 4))
+        self._log_lines = []
+        self._stream = None
+        self._stream_rc = None
+        self._stream_done = False
+        self._stream_done_payload = ""
+        self._stream_failed = False
+        self._stream_error = ""
+        self._ps_opened = False
+
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog |
+                            Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowModality(Qt.ApplicationModal)
 
         if is_uninstall:
             self._accent = (235, 90, 90)   # красный
+            self._glyph = "×"
             self._title_text = tr("Удаление") + f" {product}"
-            # Не жёстко-русский action_word — берём готовый tr()-ключ
-            self._status_running_text = tr("Идёт удаление…\nНе закрывайте окно PowerShell.")
+            self._status_running_text = tr("Идёт удаление…")
         elif is_update:
             self._accent = (245, 180, 60)   # жёлто-оранжевый
+            self._glyph = "↑"
             self._title_text = tr("Обновление") + f" {product}"
-            self._status_running_text = tr("Идёт обновление…\nНе закрывайте окно PowerShell.")
+            self._status_running_text = tr("Идёт обновление…")
         else:
             self._accent = (52, 211, 153)  # зелёный
+            self._glyph = "↓"
             self._title_text = tr("Установка") + f" {product}"
-            self._status_running_text = tr("Идёт установка…\nНе закрывайте окно PowerShell.")
+            self._status_running_text = tr("Идёт установка…")
+
+        r, g, b = self._accent
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        container = DottedFrame(clip_radius=16.0)
+        # Тот же фирменный узор из иконок приложения, что и в остальных
+        # окнах: DottedFrame рисует его поверх ровного фона и сам обрезает
+        # по скруглённому контуру. Тени нет — углы остаются прозрачными.
+        container = DottedFrame(clip_radius=14.0)
         container.setObjectName("installContainer")
-        r, g, b = self._accent
         container.setStyleSheet(f"""
             QFrame#installContainer {{
-                background-color: rgb(20, 20, 25);
+                background-color: rgb(20, 20, 26);
                 border: 2px solid rgba({r}, {g}, {b}, 0.55);
-                border-radius: 18px;
+                border-radius: 16px;
             }}
         """)
 
+        # Никакой QGraphicsDropShadowEffect: контейнер занимает всё окно,
+        # и тень обрезалась по его краям тёмными клиньями в прозрачных углах.
+        # Глубину даёт акцентный бордер, а углы остаются по-настоящему
+        # прозрачными на любом фоне.
+
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(34, 28, 34, 26)
+        layout.setContentsMargins(26, 24, 26, 22)
         layout.setSpacing(14)
 
-        # Заголовок
+        # ── Шапка: иконка, название, чип версии ──────────────────────
+        head = QHBoxLayout()
+        head.setSpacing(12)
+
+        self._icon = _SetupGlyphBadge(self._glyph, self._accent, 42)
+        head.addWidget(self._icon, 0, Qt.AlignVCenter)
+
+        title_col = QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(3)
+
         self.title_lbl = QLabel(self._title_text)
         self.title_lbl.setFont(QFont("Segoe UI", 13, QFont.Bold))
         self.title_lbl.setStyleSheet(
-            f"color: rgb({r}, {g}, {b}); background: transparent; border: none;"
-        )
-        self.title_lbl.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.title_lbl)
+            f"color: rgb({r}, {g}, {b}); background: transparent;"
+            " border: none;")
+        self.title_lbl.setTextFormat(Qt.PlainText)
+        title_col.addWidget(self.title_lbl)
+        head.addLayout(title_col, 1)
 
-        # Версии (если есть)
-        sub_text = ""
-        if is_update and old_version and new_version:
-            # Если new_version выглядит как номер версии (начинается с цифры), добавляем "v"
-            new_fmt = f"v{new_version}" if new_version and new_version[0].isdigit() else new_version
-            old_fmt = f"v{old_version}" if old_version and old_version[0].isdigit() else old_version
-            sub_text = f"{old_fmt}  →  {new_fmt}"
-        elif new_version:
-            sub_text = f"v{new_version}" if new_version[0].isdigit() else new_version
-        self.sub_lbl = QLabel(sub_text)
-        self.sub_lbl.setFont(QFont("Segoe UI", 10))
-        self.sub_lbl.setStyleSheet(
-            f"color: rgba({r}, {g}, {b}, 0.7); background: transparent; border: none;"
-        )
-        self.sub_lbl.setAlignment(Qt.AlignCenter)
-        if sub_text:
-            layout.addWidget(self.sub_lbl)
+        self._ver_pill = QLabel(self._version_text())
+        self._ver_pill.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        self._ver_pill.setAlignment(Qt.AlignCenter)
+        self._ver_pill.setStyleSheet(
+            f"QLabel {{ color: rgb({r}, {g}, {b});"
+            f" background: rgba({r}, {g}, {b}, 20);"
+            f" border: 1px solid rgba({r}, {g}, {b}, 70);"
+            " border-radius: 10px; padding: 4px 10px; }")
+        self._ver_pill.setTextFormat(Qt.PlainText)
+        if self._ver_pill.text():
+            head.addWidget(self._ver_pill, 0, Qt.AlignVCenter)
+        else:
+            self._ver_pill.hide()
 
-        # Спиннер
-        spinner_row = QHBoxLayout()
-        spinner_row.addStretch()
-        self.spinner = CubeGridSpinner(color=self._accent, size=72)
-        spinner_row.addWidget(self.spinner)
-        spinner_row.addStretch()
-        layout.addSpacing(6)
-        layout.addLayout(spinner_row)
-        layout.addSpacing(6)
+        # Листочек: в любой момент открывает консоль PowerShell с логом.
+        self._log_btn = _SetupLogButton(self._accent, self)
+        self._log_btn.clicked.connect(self._open_console)
+        head.addWidget(self._log_btn, 0, Qt.AlignVCenter)
 
-        # Статус
+        layout.addLayout(head)
+
+        # ── Этапы ────────────────────────────────────────────────────
+        self._stages_box = QVBoxLayout()
+        self._stages_box.setContentsMargins(0, 2, 0, 2)
+        self._stages_box.setSpacing(2)
+        layout.addLayout(self._stages_box)
+        self._ensure_stages(self._stage_expected)
+
+        # ── Прогресс ─────────────────────────────────────────────────
+        bar_row = QHBoxLayout()
+        bar_row.setSpacing(12)
+        self._bar = _SetupProgressBar(self._accent)
+        self._bar.valueChanged.connect(self._on_bar_value)
+        bar_row.addWidget(self._bar, 1, Qt.AlignVCenter)
+        self._pct_lbl = QLabel("0%")
+        self._pct_lbl.setFont(QFont("Consolas", 10, QFont.Bold))
+        self._pct_lbl.setFixedWidth(46)
+        self._pct_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._pct_lbl.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent;"
+            " border: none;")
+        bar_row.addWidget(self._pct_lbl, 0, Qt.AlignVCenter)
+        layout.addLayout(bar_row)
+
         self.status_lbl = QLabel(self._status_running_text)
-        self.status_lbl.setFont(QFont("Segoe UI", 10))
+        self.status_lbl.setFont(QFont("Segoe UI", 9))
         self.status_lbl.setStyleSheet(
-            "color: rgba(210, 210, 215, 0.9); background: transparent; border: none;"
-        )
-        self.status_lbl.setAlignment(Qt.AlignCenter)
-        self.status_lbl.setWordWrap(True)
+            "color: rgba(205, 207, 214, 0.9); background: transparent;"
+            " border: none;")
+        self.status_lbl.setTextFormat(Qt.PlainText)
         layout.addWidget(self.status_lbl)
 
-        # Кнопка OK (скрыта до завершения)
-        self.btn_ok = GlowDialogButton(tr("Понятно"),
-                                       base_rgb=self._accent,
-                                       hover_rgb=tuple(min(255, c + 30) for c in self._accent))
+        # ── Лог: появляется только при ошибке ────────────────────────
+        self._log_view = QTextEdit()
+        self._log_view.setReadOnly(True)
+        self._log_view.setFont(QFont("Consolas", 8))
+        self._log_view.setFixedHeight(148)
+        self._log_view.setStyleSheet(
+            "QTextEdit { background: rgba(8, 8, 12, 210);"
+            " color: rgb(196, 198, 204);"
+            " border: 1px solid rgba(255, 255, 255, 22);"
+            " border-radius: 9px; padding: 6px; }")
+        self._log_view.hide()
+        layout.addWidget(self._log_view)
+
+        # ── Кнопка OK ────────────────────────────────────────────────
+        self.btn_ok = GlowDialogButton(
+            tr("Понятно"),
+            base_rgb=self._accent,
+            hover_rgb=tuple(min(255, c + 30) for c in self._accent))
         self.btn_ok.clicked.connect(self.accept)
         self.btn_ok.hide()
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         btn_row.addWidget(self.btn_ok)
         btn_row.addStretch()
-        layout.addSpacing(4)
         layout.addLayout(btn_row)
 
         main_layout.addWidget(container)
         self.setLayout(main_layout)
-        self.setFixedWidth(420)
+        self.setFixedWidth(566)
+
+        self._creep = QTimer(self)
+        self._creep.timeout.connect(self._creep_tick)
+
+        # 80 мс — плавный счётчик; фактические размеры папок читаем реже,
+        # раз в три тика (240 мс), чтобы не дёргать диск без нужды.
+        self._payload_timer = QTimer(self)
+        self._payload_timer.timeout.connect(self._payload_tick)
+
+        # Первый этап активен сразу: даже до первой строки видно движение.
+        if self._stage_rows:
+            self._stage_rows[0].set_active()
+            self._stage_rows[0].set_title(tr("Запускаю…"))
+            self._stage_index = 0
+            self._creep.start()
 
         # Появление
         self.setWindowOpacity(0.0)
@@ -33176,77 +34841,563 @@ class ClaudeInstallProgressDialog(QDialog):
         self._fade_in.setEndValue(1.0)
         self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
 
+    # ── Версия в шапке ───────────────────────────────────────────────
+    def _version_text(self):
+        def _fmt(v):
+            v = str(v or "").strip()
+            if not v:
+                return ""
+            return f"v{v}" if v[0].isdigit() else v
+
+        old = _fmt(self._old_version)
+        new = _fmt(self._new_version)
+        if self._is_uninstall:
+            return old
+        if self._is_update and old and new:
+            return f"{old} → {new}"
+        return new
+
+    # ── Этапы ────────────────────────────────────────────────────────
+    def _ensure_stages(self, total):
+        total = max(1, int(total or 1))
+        if self._stage_rows and total == self._stage_total:
+            return
+        for row in self._stage_rows:
+            try:
+                self._stages_box.removeWidget(row)
+                row.setParent(None)
+                row.deleteLater()
+            except Exception:
+                pass
+        self._stage_rows = []
+        self._stage_total = total
+        for i in range(total):
+            row = _SetupStageRow(self._accent, self)
+            self._stages_box.addWidget(row)
+            self._stage_rows.append(row)
+
+    def _set_stage(self, num, total, label):
+        self._ensure_stages(total)
+        idx = min(max(int(num) - 1, 0), total - 1)
+        for i, row in enumerate(self._stage_rows):
+            if i < idx and row.state() != "done":
+                row.set_done()
+        active = self._stage_rows[idx]
+        active.set_active()
+        text = setup_stage_label(label) or tr("Выполняю…")
+        active.set_title(text)
+        self._stage_index = idx
+        start = idx / float(total) * 100.0
+        end = (idx + 1) / float(total) * 100.0
+        self._bar.set_target(start + (end - start) * 0.08)
+        self.status_lbl.setText(text)
+        if not self._creep.isActive():
+            self._creep.start()
+        # Последний этап установки CLI — включаем живой прогресс npm:
+        # скачанные МБ, затем проценты распаковки, затем «Настройка…».
+        if (self._payload_pkg and not self._is_uninstall
+                and idx == len(self._stage_rows) - 1):
+            self._payload_begin(active)
+
+    def _creep_tick(self):
+        if self._stage_index < 0 or not self._stage_total:
+            return
+        ceiling = (self._stage_index + 1) / float(self._stage_total) * 100.0
+        current = self._bar.target()
+        if current < ceiling - 0.9:
+            step = max(0.10, (ceiling - current) * 0.045)
+            self._bar.set_target(min(ceiling - 0.6, current + step))
+
+    def _mark_all_done(self):
+        self._creep.stop()
+        for row in self._stage_rows:
+            row.set_done()
+        self._bar.set_target(100.0)
+
+    def _on_bar_value(self, value):
+        try:
+            self._pct_lbl.setText("%d%%" % int(round(value)))
+        except Exception:
+            pass
+
+    # ── Живой прогресс последнего этапа: МБ → распаковка % ──────────
+    def _payload_begin(self, row):
+        """Включает трекер на последнем этапе установки CLI."""
+        if self._payload_active:
+            # Повторная строка того же этапа: set_active() спрятал лейбл —
+            # возвращаем последний текст, чтобы он не пропал до конца.
+            if row is self._payload_row and self._payload_last_text:
+                row.set_info(self._payload_last_text)
+            return
+        if (not self._payload_pkg or self._is_uninstall or row is None):
+            return
+        self._payload_active = True
+        self._payload_row = row
+
+        # План может быть уже подставлен (offline-тесты); иначе тянем
+        # метаданные registry в фоне — сеть не должна морозить окно.
+        plan = self._payload_plan if isinstance(self._payload_plan, dict) else {}
+        self._payload_plan = plan
+        self._payload_cache_dir = str(
+            plan.get("cache_dir") or _npm_cache_dir())
+        cache_root = os.path.join(self._payload_cache_dir, "_cacache")
+        self._payload_tmp_base = _dir_bytes(os.path.join(cache_root, "tmp"))
+        self._payload_cache_base = _dir_bytes(cache_root)
+        self._payload_prefixes = _npm_payload_prefixes()
+        self._payload_stale = {}
+        for prefix in self._payload_prefixes:
+            nested = os.path.join(
+                _npm_payload_pkg_dir(self._payload_pkg, prefix), "node_modules")
+            if os.path.isdir(nested):
+                self._payload_stale[nested] = _dir_bytes(nested)
+        self._payload_unpack_dir = ""
+        self._payload_phase = "download"
+        self._payload_phase_started = time.monotonic()
+        self._payload_dl_total = 0
+        self._payload_dl_target = 0.0
+        self._payload_disp_dl = 0.0
+        self._payload_unpack_total = 0
+        self._payload_unpack_target = 0.0
+        self._payload_disp_pct = 0.0
+        self._payload_unpack_seen = False
+        self._payload_last_unpack = 0
+        self._payload_last_unpack_change = time.monotonic()
+        self._payload_unpack_done_at = None
+        self._payload_last_text = ""
+        self._payload_poll_count = 0
+        row.set_info(tr("Скачано 0 МБ"))
+        self._payload_last_text = row.info_text()
+        self._payload_timer.start(80)
+        if not plan:
+            threading.Thread(target=self._payload_plan_worker,
+                             daemon=True).start()
+
+    def _payload_plan_worker(self):
+        """Фоновый запрос registry: размеры tarball'ов и распаковки."""
+        try:
+            plan = _npm_payload_plan(self._payload_pkg)
+        except Exception:
+            plan = {}
+        self._payload_plan = plan if isinstance(plan, dict) else {}
+
+    def _payload_tick(self):
+        if not self._payload_active:
+            return
+        row = self._payload_row
+        try:
+            state = row.state() if row is not None else ""
+        except RuntimeError:
+            # Строку этапов могли пересоздать — молча выключаемся.
+            state = ""
+        if state != "active":
+            self._payload_stop()
+            return
+        self._payload_poll_count += 1
+        if self._payload_poll_count % 3 == 1:
+            self._payload_poll()
+        self._payload_animate()
+
+    def _payload_poll(self):
+        """Читает реальные размеры кэша и node_modules, обновляет фазу."""
+        plan = self._payload_plan if isinstance(self._payload_plan, dict) else {}
+        cache_dir = str(plan.get("cache_dir") or self._payload_cache_dir
+                        or _npm_cache_dir())
+        self._payload_dl_total = int(plan.get("download_total") or 0)
+        self._payload_unpack_total = int(plan.get("unpack_total") or 0)
+
+        # Папку распаковки ищем один раз. Старые файлы, которые были до
+        # установки, игнорируем, пока их размер не изменится.
+        if not self._payload_unpack_dir:
+            for prefix in self._payload_prefixes:
+                nested = os.path.join(
+                    _npm_payload_pkg_dir(self._payload_pkg, prefix),
+                    "node_modules")
+                if not os.path.isdir(nested):
+                    continue
+                if nested in self._payload_stale:
+                    now_size = _dir_bytes(nested)
+                    if now_size == self._payload_stale[nested]:
+                        continue
+                self._payload_unpack_dir = nested
+                break
+        unpack_now = (_dir_bytes(self._payload_unpack_dir)
+                      if self._payload_unpack_dir else 0)
+
+        # Скачано: полные tarball'ы в cacache + текущий tmp-файл npm.
+        # Если метаданных нет — честно показываем прирост кэша без итога.
+        downloaded = 0.0
+        cache_files = plan.get("cache_files") or []
+        if cache_files:
+            for item in cache_files:
+                try:
+                    path = item[0]
+                except Exception:
+                    continue
+                try:
+                    if os.path.isfile(path):
+                        downloaded += float(os.path.getsize(path))
+                except OSError:
+                    pass
+            tmp_now = _dir_bytes(os.path.join(cache_dir, "_cacache", "tmp"))
+            downloaded += max(0.0, float(tmp_now - self._payload_tmp_base))
+        else:
+            cache_now = _dir_bytes(os.path.join(cache_dir, "_cacache"))
+            downloaded = max(0.0, float(cache_now - self._payload_cache_base))
+        if self._payload_dl_total > 0:
+            downloaded = min(downloaded, float(self._payload_dl_total))
+        # Скачанное не должно уменьшаться: npm может пересоздать tmp-файл,
+        # а поздний план — дать меньший итог, чем ранняя оценка по кэшу.
+        self._payload_dl_target = max(self._payload_dl_target, downloaded)
+        if (self._payload_dl_total > 0
+                and self._payload_dl_target > self._payload_dl_total):
+            self._payload_dl_target = float(self._payload_dl_total)
+        if self._payload_disp_dl > self._payload_dl_target:
+            self._payload_disp_dl = self._payload_dl_target
+
+        if unpack_now > 0:
+            now = time.monotonic()
+            if not self._payload_unpack_seen:
+                self._payload_unpack_seen = True
+                self._payload_last_unpack_change = now
+            if unpack_now != self._payload_last_unpack:
+                self._payload_last_unpack = unpack_now
+                self._payload_last_unpack_change = now
+
+        pct = 0.0
+        if self._payload_unpack_total > 0:
+            pct = min(100.0, unpack_now * 100.0 / self._payload_unpack_total)
+        self._payload_unpack_target = pct
+        self._payload_update_phase(self._payload_dl_target, pct)
+
+    def _payload_update_phase(self, downloaded, pct):
+        now = time.monotonic()
+        if self._payload_phase == "download":
+            # МБ исчезают ровно тогда, когда пошли файлы платформенного
+            # пакета, — это и есть начало распаковки.
+            if self._payload_unpack_seen:
+                self._payload_phase = "unpack"
+                self._payload_phase_started = now
+                self._payload_disp_pct = pct
+                self._payload_unpack_done_at = None
+            return
+        if self._payload_phase != "unpack":
+            return
+        if self._payload_unpack_total > 0 and pct >= 99.5:
+            if self._payload_unpack_done_at is None:
+                self._payload_unpack_done_at = now
+            elif now - self._payload_unpack_done_at >= 0.4:
+                self._payload_phase = "finalize"
+            return
+        # Размер не сошёлся или метаданных нет: распаковка замерла после
+        # завершения скачивания — значит, начался postinstall.
+        download_complete = (self._payload_dl_total <= 0
+                             or downloaded >= self._payload_dl_total * 0.98)
+        if (self._payload_unpack_seen and download_complete
+                and now - self._payload_last_unpack_change >= 3.0):
+            self._payload_phase = "finalize"
+
+    def _payload_animate(self):
+        """Плавно догоняет показанные цифры до реальных."""
+        row = self._payload_row
+        if not self._payload_active or row is None:
+            return
+        if self._payload_phase == "download":
+            diff = self._payload_dl_target - self._payload_disp_dl
+            if abs(diff) <= 0.75:
+                self._payload_disp_dl = self._payload_dl_target
+            else:
+                self._payload_disp_dl += diff * 0.28
+            mb = max(0, int(round(self._payload_disp_dl / 1000000.0)))
+            if self._payload_dl_total > 0:
+                total_mb = max(
+                    1, int(round(self._payload_dl_total / 1000000.0)))
+                text = tr("%d / %d МБ") % (min(mb, total_mb), total_mb)
+            else:
+                text = tr("Скачано %d МБ") % mb
+        elif self._payload_phase == "unpack":
+            diff = self._payload_unpack_target - self._payload_disp_pct
+            if abs(diff) <= 0.25:
+                self._payload_disp_pct = self._payload_unpack_target
+            else:
+                self._payload_disp_pct += diff * 0.3
+            if self._payload_unpack_total > 0:
+                pct = int(round(max(0.0, min(100.0,
+                                             self._payload_disp_pct))))
+                text = tr("Распаковка %d%%") % pct
+            else:
+                text = tr("Распаковка…")
+        else:
+            text = tr("Настройка…")
+        if text != self._payload_last_text:
+            self._payload_last_text = text
+            try:
+                row.set_info(text)
+            except Exception:
+                pass
+
+    def _payload_stop(self):
+        self._payload_active = False
+        try:
+            self._payload_timer.stop()
+        except Exception:
+            pass
+        row = self._payload_row
+        self._payload_row = None
+        if row is not None:
+            try:
+                row.set_info("")
+            except Exception:
+                pass
+        self._payload_plan = {}
+        self._payload_last_text = ""
+
+    # ── Поток установщика ────────────────────────────────────────────
+    def attach_stream(self, stream):
+        """Подключает скрытый установщик: строки → этапы, конец → статус."""
+        self._stream = stream
+        try:
+            stream.lineReady.connect(self.on_line, Qt.QueuedConnection)
+            stream.finished.connect(self._on_stream_finished,
+                                    Qt.QueuedConnection)
+        except Exception:
+            pass
+
+    def on_line(self, raw):
+        kind, payload = parse_setup_line(raw)
+        if kind == "stage":
+            num, total, label = payload
+            self._set_stage(num, total, label)
+            self.add_log_line(_clean_setup_line(raw))
+        elif kind == "done":
+            self._stream_done = True
+            self._stream_done_payload = str(payload or "").strip()
+            self.add_log_line(("[done] " + payload) if payload else "[done]")
+        elif kind == "error":
+            self._stream_failed = True
+            self._stream_error = setup_error_text(payload)
+            self._fail_row(self._stream_error)
+            self.add_log_line("[error] " + str(payload or ""))
+        elif kind == "log":
+            self.add_log_line(payload)
+
+    def _on_stream_finished(self, rc):
+        try:
+            self._stream_rc = int(rc or 0)
+        except Exception:
+            self._stream_rc = 0
+        self._creep.stop()
+        # Спиннер не должен крутиться после конца процесса, даже если
+        # бизнес-логика ещё проверяет версию.
+        if self._stage_rows and 0 <= self._stage_index < len(self._stage_rows):
+            row = self._stage_rows[self._stage_index]
+            if row.state() == "active":
+                if self._stream_failed or self._stream_rc != 0:
+                    row.set_failed()
+                else:
+                    row.set_done()
+        # Операции без своей бизнес-логики (winget) завершаются здесь же.
+        if self._auto_finish and not self._finished:
+            self.mark_finished(actual_version=self._stream_done_payload)
+
+    def _stream_broken(self):
+        if self._stream_failed:
+            return True
+        if self._stream_rc not in (None, 0):
+            return True
+        return False
+
+    def _fail_row(self, text):
+        self._creep.stop()
+        if self._stage_rows:
+            idx = min(max(self._stage_index, 0), len(self._stage_rows) - 1)
+            self._stage_rows[idx].set_failed()
+        self._bar.set_color((235, 90, 90))
+        # Ошибка не означает «прогресс 100%»: замираем на последней
+        # достигнутой отметке, как в окне обновления приложения.
+        self._bar.set_target(self._bar.target(), instant=True)
+        self._bar.freeze()
+        self.status_lbl.setText(text)
+
+    # ── Лог ──────────────────────────────────────────────────────────
+    def add_log_line(self, text, error=False):
+        text = _clean_setup_line(text)
+        if not text:
+            return
+        self._log_lines.append(text)
+        if len(self._log_lines) > 500:
+            del self._log_lines[:-500]
+        if self._log_view.isVisible():
+            try:
+                self._log_view.append(text)
+            except Exception:
+                pass
+
+    def _show_log(self):
+        if not self._log_lines:
+            return
+        try:
+            self._log_view.setPlainText("\n".join(self._log_lines[-300:]))
+            sb = self._log_view.verticalScrollBar()
+            sb.setValue(sb.maximum())
+            self._log_view.show()
+            self._fit()
+        except Exception:
+            pass
+
+    def _fit(self):
+        try:
+            self.layout().activate()
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def _open_console(self):
+        """Листочек: показать консоль PowerShell с текущим логом.
+
+        Пока установщик работает, окно дочитывает лог вживую; после
+        финала показывает накопленный вывод. Подписи всегда английские."""
+        title = ("Claude Code Manager — PowerShell console: %s"
+                 % self._product)
+        log_path = ""
+        done_path = ""
+        try:
+            if self._stream is not None:
+                log_path = str(getattr(self._stream, "log_path", "") or "")
+                done_path = str(getattr(self._stream, "done_path", "") or "")
+        except Exception:
+            log_path, done_path = "", ""
+        try:
+            if log_path and os.path.isfile(log_path):
+                if open_powershell_log_window(
+                        title, error=False, tail_path=log_path,
+                        done_path=done_path):
+                    self._ps_opened = True
+                    return
+            text = ("\n".join(self._log_lines[-300:])
+                    if self._log_lines else "No output yet.")
+            if open_powershell_log_window(title, text, error=False):
+                self._ps_opened = True
+        except Exception:
+            pass
+
+    def _open_error_powershell(self):
+        """Ошибка → открываем живое окно PowerShell с полным логом.
+        Консоль всегда английская: и заголовок, и подписи, и вывод."""
+        if self._ps_opened or not self._log_lines:
+            return
+        self._ps_opened = True
+        if self._is_uninstall:
+            verb = "Uninstall failed"
+        elif self._is_update:
+            verb = "Update failed"
+        else:
+            verb = "Install failed"
+        title = "Claude Code Manager — %s: %s" % (verb, self._product)
+        try:
+            open_powershell_error_window(
+                title, "\n".join(self._log_lines[-300:]))
+        except Exception:
+            pass
+
+    # ── Окно ─────────────────────────────────────────────────────────
     def showEvent(self, event):
         super().showEvent(event)
+        self._fit()
         self._fade_in.start()
 
+    def closeEvent(self, event):
+        self._payload_stop()
+        super().closeEvent(event)
+
     def accept(self):
+        self._payload_stop()
         fade = QPropertyAnimation(self, b"windowOpacity")
         fade.setDuration(220)
         fade.setStartValue(self.windowOpacity())
         fade.setEndValue(0.0)
         fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(lambda: super(ClaudeInstallProgressDialog, self).accept())
+        fade.finished.connect(
+            lambda: super(ClaudeInstallProgressDialog, self).accept())
         fade.start()
         self._fade_out = fade
 
     def reject(self):
+        self._payload_stop()
         fade = QPropertyAnimation(self, b"windowOpacity")
         fade.setDuration(220)
         fade.setStartValue(self.windowOpacity())
         fade.setEndValue(0.0)
         fade.setEasingCurve(QEasingCurve.OutCubic)
-        fade.finished.connect(lambda: super(ClaudeInstallProgressDialog, self).reject())
+        fade.finished.connect(
+            lambda: super(ClaudeInstallProgressDialog, self).reject())
         fade.start()
         self._fade_out = fade
 
+    # ── Финальные состояния ──────────────────────────────────────────
     def mark_finished(self, actual_version=""):
-        """Вызывается когда PowerShell закрылся — переключает окно в режим успеха."""
+        """PowerShell отработал — переключаем окно в режим успеха."""
         if self._finished:
             return
+        if self._stream_broken():
+            self.mark_failed(
+                self._stream_error or tr("Операция завершилась с ошибкой."))
+            return
         self._finished = True
-        # Остановить спиннер
-        self.spinner.stop()
-        self.spinner.hide()
-        # Обновить тексты
+        self._payload_stop()
+        self._mark_all_done()
+        r, g, b = self._accent
         if self._is_uninstall:
-            self.title_lbl.setText(f"{self._product} " + tr("удалён ✓"))
-            self.sub_lbl.setText("")
-            self.status_lbl.setText(tr(
-                "Удаление завершено успешно."
-            ))
+            self.title_lbl.setText(f"{self._product} " + tr("удалён ✔"))
+            self.status_lbl.setText(tr("Удаление завершено успешно."))
         elif self._is_update:
             ver = actual_version or self._new_version
-            self.title_lbl.setText(f"{self._product} " + tr("обновлён ✓"))
+            self.title_lbl.setText(f"{self._product} " + tr("обновлён ✔"))
             if ver:
-                ver_fmt = f"v{ver}" if ver[0].isdigit() else ver
-                self.sub_lbl.setText(tr("Версия") + f" {ver_fmt}")
+                self._ver_pill.setText(self._fmt_version(ver))
+                self._ver_pill.show()
             else:
-                self.sub_lbl.setText("")
+                self._ver_pill.hide()
             self.status_lbl.setText(tr(
                 "Обновление завершено успешно.\n"
-                "Если PATH не находит команду — просто перезапустите приложение."
-            ))
+                "Если PATH не находит команду — просто перезапустите приложение."))
         else:
             ver = actual_version or self._new_version
-            self.title_lbl.setText(f"{self._product} " + tr("установлен ✓"))
+            self.title_lbl.setText(f"{self._product} " + tr("установлен ✔"))
             if ver:
-                ver_fmt = f"v{ver}" if ver[0].isdigit() else ver
-                self.sub_lbl.setText(tr("Версия") + f" {ver_fmt}")
+                self._ver_pill.setText(self._fmt_version(ver))
+                self._ver_pill.show()
             else:
-                self.sub_lbl.setText("")
+                self._ver_pill.hide()
             self.status_lbl.setText(tr(
                 "Установка завершена успешно.\n"
-                "Если PATH не находит команду — просто перезапустите приложение."
-            ))
+                "Если PATH не находит команду — просто перезапустите приложение."))
+        self.status_lbl.setStyleSheet(
+            "color: rgba(198, 204, 200, 0.9); background: transparent;"
+            " border: none;")
+        self._icon.set_glyph(self._glyph)
+        self._icon.set_accent(self._accent)
         self.btn_ok.show()
+        self._fit()
+
+    def _fmt_version(self, ver):
+        ver = str(ver or "").strip()
+        return f"v{ver}" if ver and ver[0].isdigit() else ver
 
     def mark_cancelled(self):
         if self._finished:
             return
+        if self._stream_broken():
+            self.mark_failed(
+                self._stream_error or tr("Операция завершилась с ошибкой."))
+            return
         self._finished = True
-        self.spinner.stop()
-        self.spinner.hide()
+        self._payload_stop()
+        self._creep.stop()
+        # После отмены полоса не должна продолжать ползти вверх.
+        self._bar.freeze()
+        for row in self._stage_rows:
+            if row.state() == "active":
+                row.set_pending()
         if self._is_uninstall:
             title = tr("Удаление отменено")
         elif self._is_update:
@@ -33255,21 +35406,24 @@ class ClaudeInstallProgressDialog(QDialog):
             title = tr("Установка отменена")
         self.title_lbl.setText(title)
         self.title_lbl.setStyleSheet(
-            "color: rgba(200, 180, 80, 0.9); background: transparent; border: none;"
-        )
-        self.sub_lbl.setText("")
-        self.status_lbl.setText(tr(
-            "Окно PowerShell было закрыто до завершения.\n"
-            "Можете попробовать снова в любой момент."
-        ))
+            "color: rgba(228, 196, 110, 0.95); background: transparent;"
+            " border: none;")
+        self._ver_pill.hide()
+        self.status_lbl.setText(tr("Операция прервана. Можно попробовать снова."))
+        self.status_lbl.setStyleSheet(
+            "color: rgba(210, 200, 170, 0.9); background: transparent;"
+            " border: none;")
         self.btn_ok.show()
+        self._fit()
 
     def mark_failed(self, message=""):
         if self._finished:
             return
         self._finished = True
-        self.spinner.stop()
-        self.spinner.hide()
+        self._payload_stop()
+        text = str(message or "").strip() or tr(
+            "Операция завершилась с ошибкой. Попробуйте ещё раз.")
+        self._fail_row(text)
         if self._is_uninstall:
             title = tr("Удаление не завершено")
         elif self._is_update:
@@ -33278,16 +35432,18 @@ class ClaudeInstallProgressDialog(QDialog):
             title = tr("Установка не завершена")
         self.title_lbl.setText(title)
         self.title_lbl.setStyleSheet(
-            "color: rgb(235, 110, 110); background: transparent; border: none;"
-        )
-        self.sub_lbl.setText("")
-        self.status_lbl.setText(
-            message or tr("Окно PowerShell было закрыто до завершения операции.\n"
-                          "Попробуйте ещё раз.")
-        )
+            "color: rgb(238, 128, 128); background: transparent; border: none;")
+        self._icon.set_glyph("!")
+        self._icon.set_accent((235, 90, 90))
+        self._ver_pill.hide()
+        self.status_lbl.setText(text)
+        self.status_lbl.setStyleSheet(
+            "color: rgba(238, 160, 160, 0.95); background: transparent;"
+            " border: none;")
+        self._show_log()
         self.btn_ok.show()
-
-
+        self._fit()
+        self._open_error_powershell()
 # ============================================================
 # ПРЕВЬЮ STATUS LINE (мини-имитация терминала)
 # ============================================================
@@ -33378,8 +35534,9 @@ class StatusLineInstallDialog(QDialog):
         layout.setSpacing(14)
 
         # Иконка-восклицание
-        icon_label = QLabel("!")
+        icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
+        _apply_vector_icon(icon_label, "alert", (r, g, b), 50)
         icon_label.setStyleSheet(f"""
             QLabel {{
                 color: rgb({r}, {g}, {b});
@@ -33558,8 +35715,9 @@ class StatusLineProgressDialog(QDialog):
         layout.setContentsMargins(34, 28, 34, 26)
         layout.setSpacing(14)
 
-        self.icon_label = QLabel("⌁")
+        self.icon_label = QLabel()
         self.icon_label.setAlignment(Qt.AlignCenter)
+        _apply_vector_icon(self.icon_label, "wave", (r, g, b), 50)
         self.icon_label.setStyleSheet(f"""
             QLabel {{
                 color: rgb({r}, {g}, {b});
@@ -33676,8 +35834,8 @@ class StatusLineProgressDialog(QDialog):
 
     def _show_success_state(self):
         self._tick.stop()
-        self.icon_label.setText("✓")
-        self.title_lbl.setText(tr("Status line установлен ✓"))
+        _apply_vector_icon(self.icon_label, "check", (52, 211, 153), 50)
+        self.title_lbl.setText(tr("Status line установлен ✔"))
         self.status_lbl.setText(tr(
             "Скрипт скопирован в ~/.claude/statusline-command.sh,\n"
             "блок statusLine прописан в ~/.claude/settings.json.\n"
@@ -33691,7 +35849,7 @@ class StatusLineProgressDialog(QDialog):
         self._tick.stop()
         accent = (235, 110, 110)
         r, g, b = accent
-        self.icon_label.setText("✗")
+        _apply_vector_icon(self.icon_label, "cross", (235, 110, 110), 50)
         self.icon_label.setStyleSheet(f"""
             QLabel {{
                 color: rgb({r}, {g}, {b});
@@ -33753,8 +35911,9 @@ class ClaudeJsonFixDialog(QDialog):
         layout.setSpacing(14)
 
         # Иконка-восклицание (красная)
-        icon_label = QLabel("!")
+        icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
+        _apply_vector_icon(icon_label, "alert", (r, g, b), 50)
         icon_label.setStyleSheet(f"""
             QLabel {{
                 color: rgb({r}, {g}, {b});
@@ -33925,10 +36084,16 @@ class _ProcessWaiter(QObject):
 
 
 # ============================================================
-# МОДАЛЬНОЕ ОКНО РЕЗУЛЬТАТА ДОБАВЛЕНИЯ В PATH
+# МОДАЛЬНОЕ ОКНО СКАЧИВАНИЯ ОБНОВЛЕНИЯ ПРИЛОЖЕНИЯ
 # ============================================================
 
 class DownloadUpdateDialog(QDialog):
+    """Скачивание обновления в стиле окна установки CLI.
+
+    Слева спиннер этапа, справа «X / Y МБ», снизу полоса с процентами.
+    Фон — непрозрачный тёплый градиент без узоров; прозрачными остаются
+    только внешние скруглённые углы окна."""
+
     progress_updated = Signal(int, float, float)
     download_finished = Signal(bool, str)
 
@@ -33941,146 +36106,129 @@ class DownloadUpdateDialog(QDialog):
         self.download_success = False
         self.downloaded_path = ""
         self._cancelled = False
+        self._unknown_total = False
 
         self.progress_updated.connect(self._update_progress)
         self.download_finished.connect(self._on_download_finished)
 
+        # Прежняя терракотовая палитра окна обновления: не жёлтая.
+        self._accent = (217, 119, 87)
+        r, g, b = self._accent
+
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
 
+        # Непрозрачная карточка без узоров: тёплый радиальный градиент
+        # сверху вниз и акцентная рамка. Прозрачными остаются только
+        # внешние скруглённые углы окна.
         self.container = QFrame()
         self.container.setAttribute(Qt.WA_StyledBackground, True)
         self.container.setObjectName("downloadUpdateContainer")
         self.container.setStyleSheet("""
             QFrame#downloadUpdateContainer {
-                background-color: qradialgradient(cx:0.5, cy:0, radius:1.3,
+                background-color: qradialgradient(cx:0.5, cy:0, radius:1.35,
                     fx:0.5, fy:0,
-                    stop:0 rgba(95, 50, 31, 70),
-                    stop:0.45 rgba(21, 16, 15, 252),
-                    stop:1 rgba(10, 10, 13, 252));
-                border: 2px solid rgba(217, 119, 87, 0.55);
+                    stop:0 rgb(58, 35, 28),
+                    stop:0.42 rgb(29, 22, 20),
+                    stop:1 rgb(14, 13, 16));
+                border: 2px solid rgb(190, 104, 76);
                 border-radius: 16px;
             }
         """)
 
-        cl = QVBoxLayout()
-        cl.setContentsMargins(28, 20, 28, 20)
-        cl.setSpacing(10)
+        cl = QVBoxLayout(self.container)
+        cl.setContentsMargins(26, 24, 26, 22)
+        cl.setSpacing(14)
 
-        # Иконка
-        self.icon_label = QLabel("↓")
-        self.icon_label.setAlignment(Qt.AlignCenter)
-        self.icon_label.setStyleSheet("""
-            QLabel {
-                color: #D97757;
-                font-size: 28px;
-                font-weight: bold;
-                background: rgba(217, 119, 87, 0.15);
-                border: 2px solid rgba(217, 119, 87, 0.4);
-                border-radius: 25px;
-                min-width: 50px;
-                max-width: 50px;
-                min-height: 50px;
-                max-height: 50px;
-            }
-        """)
-        ic = QHBoxLayout()
-        ic.addStretch()
-        ic.addWidget(self.icon_label)
-        ic.addStretch()
+        # ── Шапка: глиф, название, чип версии ─────────────────────
+        head = QHBoxLayout()
+        head.setSpacing(12)
 
-        # Заголовок
-        self.title_label = QLabel(tr("Обновляем"))
-        self.title_label.setAlignment(Qt.AlignCenter)
-        self.title_label.setStyleSheet("""
-            QLabel {
-                color: #D97757;
-                font-size: 16px;
-                font-weight: bold;
-                background: transparent;
-                border: none;
-            }
-        """)
+        self.icon_label = _SetupGlyphBadge("↑", self._accent, 42)
+        head.addWidget(self.icon_label, 0, Qt.AlignVCenter)
 
-        # Версия: откуда обновляемся → куда: «v6.0.0 → v6.0.1».
-        try:
-            _cur = str(update_info.get("current", "") or "").strip()
-        except Exception:
-            _cur = ""
-        try:
-            _lat = str(update_info.get("latest", "") or "?").strip() or "?"
-        except Exception:
-            _lat = "?"
-        if _cur:
-            ver_text = f"Claude Code Manager v{_cur} → v{_lat}"
-        else:
-            ver_text = f"Claude Code Manager v{_lat}"
-        self.version_label = QLabel(ver_text)
+        self.title_label = QLabel(tr("Обновление") + " Claude Code Manager")
+        # Компактнее, чем в окне CLI: длинное название не должно
+        # подпирать чип версии и съедать шапку.
+        self.title_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        self.title_label.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent;"
+            " border: none;")
+        self.title_label.setTextFormat(Qt.PlainText)
+        head.addWidget(self.title_label, 1)
+
+        self.version_label = QLabel(self._version_text())
+        self.version_label.setFont(QFont("Segoe UI", 8, QFont.Bold))
         self.version_label.setAlignment(Qt.AlignCenter)
-        self.version_label.setStyleSheet("""
-            QLabel {
-                color: #FFFFFF;
-                font-size: 12px;
-                font-weight: bold;
-                background: transparent;
-                border: none;
-            }
-        """)
+        self.version_label.setTextFormat(Qt.PlainText)
+        self.version_label.setStyleSheet(
+            f"QLabel {{ color: #FFFFFF;"
+            f" background: rgba({r}, {g}, {b}, 20);"
+            f" border: 1px solid rgba({r}, {g}, {b}, 70);"
+            " border-radius: 10px; padding: 4px 10px; }")
+        head.addWidget(self.version_label, 0, Qt.AlignVCenter)
+        cl.addLayout(head)
 
-        # Прогресс бар
-        self.progress_bar = AnimatedProgressBar("#D97757")  # терракота, как чейнджлог
+        # ── Этап загрузки ─────────────────────────────────────────
+        self._stage_box = QVBoxLayout()
+        self._stage_box.setContentsMargins(0, 2, 0, 2)
+        self._stage_box.setSpacing(2)
+        self.stage_row = _SetupStageRow(self._accent, self)
+        self.stage_row.set_title(tr("Скачивание обновления…"))
+        self.stage_row.set_active()
+        self.stage_row.set_info(tr("Скачано %d МБ") % 0)
+        self._stage_box.addWidget(self.stage_row)
+        cl.addLayout(self._stage_box)
 
-        # Сообщение
-        self.message_label = QLabel("")
-        self.message_label.setAlignment(Qt.AlignCenter)
-        self.message_label.setStyleSheet("""
-            QLabel {
-                color: #9A9AA6;
-                font-size: 11px;
-                background: transparent;
-                border: none;
-            }
-        """)
-        self.message_label.hide()
+        # ── Полоса прогресса: процент справа, как в установке CLI ─
+        bar_row = QHBoxLayout()
+        bar_row.setSpacing(12)
+        self.progress_bar = _SetupProgressBar(self._accent)
+        self.progress_bar.valueChanged.connect(self._on_bar_value)
+        bar_row.addWidget(self.progress_bar, 1, Qt.AlignVCenter)
+        self._pct_lbl = QLabel("0%")
+        self._pct_lbl.setFont(QFont("Consolas", 10, QFont.Bold))
+        self._pct_lbl.setFixedWidth(46)
+        self._pct_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._pct_lbl.setStyleSheet(
+            f"color: rgb({r}, {g}, {b}); background: transparent;"
+            " border: none;")
+        bar_row.addWidget(self._pct_lbl, 0, Qt.AlignVCenter)
+        cl.addLayout(bar_row)
 
-        # Иконка приложения перед названием.
-        self.app_icon_label = QLabel()
-        self.app_icon_label.setStyleSheet("background: transparent; border: none;")
-        try:
-            for _ip in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png"),
-                        os.path.join(os.path.dirname(sys.executable), "icon.png"),
-                        "icon.png"):
-                if _ip and os.path.exists(_ip):
-                    _px = QPixmap(_ip)
-                    if not _px.isNull():
-                        self.app_icon_label.setPixmap(
-                            _px.scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                        break
-        except Exception:
-            pass
-        ver_row = QHBoxLayout()
-        ver_row.setContentsMargins(0, 0, 0, 0)
-        ver_row.addStretch(1)
-        ver_row.addWidget(self.app_icon_label)
-        ver_row.addWidget(self.version_label)
-        # Пустышка шириной с иконку справа: текст центрируется сам,
-        # без учёта иконки слева.
-        _ver_pad = QWidget()
-        _ver_pad.setFixedSize(40, 40)
-        _ver_pad.setStyleSheet("background: transparent; border: none;")
-        ver_row.addWidget(_ver_pad)
-        ver_row.addStretch(1)
-
-        cl.addLayout(ic)
-        cl.addWidget(self.title_label)
-        cl.addLayout(ver_row)
-        cl.addWidget(self.progress_bar)
+        self.message_label = QLabel(tr("Скачивание обновления…"))
+        self.message_label.setFont(QFont("Segoe UI", 9))
+        self.message_label.setWordWrap(True)
+        self.message_label.setTextFormat(Qt.PlainText)
+        self.message_label.setStyleSheet(
+            "color: rgba(205, 207, 214, 0.9); background: transparent;"
+            " border: none;")
         cl.addWidget(self.message_label)
 
-        self.container.setLayout(cl)
+        # ── Кнопка OK: нужна только при ошибке ────────────────────
+        self.btn_ok = GlowDialogButton(
+            tr("Понятно"),
+            base_rgb=self._accent,
+            hover_rgb=tuple(min(255, c + 30) for c in self._accent))
+        self.btn_ok.clicked.connect(self.reject)
+        self.btn_ok.hide()
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(self.btn_ok)
+        btn_row.addStretch()
+        cl.addLayout(btn_row)
+
         main_layout.addWidget(self.container)
         self.setLayout(main_layout)
-        self.setFixedSize(430, 235)
+        # Обычно ровно 500 px. Если версия нестандартно длинная, окно
+        # мягко расширяется до 620 px, чтобы заголовок не обрезался.
+        try:
+            self.layout().activate()
+            natural_w = int(self.sizeHint().width())
+        except Exception:
+            natural_w = 500
+        self.setFixedWidth(max(500, min(620, natural_w)))
+        self._fit()
 
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
@@ -34090,9 +36238,41 @@ class DownloadUpdateDialog(QDialog):
         self.fade_in.setEndValue(1.0)
         self.fade_in.setEasingCurve(QEasingCurve.OutCubic)
 
+    def _version_text(self):
+        """Чип версии: «v6.0.8 → v6.0.9» без названия приложения."""
+        def _fmt(v):
+            v = str(v or "").strip()
+            return f"v{v}" if v and v[0].isdigit() else v
+
+        try:
+            cur = _fmt(self.update_info.get("current", ""))
+            latest = _fmt(self.update_info.get("latest", "?"))
+        except Exception:
+            cur, latest = "", "?"
+        if cur and latest:
+            return f"{cur} → {latest}"
+        return latest or "?"
+
+    def _fit(self):
+        try:
+            self.layout().activate()
+            self.adjustSize()
+        except Exception:
+            pass
+
     def showEvent(self, event):
         super().showEvent(event)
         self.fade_in.start()
+
+    def closeEvent(self, event):
+        # Закрытие окна — тоже отмена: рабочий поток не должен продолжать
+        # качать в скрытое окно, а полоса — тикать после закрытия.
+        self._cancelled = True
+        try:
+            self.progress_bar.freeze()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def accept(self):
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
@@ -34108,6 +36288,13 @@ class DownloadUpdateDialog(QDialog):
         # Закрытие окна = отмена скачивания: рабочий поток увидит флаг,
         # сотрёт недокачанный файл и тихо выйдет (без рестарта).
         self._cancelled = True
+        # Останавливаем догонку сразу: иначе таймер полосы продолжает
+        # тикать после отмены, потому что финальная остановка рассчитана
+        # только на 100%.
+        try:
+            self.progress_bar.freeze()
+        except Exception:
+            pass
         fade = QPropertyAnimation(self.opacity_effect, b"opacity")
         fade.setDuration(220)
         fade.setStartValue(self.opacity_effect.opacity())
@@ -34122,6 +36309,7 @@ class DownloadUpdateDialog(QDialog):
 
     def _download_worker(self):
         new_exe_path = None
+        started_writing = False
         try:
             # По умолчанию складываем рядом со старым .exe — так пользователь
             # увидит обновление в той же папке, где запускал приложение раньше.
@@ -34146,71 +36334,104 @@ class DownloadUpdateDialog(QDialog):
                 downloaded = 0
 
                 with open(new_exe_path, 'wb') as f:
+                    started_writing = True
                     while True:
                         if self._cancelled:
                             f.close()
                             os.remove(new_exe_path)
                             return
-                        chunk = resp.read(8192)
+                        chunk = resp.read(65536)
                         if not chunk:
                             break
                         f.write(chunk)
                         downloaded += len(chunk)
-                        if total:
-                            self.progress_updated.emit(
-                                int(downloaded * 100 / total),
-                                downloaded / (1024 * 1024),
-                                total_mb
-                            )
+                        # Без Content-Length всё равно шлём МБ: окно покажет
+                        # «Скачано N МБ», а процент останется «—».
+                        self.progress_updated.emit(
+                            int(downloaded * 100 / total) if total else 0,
+                            downloaded / (1024 * 1024),
+                            total_mb
+                        )
 
             if self._cancelled:
                 os.remove(new_exe_path)
                 return
 
+            # Сервер мог закрыть соединение раньше Content-Length:
+            # read() вернёт пустой chunk, и без этой проверки битый
+            # файл считался бы успешно скачанным. Так обновление
+            # никогда не запустит недокачанный .exe.
+            if total > 0 and downloaded < total:
+                raise IOError(
+                    tr("Загрузка оборвалась: получено %d из %d байт")
+                    % (downloaded, total))
+
             self.downloaded_path = new_exe_path
             self.download_finished.emit(True, new_exe_path)
 
         except Exception as e:
-            if self._cancelled and new_exe_path and os.path.exists(new_exe_path):
+            # Удаляем только тот файл, который начали писать сами:
+            # иначе ошибка до открытия могла бы стереть прошлую
+            # удачную загрузку с тем же именем.
+            if started_writing and new_exe_path:
                 try:
-                    os.remove(new_exe_path)
-                except:
+                    if os.path.exists(new_exe_path):
+                        os.remove(new_exe_path)
+                except OSError:
                     pass
+            if self._cancelled:
                 return
             self.download_finished.emit(False, str(e))
 
     def _update_progress(self, percent, downloaded_mb, total_mb):
-        self.progress_bar.set_progress(percent)
-        self.progress_bar.set_size(downloaded_mb, total_mb)
+        # После отмены в очереди может остаться последний сигнал из потока.
+        # Он не должен снова запускать таймер уже закрытой полосы.
+        if self._cancelled:
+            return
+        total = float(total_mb or 0.0)
+        done = max(0.0, float(downloaded_mb or 0.0))
+        if total > 0:
+            self._unknown_total = False
+            self.stage_row.set_info(
+                tr("%d / %d МБ") % (min(int(round(done)), int(round(total))),
+                                    int(round(total))))
+            self.progress_bar.set_target(
+                max(0.0, min(100.0, float(percent or 0))))
+        else:
+            self._unknown_total = True
+            self.stage_row.set_info(tr("Скачано %d МБ") % int(round(done)))
+            self._on_bar_value(self.progress_bar.value())
+
+    def _on_bar_value(self, value):
+        if self._unknown_total:
+            self._pct_lbl.setText("—")
+            return
+        try:
+            self._pct_lbl.setText("%d%%" % int(round(value)))
+        except Exception:
+            pass
 
     def _on_download_finished(self, success, message):
+        # Поздний сигнал после отмены/закрытия не должен включать
+        # «Обновление скачано!» и планировать автозапуск.
+        if self._cancelled:
+            return
         if success:
             self.download_success = True
+            self.stage_row.set_title(tr("Обновление скачано!"))
+            self.stage_row.set_done()
+            self._unknown_total = False
+            # Скачивание закончено — сразу 100%, без догонки, которая
+            # могла бы показать 89% в момент авто-закрытия.
+            self.progress_bar.set_target(100.0, instant=True)
+            self.progress_bar.freeze()
+            self._pct_lbl.setText("100%")
+
             self.title_label.setText(tr("Обновление скачано!"))
-            self.icon_label.setText("✓")
-            self.icon_label.setStyleSheet("""
-                QLabel {
-                    color: #34d399;
-                    font-size: 28px;
-                    font-weight: bold;
-                    background: rgba(100, 220, 130, 0.15);
-                    border: 2px solid rgba(100, 220, 130, 0.4);
-                    border-radius: 25px;
-                    min-width: 50px;
-                    max-width: 50px;
-                    min-height: 50px;
-                    max-height: 50px;
-                }
-            """)
-            self.title_label.setStyleSheet("""
-                QLabel {
-                    color: #34d399;
-                    font-size: 16px;
-                    font-weight: bold;
-                    background: transparent;
-                    border: none;
-                }
-            """)
+            self.title_label.setStyleSheet(
+                "color: #34d399; background: transparent; border: none;")
+            self.icon_label.set_glyph("✔")
+            self.icon_label.set_accent((52, 211, 153))
 
             # Финал полностью автоматический: старый .exe удаляется, новый запускается.
             self.message_label.setText(tr("Завершаем обновление…"))
@@ -34220,33 +36441,28 @@ class DownloadUpdateDialog(QDialog):
             from PySide6.QtCore import QTimer
             QTimer.singleShot(1200, self._delete_old_and_open)
         else:
+            self.stage_row.set_title(tr("Ошибка скачивания"))
+            self.stage_row.set_failed()
+            # Замираем на последнем известном проценте, а не на нуле,
+            # если ошибка пришла сразу после очередного сигнала.
+            self.progress_bar.set_color((255, 80, 80))
+            self.progress_bar.set_target(self.progress_bar.target(), instant=True)
+            self.progress_bar.freeze()
+
             self.title_label.setText(tr("Ошибка скачивания"))
-            self.icon_label.setText("✗")
-            self.icon_label.setStyleSheet("""
-                QLabel {
-                    color: #FF5050;
-                    font-size: 28px;
-                    font-weight: bold;
-                    background: rgba(255, 80, 80, 0.15);
-                    border: 2px solid rgba(255, 80, 80, 0.4);
-                    border-radius: 25px;
-                    min-width: 50px;
-                    max-width: 50px;
-                    min-height: 50px;
-                    max-height: 50px;
-                }
-            """)
-            self.title_label.setStyleSheet("""
-                QLabel {
-                    color: #FF5050;
-                    font-size: 16px;
-                    font-weight: bold;
-                    background: transparent;
-                    border: none;
-                }
-            """)
+            self.title_label.setStyleSheet(
+                "color: #FF5050; background: transparent; border: none;")
+            self.icon_label.set_glyph("!")
+            self.icon_label.set_accent((255, 80, 80))
+            self.version_label.hide()
+
             self.message_label.setText(f"{tr('Ошибка')}: {message}")
+            self.message_label.setStyleSheet(
+                "color: rgba(238, 160, 160, 0.95); background: transparent;"
+                " border: none;")
             self.message_label.show()
+            self.btn_ok.show()
+            self._fit()
 
     def _delete_old_and_open(self):
         """Завершает старый процесс, удаляет его .exe в фоне и запускает новую версию.
@@ -36393,12 +38609,11 @@ class PageHeader(QFrame):
         chip_layout.setContentsMargins(8, 2, 10, 2)
         chip_layout.setSpacing(6)
 
-        self.session_spinner = OcSpinner(self.session_chip, size=12)
-        try:
-            self.session_spinner.set_color(245, 180, 60)
-        except Exception:
-            pass
-        self.session_spinner.hide()
+        # Только в чипе сессии — тонкая дуга как в окне установки;
+        # в остальных местах остаётся старый спиннер.
+        self.session_spinner = _SetupStageSpinner(
+            (245, 180, 60), 12, self.session_chip)
+        self.session_spinner.stop()
         chip_layout.addWidget(self.session_spinner, 0, Qt.AlignVCenter)
 
         self.session_indicator = StatusIndicator()
@@ -36462,7 +38677,7 @@ class PageHeader(QFrame):
         # Обычный статус гасит режим «завершается» (спиннер прячем, точку
         # возвращаем) — его включает только _update_oc_session_ui менеджера.
         try:
-            self.session_spinner.hide()
+            self.session_spinner.stop()
             self.session_indicator.setVisible(True)
         except Exception:
             pass
@@ -36476,7 +38691,7 @@ class PageHeader(QFrame):
             pass
         try:
             self.session_indicator.setVisible(False)
-            self.session_spinner.show()
+            self.session_spinner.start()
         except Exception:
             pass
         try:
@@ -36499,6 +38714,205 @@ class _UrlMirrorField(QLineEdit):
         super().focusInEvent(event)
         if event.reason() != Qt.MouseFocusReason:
             self.deselect()
+
+
+_CONSOLE_TONE_COLORS = {
+    "info": "#c6c6cf",
+    "success": "#34d399",
+    "warning": "#ffaa00",
+    "error": "#ff3232",
+    "install": "#34d399",
+    "remove": "#ff6b6b",
+    "launch": "#5cc8ff",
+    "config": "#a78bfc",
+    "muted": "#8b8e99",
+    "separator": "#454854",
+}
+
+# Слова, по которым понимаем смысл строки. Проверяем и русский, и
+# английский вариант: часть сообщений уже переведена через tr().
+_CONSOLE_REMOVE_WORDS = (
+    "удал", "деинстал", "uninstall", "remove", "delete", "delet",
+    "очист", "очищ", "cleared", "clear", "снят", "снос", "purge", "wipe",
+    "стёр", "стер",
+)
+_CONSOLE_INSTALL_WORDS = (
+    "установ", "install", "обнов", "update", "updat", "upgrad",
+    "переустан", "reinstall", "setup",
+)
+_CONSOLE_LAUNCH_WORDS = (
+    "запуск", "запущ", "launch", "start", "running", "открыт", "opened",
+)
+_CONSOLE_CONFIG_WORDS = (
+    "модел", "model", "ключ", "key", "base url", "effort", "reasoning",
+    "конфиг", "config", "настрой", "settings", "provider", "провайдер",
+    "status line", "token", "токен", "path", "путь", "directory",
+    "директори", "mode", "режим",
+)
+
+_CONSOLE_SEPARATOR_CHARS = set("─━═—–-_=·• ")
+
+
+def _is_console_separator(text):
+    """Строка из одних черт — визуальный разделитель, а не сообщение."""
+    value = str(text or "").strip()
+    return (len(value) >= 3 and
+            all(ch in _CONSOLE_SEPARATOR_CHARS for ch in value))
+
+
+def _console_tone(message, level="info"):
+    """Смысловой цвет строки: установка зелёная, удаление красное и т.д."""
+    plain = re.sub(r"<[^>]+>", "", str(message or "")).strip().lower()
+
+    if _is_console_separator(plain):
+        return "separator"
+    if level == "error":
+        return "error"
+    if level == "warning":
+        return "warning"
+    # Отменённое действие — не ошибка и не успех: приглушаем.
+    if "отмен" in plain or "cancel" in plain:
+        return "muted"
+    if any(word in plain for word in _CONSOLE_REMOVE_WORDS):
+        return "remove"
+    if any(word in plain for word in _CONSOLE_INSTALL_WORDS):
+        return "install"
+    if any(word in plain for word in _CONSOLE_LAUNCH_WORDS):
+        return "launch"
+    if any(word in plain for word in _CONSOLE_CONFIG_WORDS):
+        return "config"
+    return "success" if level == "success" else "info"
+
+
+class _ConsoleBarData(QTextBlockUserData):
+    """Цвет палочки, привязанный к абзацу консоли."""
+
+    def __init__(self, color):
+        super().__init__()
+        self.color = QColor(color)
+
+
+class _ConsoleView(QTextEdit):
+    """Консоль с цветными палочками, которых нет в тексте.
+
+    В документе лежат только время, четыре пробела-распорки и сообщение.
+    Палочка рисуется в этом зазоре поверх текста: её нельзя выделить,
+    она не попадает в буфер обмена и не считается частью сообщения.
+    """
+
+    # Позиция после "HH:MM:SS" и двух пробелов — середина зазора.
+    BAR_OFFSET = 10
+    BAR_WIDTH = 3.6
+
+    def append_line(self, html, color, draw_bar=True):
+        """Добавляет строку и запоминает цвет её палочки."""
+        self.append(html)
+        try:
+            block = self.document().lastBlock()
+            # Висячий отступ: первая строка начинается с времени, а
+            # перенесённые строки — под сообщением. Тогда палочка при
+            # переносе остаётся слева от текста, а не режет его.
+            gutter = QFontMetrics(self.font()).horizontalAdvance(
+                "00:00:00" + "\u00A0" * 4)
+            fmt = QTextBlockFormat()
+            fmt.setLeftMargin(gutter)
+            fmt.setTextIndent(-gutter)
+            cursor = QTextCursor(block)
+            cursor.setBlockFormat(fmt)
+            if draw_bar:
+                block.setUserData(_ConsoleBarData(color))
+        except Exception:
+            pass
+        self.moveCursor(QTextCursor.End)
+
+    def createMimeDataFromSelection(self):
+        """Копируем текст без символа палочки и без пробелов-распорок."""
+        mime = super().createMimeDataFromSelection()
+        try:
+            if mime is not None and mime.hasText():
+                mime.setText(mime.text().replace("\u00A0", " "))
+        except Exception:
+            pass
+        return mime
+
+    def _bar_x(self, block):
+        """X палочки в координатах viewport — ровно в середине зазора."""
+        cursor = QTextCursor(block)
+        pos = block.position() + min(
+            self.BAR_OFFSET, max(0, block.length() - 1))
+        cursor.setPosition(pos)
+        mark = self.cursorRect(cursor)
+        # cursorRect даёт левый край третьего пробела, а нам нужен центр
+        # всего четырёхпробельного зазора.
+        return mark.left() - self.BAR_WIDTH / 2.0
+
+    def _bar_runs(self):
+        """Непрерывные отрезки палочек одинакового цвета в видимой зоне."""
+        runs = []
+        active = None
+        viewport_h = self.viewport().height()
+        first = self.cursorForPosition(QPoint(0, 0)).block()
+        last = self.cursorForPosition(
+            QPoint(0, max(0, viewport_h - 1))).block()
+        # Захватываем по одному абзацу сверху и снизу: так группа,
+        # начавшаяся выше экрана, не получает ложное скругление.
+        start = first.previous() if first.previous().isValid() else first
+        stop = last.next() if last.next().isValid() else last
+        block = start
+        while block.isValid():
+            data = block.userData()
+            if not isinstance(data, _ConsoleBarData):
+                if active is not None:
+                    runs.append(active)
+                    active = None
+            else:
+                try:
+                    first_rect = self.cursorRect(QTextCursor(block))
+                    end_cursor = QTextCursor(block)
+                    end_cursor.movePosition(QTextCursor.EndOfBlock)
+                    last_rect = self.cursorRect(end_cursor)
+                    x = self._bar_x(block)
+                except Exception:
+                    if active is not None:
+                        runs.append(active)
+                        active = None
+                    block = block.next()
+                    continue
+                if active is not None and active["color"] == data.color:
+                    active["bottom"] = last_rect.bottom()
+                else:
+                    if active is not None:
+                        runs.append(active)
+                    active = {"color": data.color, "x": x,
+                              "top": first_rect.top(),
+                              "bottom": last_rect.bottom()}
+            if block == stop:
+                break
+            block = block.next()
+        if active is not None:
+            runs.append(active)
+        return runs
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        try:
+            visible = self.viewport().rect()
+            for run in self._bar_runs():
+                top = run["top"] + 1.0
+                bottom = run["bottom"] - 1.0
+                if bottom <= top or bottom < visible.top() or \
+                        top > visible.bottom():
+                    continue
+                painter.setBrush(run["color"])
+                painter.drawRoundedRect(
+                    QRectF(run["x"], top, self.BAR_WIDTH, bottom - top),
+                    self.BAR_WIDTH / 2.0, self.BAR_WIDTH / 2.0)
+        except Exception:
+            pass
+        painter.end()
 
 
 class ClaudeManager(QMainWindow):
@@ -37540,7 +39954,7 @@ class ClaudeManager(QMainWindow):
         console_layout.addWidget(console_bar)
 
         # ── Тело консоли ──
-        self.console = QTextEdit()
+        self.console = _ConsoleView()
         self.console.setReadOnly(True)
         f = QFont("Cascadia Mono", 8)
         f.setPointSizeF(9.4)
@@ -37734,12 +40148,13 @@ class ClaudeManager(QMainWindow):
     def _print_console_banner(self):
         """Стартовый баннер в консоль. Вынесено отдельно, чтобы перепечатать
         его на актуальном языке после смены EN/RU."""
-        self.log(tr("Приложение запущено"), "info")
         self.log(tr("Автор:") + f" {AUTHOR_NAME}  •  Discord: {AUTHOR_DISCORD}", "info")
         self.log(f"GitHub: {AUTHOR_GITHUB}", "info")
         self.log("─" * 50, "info")
-        self.log(tr("opencode CLI: установка/обновление через npm"), "info")
-        self.log(tr("opencode можно запускать без ключа и модели"), "info")
+        self.log(tr("opencode CLI: установка/обновление через npm"), "info",
+                 tone="info")
+        self.log(tr("opencode можно запускать без ключа и модели"), "info",
+                 tone="info")
         self.log("─" * 50, "info")
         self.log(tr("Для работы с Anthropic (freemodel и др.):"), "warning")
         self.log(tr("Если впервые — запустите Claude Code и введите /logout."), "warning")
@@ -37748,8 +40163,15 @@ class ClaudeManager(QMainWindow):
         self.log(tr("Приложение автоматически подставит ключ и Base URL."), "warning")
         self.log("─" * 50, "info")
 
-    def log(self, message, level="info", rich=False):
-        """Терминальный вывод: цветная точка + сообщение.
+    def log(self, message, level="info", rich=False, tone=None):
+        """Терминальный вывод: цветная палочка + сообщение.
+
+        Цвет выбирается по смыслу строки: установка/обновление — зелёный,
+        удаление — красный, запуск — голубой, настройки и модели — фиолетовый,
+        отменённые действия — приглушённый. Ошибки и предупреждения всегда
+        перекрывают смысловой цвет. На строках-разделителях палочки нет.
+        tone — принудительный тон для строк, где смысловой автовыбор неуместен
+        (например, поясняющие строки стартового баннера).
         Сообщение автоматически прогоняется через tr() — если в TRANSLATIONS
         есть точное совпадение, выводим перевод; иначе строка остаётся как
         есть. Это позволяет существующим вызовам self.log("Русский текст")
@@ -37757,27 +40179,26 @@ class ClaudeManager(QMainWindow):
         rich=True — message уже HTML (цветные куски), через tr() не гоняем."""
         timestamp = time.strftime("%H:%M:%S")
 
-        if level == "success":
-            color = "#34d399"  # FreeModel зелёный (52, 211, 153)
-        elif level == "error":
-            color = "#ff3232"
-        elif level == "warning":
-            color = "#ffaa00"
-        else:
-            color = "#c6c6cf"
-
         try:
             translated = str(message) if rich else tr(str(message))
         except Exception:
             translated = message
 
+        if tone is None:
+            tone = _console_tone(translated, level)
+        color = _CONSOLE_TONE_COLORS.get(
+            tone, _CONSOLE_TONE_COLORS["info"])
+
         self._console_msg_count += 1
+        # Четыре пробела-распорки оставляют место под палочку. Самой
+        # палочки в тексте нет — её рисует _ConsoleView поверх зазора.
         formatted = (
             f'<span style="color:#6a6d78;">{timestamp}</span>'
-            f'  <span style="color:{color};">●  {translated}</span>'
+            + "&nbsp;" * 4
+            + f'<span style="color:{color};">{translated}</span>'
         )
-        self.console.append(formatted)
-        self.console.moveCursor(QTextCursor.End)
+        self.console.append_line(
+            formatted, color, draw_bar=(tone != "separator"))
 
     def _animate_shimmer(self):
         """Анимирует шиммер слева направо"""
@@ -38855,6 +41276,8 @@ class ClaudeManager(QMainWindow):
         if loading:
             try:
                 if btn is not None:
+                    if hasattr(btn, "clear_summary"):
+                        btn.clear_summary()
                     btn.setText(tr("Обновляем модели"))
             except Exception:
                 pass
@@ -38921,12 +41344,11 @@ class ClaudeManager(QMainWindow):
         meta = _oc_normalize_meta_map(endpoint_meta)
         meta.update(_oc_normalize_meta_map(free_meta))
         self._oc_model_meta = meta
-        if hasattr(self, "oc_info_btn"):
-            self._oc_refresh_info_button_text()
-        # Эндпоинт задан, но ничего не отдал (и бесплатных нет) — это провал
-        # обновления: кнопка показывает просто «Ошибка» вместо списков.
+        # Провайдер задан, но своих моделей не отдал — это его сбой, даже
+        # если бесплатный каталог opencode пришёл. От этого зависят красная
+        # надпись «ошибка» в чипе провайдера и виджет в окне моделей.
         try:
-            failed = (not self._oc_model_ids and not self._oc_free_ids
+            failed = (not self._oc_model_ids
                       and bool((self.settings.get("oc_base_url", "") or "").strip()))
         except Exception:
             failed = False
@@ -38934,17 +41356,28 @@ class ClaudeManager(QMainWindow):
             self._oc_models_failed = bool(failed)
         except Exception:
             pass
-        if failed and hasattr(self, "oc_info_btn"):
-            try:
-                self.oc_info_btn.setText(tr("Ошибка"))
-            except Exception:
-                pass
+        if hasattr(self, "oc_info_btn"):
+            self._oc_refresh_info_button_text()
         # Свежие данные пришли асинхронно — перестраиваем уже открытое
         # инфо-окно, чтобы пользователь сразу видел актуальный список
         # (установка/удаление/обновление opencode и т.п.).
         self._oc_refresh_open_info()
-        if not self._oc_model_ids and not self._oc_free_ids and self.settings.get("oc_base_url"):
+        if failed:
             self.log("Не удалось получить модели для Custom URL", "warning")
+
+    def _oc_provider_display_name(self):
+        """Имя провайдера как в эндпоинте (хост из Base URL): для чипа
+        провайдера и шапки секции в окне моделей."""
+        name = str(getattr(self, "_oc_provider_display", "") or "").strip()
+        if name:
+            return name
+        try:
+            base = (self.settings.get("oc_base_url", "") or "").strip()
+            if base:
+                return (re.sub(r"^https?://", "", base).split("/")[0] or "").strip()
+        except Exception:
+            pass
+        return ""
 
     def _oc_refresh_open_info(self):
         """Перестраивает открытое информационное окно моделей свежими данными
@@ -38963,16 +41396,32 @@ class ClaudeManager(QMainWindow):
             dlg.update_models(
                 list(self._oc_model_ids or []),
                 list(self._oc_free_ids or []),
-                getattr(self, "_oc_provider_display", "") or "",
+                self._oc_provider_display_name(),
                 model_meta=dict(getattr(self, "_oc_model_meta", {}) or {}),
-                free_removed=dict(getattr(self, "_oc_free_removed", {}) or {}))
+                free_removed=dict(getattr(self, "_oc_free_removed", {}) or {}),
+                provider_failed=self._oc_provider_failed())
         except Exception:
             pass
 
+    def _oc_provider_failed(self):
+        """Провайдер настроен, но своих моделей нет — он не ответил.
+        Учитывает и случай, когда флаг не успел выставиться (окно открыли
+        сразу после неудачной загрузки)."""
+        try:
+            if bool(getattr(self, "_oc_models_failed", False)):
+                return True
+            host = self._oc_provider_display_name()
+            loaded = bool(getattr(self, "_oc_free_fetched_at", 0))
+            return bool(host and loaded
+                        and not list(getattr(self, "_oc_model_ids", []) or []))
+        except Exception:
+            return False
+
     def _oc_refresh_info_button_text(self):
-        """Текст кнопки «Какие модели доступны» по текущему языку:
-        - эндпоинт молчит/не задан — только бесплатные: «10 бесплатных»;
-        - эндпоинт отдал модели — «12 моделей · api-ru.dacall.ai · 10 бесплатных».
+        """Сводка на кнопке «Какие модели доступны»: два цветных чипа.
+        - зелёный — бесплатные модели opencode: «Бесплатные модели · 10»;
+        - чип провайдера в его цвете из окна моделей: «api.host · 12»;
+        - провайдер не ответил — в его чипе красное слово «ошибка».
         Прямое ветвление по LANG.lang — перевод не зависит от словаря."""
         btn = getattr(self, "oc_info_btn", None)
         if btn is None:
@@ -39012,56 +41461,69 @@ class ClaudeManager(QMainWindow):
             _cli = False
         if not _cli:
             # Без CLI моделей нет в принципе: витрина показывает ошибку
-            # вместо «Какие модели доступны» — при любом состоянии данных.
+            # вместо сводки — при любом состоянии данных.
             try:
+                btn.clear_summary()
                 btn.setText(tr("Ошибка обновления моделей"))
             except Exception:
                 pass
             return
         if bool(getattr(self, "_oc_models_loading", False)):
             try:
+                btn.clear_summary()
                 btn.setText(tr("Обновляем модели"))
             except Exception:
                 pass
             return
         model_ids = list(getattr(self, "_oc_model_ids", []) or [])
         free_ids = list(getattr(self, "_oc_free_ids", []) or [])
-        if not model_ids and not free_ids:
-            if bool(getattr(self, "_oc_models_failed", False)):
-                try:
-                    btn.setText(tr("Ошибка"))
-                except Exception:
-                    pass
-                return
-            btn.setText(tr("Какие модели доступны"))
+        host = self._oc_provider_display_name()
+        # Провайдер настроен, каталог уже загружался, а моделей провайдера
+        # нет — значит, он не ответил. Даже если бесплатные пришли.
+        failed = self._oc_provider_failed()
+        if not host and not model_ids and not free_ids:
+            try:
+                btn.clear_summary()
+                btn.setText(tr("Какие модели доступны"))
+            except Exception:
+                pass
             return
         lang_en = LANG is not None and LANG.lang == "en"
-        if not model_ids:
-            # Эндпоинта нет или он ничего не отдал — только бесплатные, как раньше.
-            btn.setText(f"{len(free_ids)} free models" if lang_en
-                        else f"{len(free_ids)} бесплатных моделей")
+        free_text = ""
+        if free_ids:
+            free_text = "%s · %d" % (
+                "Free models" if lang_en else "Бесплатные модели",
+                len(free_ids))
+        provider_text = None
+        provider_rgb = None
+        provider_error = False
+        if host:
+            try:
+                provider_rgb = assign_provider_color(host)
+            except Exception:
+                provider_rgb = (150, 170, 220)
+            if failed:
+                provider_error = True
+                provider_text = "%s · %s" % (
+                    host, "error" if lang_en else "ошибка")
+            else:
+                provider_text = "%s · %d" % (host, len(model_ids))
+        if not free_text and not provider_text:
+            try:
+                btn.clear_summary()
+                btn.setText(tr("Какие модели доступны"))
+            except Exception:
+                pass
             return
-        # Живой эндпоинт: сначала провайдер, потом число его моделей,
-        # затем бесплатные: «api-ru.dacall.ai - 12 моделей · 10 бесплатных».
         try:
-            host = re.sub(r"^https?://", "",
-                          (self.settings.get("oc_base_url", "") or "").strip())
-            host = (host.split("/")[0] or "").strip() or None
+            btn.show_summary(free_text, provider_text, provider_rgb,
+                             provider_error)
         except Exception:
-            host = None
-        if lang_en:
-            txt = f"{len(model_ids)} models"
-            if host:
-                txt = f"{host} - {txt}"
-            if free_ids:
-                txt += f" · {len(free_ids)} free models"
-        else:
-            txt = f"{len(model_ids)} моделей"
-            if host:
-                txt = f"{host} - {txt}"
-            if free_ids:
-                txt += f" · {len(free_ids)} бесплатных моделей"
-        btn.setText(txt)
+            # Страховка: если сводки почему-то не собрались — старый текст.
+            btn.clear_summary()
+            parts = [p for p in (provider_text, free_text) if p]
+            btn.setText(" · ".join(parts) if parts
+                        else tr("Какие модели доступны"))
 
     def _oc_free_mark_seen(self):
         """Открыли окно моделей — «ознакомился» с изменениями в бесплатных:
@@ -39091,11 +41553,12 @@ class ClaudeManager(QMainWindow):
         endpoint = list(getattr(self, "_oc_model_ids", []) or [])
         free = list(getattr(self, "_oc_free_ids", []) or [])
         meta = dict(getattr(self, "_oc_model_meta", {}) or {})
-        provider_name = getattr(self, "_oc_provider_display", "") or ""
-        dlg = OcModelDialog(endpoint, free, meta,
-                            provider_name=provider_name, parent=self,
-                            free_removed=dict(
-                                getattr(self, "_oc_free_removed", {}) or {}))
+        provider_name = self._oc_provider_display_name()
+        dlg = OcModelDialog(
+            endpoint, free, meta,
+            provider_name=provider_name, parent=self,
+            free_removed=dict(getattr(self, "_oc_free_removed", {}) or {}),
+            provider_failed=self._oc_provider_failed())
         dlg.destroyed.connect(lambda *_: self._on_oc_info_destroyed(dlg))
         self._oc_info_dlg = dlg
         # Если фоновая загрузка (старт приложения или смена URL/ключа) ещё
@@ -40333,15 +42796,14 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю установку Codex CLI через npm...", "info")
 
-        if not self._ensure_terminal():
-            return
-
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
             old_version=local,
             new_version=latest if latest and latest[0].isdigit() else "",
             parent=self,
             product="Codex CLI",
+            stage_total=4,
+            payload_pkg="@openai/codex",
         )
 
         # Папки npm у этого пользователя (включая кастомные префиксы
@@ -40353,7 +42815,7 @@ class ClaudeManager(QMainWindow):
             _pfx = ""
 
         try:
-            popen = spawn_setup_session(
+            popen = spawn_setup_stream(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
@@ -40372,8 +42834,7 @@ class ClaudeManager(QMainWindow):
                 "Write-Host '[4/4] Installing latest (@openai/codex)...' -ForegroundColor Cyan; "
                 + _ps_npm_install("@openai/codex") +
                 "Write-Host ''; Write-Host 'Done. Check: codex -V' -ForegroundColor Green; "
-                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
-                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+                "Write-Host '[done]'"
             )
         except Exception as e:
             self.log(tr("Не удалось запустить установку: {}").format(e), "error")
@@ -40387,6 +42848,7 @@ class ClaudeManager(QMainWindow):
             pass
         self.codex_install_finished.connect(self._on_codex_install_done, Qt.QueuedConnection)
         self._codex_install_dlg = progress_dlg
+        progress_dlg.attach_stream(popen)
 
         def _wait_and_emit():
             try:
@@ -40450,14 +42912,12 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю удаление Codex CLI через npm...", "info")
 
-        if not self._ensure_terminal():
-            return
-
         progress_dlg = ClaudeInstallProgressDialog(
             is_uninstall=True,
             old_version=local,
             parent=self,
             product="Codex CLI",
+            stage_total=2,
         )
 
         # Папки npm у этого пользователя (включая кастомные префиксы
@@ -40469,8 +42929,8 @@ class ClaudeManager(QMainWindow):
             _pfx = ""
 
         try:
-            popen = spawn_setup_session(
-                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running codex processes...' -ForegroundColor Cyan; "
+            popen = spawn_setup_stream(
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/2] Stopping running codex processes...' -ForegroundColor Cyan; "
                 "Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
                 # Все npm-папки пользователя: реальный префикс npm + кастомные места
@@ -40478,7 +42938,7 @@ class ClaudeManager(QMainWindow):
                 "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
                 "if ($npmCmd) { try { $g = @(npm.cmd prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
                 "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
-                "Write-Host '[2/3] Removing Codex CLI (npm)...' -ForegroundColor Cyan; "
+                "Write-Host '[2/2] Removing Codex CLI (npm)...' -ForegroundColor Cyan; "
                 "npm.cmd uninstall -g @openai/codex; "
                 "$pkgRel = 'node_modules\\@openai\\codex'; "
                 "$any = $false; foreach ($pfx in $prefixes) { if (Test-Path (Join-Path $pfx $pkgRel)) { $any = $true } } "
@@ -40499,12 +42959,11 @@ class ClaudeManager(QMainWindow):
                 "  if (Test-Path $pkg) { $left = $true } "
                 "} "
                 "if ($left) { "
-                "  Write-Host ''; Write-Host '[3/3] Not everything was removed — close all Codex windows and try again.' -ForegroundColor Red; "
+                "  Write-Host ''; Write-Host '[error] left' -ForegroundColor Red; "
                 "} else { "
-                "  Write-Host ''; Write-Host '[3/3] Codex CLI fully removed.' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host '[done]' -ForegroundColor Green; "
                 "} "
-                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
-                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+                "Write-Host ''; Write-Host 'Codex CLI removal finished.' -ForegroundColor Cyan; "
             )
         except Exception as e:
             self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
@@ -40518,6 +42977,7 @@ class ClaudeManager(QMainWindow):
             pass
         self.codex_install_finished.connect(self._on_codex_install_done, Qt.QueuedConnection)
         self._codex_install_dlg = progress_dlg
+        progress_dlg.attach_stream(popen)
 
         def _wait_and_emit():
             try:
@@ -40650,7 +43110,7 @@ class ClaudeManager(QMainWindow):
                 message=tr("Папка с Codex CLI уже прописана в пользовательской PATH."),
                 detail=target,
                 confirm_text=tr("Ок"),
-                icon="✓",
+                icon="✔",
                 icon_color=(52, 211, 153),
                 parent=self
             )
@@ -40685,7 +43145,7 @@ class ClaudeManager(QMainWindow):
                 ),
                 detail=target,
                 confirm_text=tr("Ок"),
-                icon="✓",
+                icon="✔",
                 icon_color=(52, 211, 153),
                 parent=self
             )
@@ -41223,15 +43683,14 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю установку opencode через npm...", "info")
 
-        if not self._ensure_terminal():
-            return
-
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
             old_version=local,
             new_version=latest if latest and latest[0].isdigit() else "",
             parent=self,
             product="opencode CLI",
+            stage_total=4,
+            payload_pkg="@opencode/cli",
         )
 
         # Папки npm у этого пользователя (включая кастомные префиксы
@@ -41243,7 +43702,7 @@ class ClaudeManager(QMainWindow):
             _pfx = ""
 
         try:
-            popen = spawn_setup_session(
+            popen = spawn_setup_stream(
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running opencode processes...' -ForegroundColor Cyan; "
                 "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
@@ -41263,8 +43722,7 @@ class ClaudeManager(QMainWindow):
                 "Write-Host '[4/4] Installing latest (@opencode/cli)...' -ForegroundColor Cyan; "
                 + _ps_npm_install("@opencode/cli") +
                 "Write-Host ''; Write-Host 'Done. Check: opencode -v' -ForegroundColor Green; "
-                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
-                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+                "Write-Host '[done]'"
             )
         except Exception as e:
             self.log(tr("Не удалось запустить установку: {}").format(e), "error")
@@ -41278,6 +43736,7 @@ class ClaudeManager(QMainWindow):
             pass
         self.oc_install_finished.connect(self._on_oc_install_done, Qt.QueuedConnection)
         self._oc_install_dlg = progress_dlg
+        progress_dlg.attach_stream(popen)
 
         def _wait_and_emit():
             try:
@@ -41341,14 +43800,12 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю удаление opencode через npm...", "info")
 
-        if not self._ensure_terminal():
-            return
-
         progress_dlg = ClaudeInstallProgressDialog(
             is_uninstall=True,
             old_version=local,
             parent=self,
             product="opencode CLI",
+            stage_total=2,
         )
 
         # Папки npm у этого пользователя (включая кастомные префиксы
@@ -41360,8 +43817,8 @@ class ClaudeManager(QMainWindow):
             _pfx = ""
 
         try:
-            popen = spawn_setup_session(
-                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/3] Stopping running opencode processes...' -ForegroundColor Cyan; "
+            popen = spawn_setup_stream(
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/2] Stopping running opencode processes...' -ForegroundColor Cyan; "
                 "Get-Process opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
                 # Все npm-папки пользователя: реальный префикс npm + кастомные места
@@ -41369,7 +43826,7 @@ class ClaudeManager(QMainWindow):
                 "$npmCmd = Get-Command npm -ErrorAction SilentlyContinue; "
                 "if ($npmCmd) { try { $g = @(npm.cmd prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
                 "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
-                "Write-Host '[2/3] Removing opencode (npm)...' -ForegroundColor Cyan; "
+                "Write-Host '[2/2] Removing opencode (npm)...' -ForegroundColor Cyan; "
                 "npm.cmd uninstall -g @opencode/cli 2>$null; "
                 "npm.cmd uninstall -g opencode-ai 2>$null; "
                 "$pkgRel = 'node_modules\\@opencode\\cli'; "
@@ -41395,12 +43852,11 @@ class ClaudeManager(QMainWindow):
                 "  if ((Test-Path $pkg) -or (Test-Path $pkgLegacy)) { $left = $true } "
                 "} "
                 "if ($left) { "
-                "  Write-Host ''; Write-Host '[3/3] Not everything was removed — close all opencode windows and try again.' -ForegroundColor Red; "
+                "  Write-Host ''; Write-Host '[error] left' -ForegroundColor Red; "
                 "} else { "
-                "  Write-Host ''; Write-Host '[3/3] opencode fully removed.' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host '[done]' -ForegroundColor Green; "
                 "} "
-                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
-                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+                "Write-Host ''; Write-Host 'opencode removal finished.' -ForegroundColor Cyan; "
             )
         except Exception as e:
             self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
@@ -41414,6 +43870,7 @@ class ClaudeManager(QMainWindow):
             pass
         self.oc_install_finished.connect(self._on_oc_install_done, Qt.QueuedConnection)
         self._oc_install_dlg = progress_dlg
+        progress_dlg.attach_stream(popen)
 
         def _wait_and_emit():
             try:
@@ -42218,7 +44675,7 @@ class ClaudeManager(QMainWindow):
         orig_show_success = progress._show_success_state
         def _show_success_uninstall():
             orig_show_success()
-            progress.title_lbl.setText(tr("Status line удалён ✓"))
+            progress.title_lbl.setText(tr("Status line удалён ✔"))
             progress.status_lbl.setText(tr(
                 "Блок statusLine удалён из ~/.claude/settings.json,\n"
                 "файл ~/.claude/statusline-command.sh стёрт."
@@ -42531,7 +44988,7 @@ class ClaudeManager(QMainWindow):
 
         def _show_success_fix():
             orig_show_success()
-            progress.title_lbl.setText("Claude исправлен ✓")
+            progress.title_lbl.setText("Claude исправлен ✔")
             backup = result_state.get("backup") or "~/.claude.json.bak"
             backup_short = ClaudeJsonFixDialog._short(backup)
             # Честно показываем, какие из подопераций прошли —
@@ -42751,14 +45208,13 @@ class ClaudeManager(QMainWindow):
         action_word = tr("обновление") if installed else tr("установку")
         self.log(tr("Запускаю {} Claude Code через npm (@anthropic-ai/claude-code)...").format(action_word), "info")
 
-        if not self._ensure_terminal():
-            return
-
         progress_dlg = ClaudeInstallProgressDialog(
             is_update=installed,
             old_version=local,
             new_version=latest_available,
             parent=self,
+            stage_total=4,
+            payload_pkg="@anthropic-ai/claude-code",
         )
         self._claude_install_dlg = progress_dlg
 
@@ -42771,7 +45227,7 @@ class ClaudeManager(QMainWindow):
             _pfx = ""
 
         try:
-            popen = spawn_setup_session(
+            popen = spawn_setup_stream(
                 # 1) Kill running claude.exe — locked file breaks npm
                 "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running claude processes...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
@@ -42794,8 +45250,7 @@ class ClaudeManager(QMainWindow):
                 "Write-Host '[4/4] Installing latest (@anthropic-ai/claude-code)...' -ForegroundColor Cyan; "
                 + _ps_npm_install("@anthropic-ai/claude-code") +
                 "Write-Host ''; Write-Host 'Done. Check: claude --version' -ForegroundColor Green; "
-                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
-                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+                "Write-Host '[done]'"
             )
         except Exception as e:
             self.log(tr("Не удалось запустить установку: {}").format(e), "error")
@@ -42809,6 +45264,7 @@ class ClaudeManager(QMainWindow):
             "progress_dlg": progress_dlg,
             "popen": popen,
         }
+        progress_dlg.attach_stream(popen)
 
         try:
             self.claude_install_finished.disconnect(self._on_claude_install_done_safe)
@@ -42981,7 +45437,7 @@ class ClaudeManager(QMainWindow):
 
     def _show_npm_missing_dialog(self):
         """Сообщает пользователю что нужен Node.js / npm. Если в системе есть
-        winget — предлагает поставить Node.js LTS прямо в PowerShell. Иначе —
+        winget — предлагает поставить Node.js LTS прямо в окне установки. Иначе —
         fallback на открытие официальной страницы скачивания."""
         download_url = "https://nodejs.org/en/download"
         has_winget = self._is_winget_available()
@@ -42989,8 +45445,8 @@ class ClaudeManager(QMainWindow):
         if has_winget:
             message = tr(
                 "В системе не найден npm — он входит в состав Node.js. "
-                "Без npm Claude Code установить нельзя.\n\n"
-                "Нажми «Установить Node.js» — откроется окно PowerShell, "
+                "Без npm нельзя установить или обновить Claude Code, Codex CLI и opencode.\n\n"
+                "Нажми «Установить Node.js» — откроется окно установки, "
                 "в котором winget автоматически скачает и поставит Node.js LTS "
                 "с официального источника (OpenJS.NodeJS.LTS).\n\n"
                 "После окончания установки закрой и заново открой это приложение, "
@@ -43001,7 +45457,7 @@ class ClaudeManager(QMainWindow):
         else:
             message = tr(
                 "В системе не найден npm — он входит в состав Node.js. "
-                "Без npm Claude Code установить нельзя.\n\n"
+                "Без npm нельзя установить или обновить Claude Code, Codex CLI и opencode.\n\n"
                 "На твоей системе нет winget, поэтому установить автоматически не получится. "
                 "Нажми «Скачать Node.js» — откроется официальная страница "
                 "nodejs.org/en/download. Скачай Windows Installer (.msi) LTS, "
@@ -43033,29 +45489,62 @@ class ClaudeManager(QMainWindow):
                 self.log(tr("Не удалось открыть браузер: {}").format(e), "warning")
 
     def _install_nodejs_via_winget(self):
-        """Запускает PowerShell с winget install OpenJS.NodeJS.LTS — пользователь
-        видит весь процесс. После завершения окно ждёт нажатия клавиши."""
+        """Ставит Node.js LTS через winget. PowerShell работает скрыто,
+        этапы и прогресс — в своём окне (как у установки CLI)."""
         self.log("Запускаю установку Node.js LTS через winget...", "info")
 
-        if not self._ensure_terminal():
-            return
+        progress_dlg = ClaudeInstallProgressDialog(
+            parent=self, product="Node.js LTS", new_version="LTS",
+            stage_total=3, auto_finish=True)
 
         try:
-            spawn_setup_session(
-                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host 'Устанавливаю Node.js LTS через winget...' -ForegroundColor Cyan; "
-                "Write-Host 'Источник: OpenJS.NodeJS.LTS (winget по умолчанию берёт официальный пакет с nodejs.org)' -ForegroundColor DarkGray; "
+            popen = spawn_setup_stream(
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                "Write-Host '[1/3] Checking winget...' -ForegroundColor Cyan; "
+                "if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { "
+                "  Write-Host 'winget was not found in PATH.' -ForegroundColor Yellow; "
+                "  Write-Host '[error] winget' -ForegroundColor Red; exit 1 "
+                "}; "
+                "Write-Host ''; Write-Host '[2/3] Installing Node.js LTS via winget' -ForegroundColor Cyan; "
+                "Write-Host 'Source: OpenJS.NodeJS.LTS (official package from nodejs.org)' -ForegroundColor DarkGray; "
                 "winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements; "
-                "if ($LASTEXITCODE -eq 0) { "
-                "  Write-Host ''; Write-Host 'Node.js установлен. Перезапусти Claude Code Manager, чтобы он подхватил npm в PATH.' -ForegroundColor Green; "
+                "$wingetRc = $LASTEXITCODE; "
+                "if ($wingetRc -ne 0) { "
+                "  Write-Host ''; Write-Host ('winget exit code: ' + $wingetRc) -ForegroundColor Yellow; "
+                "  Write-Host 'Checking whether node and npm are already usable...' -ForegroundColor DarkGray "
+                "}; "
+                "Write-Host ''; Write-Host '[3/3] Verifying node and npm...' -ForegroundColor Cyan; "
+                # winget обновляет PATH в реестре, но не в этом процессе — перечитываем.
+                "$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'); "
+                "$nodeVer = ''; $nodeOk = $false; "
+                "try { $nodeVer = @(& node --version 2>$null)[0]; "
+                "  if ($LASTEXITCODE -eq 0 -and $nodeVer) { $nodeOk = $true } } catch {}; "
+                "$npmVer = ''; $npmOk = $false; "
+                "try { $npmVer = @(& npm --version 2>$null)[0]; "
+                "  if ($LASTEXITCODE -eq 0 -and $npmVer) { $npmOk = $true } } catch {}; "
+                "if ($nodeOk -and ([string]$nodeVer).StartsWith('v') -and $npmOk) { "
+                "  Write-Host ('Node.js ' + $nodeVer + ', npm ' + $npmVer) -ForegroundColor Green; "
+                "  Write-Host ('[done] ' + $nodeVer) "
                 "} else { "
-                "  Write-Host ''; Write-Host 'Установка завершилась с ошибкой. Код выхода:' $LASTEXITCODE -ForegroundColor Yellow; "
-                "  Write-Host 'Можно поставить вручную с https://nodejs.org/en/download' -ForegroundColor Yellow; "
+                "  Write-Host ('node: ' + $nodeVer + ' npm: ' + $npmVer) -ForegroundColor Yellow; "
+                "  if ($wingetRc -ne 0) { Write-Host '[error] winget' -ForegroundColor Red } "
+                "  else { Write-Host '[error] node' -ForegroundColor Red }; "
+                "  exit 1 "
                 "} "
-                "Write-Host ''; Write-Host 'Нажмите любую клавишу, чтобы закрыть PowerShell...' -ForegroundColor Cyan; "
-                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
             )
         except Exception as e:
             self.log(tr("Не удалось запустить установку Node.js: {}").format(e), "error")
+            progress_dlg.mark_failed(
+                tr("Не удалось запустить установку Node.js: {}").format(e))
+            progress_dlg.exec()
+            return
+
+        progress_dlg.attach_stream(popen)
+        progress_dlg.exec()
+        try:
+            _which_cli_invalidate()
+        except Exception:
+            pass
 
     def _detect_claude_install_dirs(self):
         """Возвращает список существующих папок где может лежать claude"""
@@ -43132,7 +45621,7 @@ class ClaudeManager(QMainWindow):
                 message=tr("Папка с Claude Code уже прописана в пользовательской PATH."),
                 detail=target,
                 confirm_text=tr("Ок"),
-                icon="✓",
+                icon="✔",
                 icon_color=(52, 211, 153),
                 parent=self
             )
@@ -43190,7 +45679,7 @@ class ClaudeManager(QMainWindow):
                 ),
                 detail=target,
                 confirm_text=tr("Ок"),
-                icon="✓",
+                icon="✔",
                 icon_color=(52, 211, 153),
                 parent=self
             )
@@ -43242,7 +45731,7 @@ class ClaudeManager(QMainWindow):
                 message=tr("Папка с opencode уже прописана в пользовательской PATH."),
                 detail=target,
                 confirm_text=tr("Ок"),
-                icon="✓",
+                icon="✔",
                 icon_color=(52, 211, 153),
                 parent=self
             )
@@ -43277,7 +45766,7 @@ class ClaudeManager(QMainWindow):
                 ),
                 detail=target,
                 confirm_text=tr("Ок"),
-                icon="✓",
+                icon="✔",
                 icon_color=(52, 211, 153),
                 parent=self
             )
@@ -43511,14 +46000,12 @@ class ClaudeManager(QMainWindow):
 
         self.log("Запускаю удаление Claude Code через npm...", "info")
 
-        if not self._ensure_terminal():
-            return
-
         # Красное окно прогресса — тот же класс, что для install/update.
         progress_dlg = ClaudeInstallProgressDialog(
             is_uninstall=True,
             old_version=local,
             parent=self,
+            stage_total=4,
         )
 
         # Папки npm у этого пользователя (включая кастомные префиксы
@@ -43530,9 +46017,9 @@ class ClaudeManager(QMainWindow):
             _pfx = ""
 
         try:
-            popen = spawn_setup_session(
+            popen = spawn_setup_stream(
                 # 1) Kill running claude.exe / node locking the binary — else npm fails with EBUSY
-                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/5] Stopping running claude processes...' -ForegroundColor Cyan; "
+                "chcp 65001 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Host '[1/4] Stopping running claude processes...' -ForegroundColor Cyan; "
                 "Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; "
                 "Start-Sleep -Milliseconds 600; "
                 # 2) Все npm-папки пользователя: реальный префикс npm + кастомные места
@@ -43541,7 +46028,7 @@ class ClaudeManager(QMainWindow):
                 "if ($npmCmd) { try { $g = @(npm.cmd prefix -g 2>$null); if ($g.Count -gt 0 -and $g[-1]) { $prefixes += ([string]$g[-1]).Trim() } } catch {} } "
                 "$prefixes = $prefixes | Where-Object { $_ } | Select-Object -Unique; "
                 # 3) Main npm removal attempt
-                "Write-Host '[2/5] Removing Claude Code (npm)...' -ForegroundColor Cyan;"
+                "Write-Host '[2/4] Removing Claude Code (npm)...' -ForegroundColor Cyan;"
                 "npm.cmd uninstall -g @anthropic-ai/claude-code; "
                 # 4) If the file is still locked — retry after a pause
                 "$pkgRel = 'node_modules\\@anthropic-ai\\claude-code'; "
@@ -43564,7 +46051,7 @@ class ClaudeManager(QMainWindow):
                 "  if (Test-Path $pkg) { $leftNpm = $true } "
                 "} "
                 # 5) Remove install.ps1 setup (~/.local/bin + ~/.claude/local)
-                "Write-Host ''; Write-Host '[3/5] Removing Claude Code (install.ps1)...' -ForegroundColor Cyan; "
+                "Write-Host ''; Write-Host '[3/4] Removing Claude Code (install.ps1)...' -ForegroundColor Cyan; "
                 "$localBin = Join-Path $env:USERPROFILE '.local\\bin'; "
                 "if (Test-Path $localBin) { "
                 "  Get-ChildItem $localBin -Filter 'claude*' -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue; "
@@ -43574,15 +46061,14 @@ class ClaudeManager(QMainWindow):
                 "  Remove-Item -Recurse -Force $claudeLocal -ErrorAction SilentlyContinue; "
                 "} "
                 # 6) Final check
-                "Write-Host '[4/5] Verifying removal...' -ForegroundColor Cyan; "
+                "Write-Host '[4/4] Verifying removal...' -ForegroundColor Cyan; "
                 "$leftLocal = (Test-Path $claudeLocal) -or (Test-Path (Join-Path $localBin 'claude.exe')); "
                 "if ($leftNpm -or $leftLocal) { "
-                "  Write-Host ''; Write-Host '[5/5] Not everything was removed — close all Claude Code windows and try again.' -ForegroundColor Red; "
+                "  Write-Host ''; Write-Host '[error] left' -ForegroundColor Red; "
                 "} else { "
-                "  Write-Host ''; Write-Host '[5/5] Claude Code fully removed.' -ForegroundColor Green; "
+                "  Write-Host ''; Write-Host '[done]' -ForegroundColor Green; "
                 "} "
-                "Write-Host ''; Write-Host 'Press any key to close PowerShell...' -ForegroundColor Cyan; "
-                "$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+                "Write-Host ''; Write-Host 'Claude Code removal finished.' -ForegroundColor Cyan; "
             )
         except Exception as e:
             self.log(tr("Не удалось запустить удаление: {}").format(e), "error")
@@ -43596,6 +46082,7 @@ class ClaudeManager(QMainWindow):
             "progress_dlg": progress_dlg,
             "popen": popen,
         }
+        progress_dlg.attach_stream(popen)
 
         # Подключаем сигнал ОДИН раз через QueuedConnection — гарантированно
         # доставит вызов в GUI-нить, в отличие от QTimer.singleShot из потока.
