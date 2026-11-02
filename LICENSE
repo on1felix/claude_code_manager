@@ -672,3 +672,41 @@ may consider it more useful to permit linking proprietary applications with
 the library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.  But first, please read
 <https://www.gnu.org/licenses/why-not-lgpl.html>.
+
+-------------------------------------------------------------------------------
+
+ADDITIONAL TERMS UNDER SECTION 7 OF THE GNU GPL v3
+claude-code-manager
+
+The text above is the unmodified GNU General Public License, version 3.
+The following additional terms are added by the copyright holder under
+section 7 of that license. They do not take away any freedom granted by the
+GPL; they only preserve attribution and prevent misrepresentation.
+
+Copyright (c) 2026 on1felix
+https://github.com/on1felix/claude_code_manager
+
+1. Attribution — section 7(b).
+   Any copy or modified version must keep the original copyright notice and
+   must credit "Claude Code Manager by on1felix", with a link to
+   https://github.com/on1felix/claude_code_manager, in its README and in its
+   user interface (an "About" screen or equivalent).
+
+2. Marking modified versions — section 7(c).
+   Modified versions must carry a prominent notice stating that they were
+   modified, together with the date of the modification.
+
+3. No misrepresentation of origin — section 7(c).
+   You may not present a modified version as the original project, imply that
+   it is authored or endorsed by on1felix, or remove or hide the notices
+   described above.
+
+4. Project name and logo — section 7(e).
+   No rights are granted to use the names "Claude Code Manager", "CCM", the
+   project logo, or the author's name in a way that suggests endorsement.
+   Forks and modified versions must use a different name and icon.
+
+If you redistribute this program or a modified version, keep this file, the
+copyright notice and the additional terms above intact.
+
+-------------------------------------------------------------------------------

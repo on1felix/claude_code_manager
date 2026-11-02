@@ -1,0 +1,51 @@
+Claude Code Manager — NOTICE
+Copyright (c) 2026 on1felix
+https://github.com/on1felix/claude_code_manager
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. The full license text is in LICENSE.
+
+If you use, study, fork or build on this project, these additional terms apply.
+
+ADDITIONAL TERMS (GNU GPL v3, section 7)
+----------------------------------------
+As permitted by section 7 of the GNU GPL v3, the following additional terms
+apply to this work:
+
+1. Attribution — section 7(b).
+   Any copy or modified version must keep the original copyright notice and must
+   credit "Claude Code Manager by on1felix" with a link to
+   https://github.com/on1felix/claude_code_manager
+   in its README and in its user interface (an "About" screen or equivalent).
+
+2. Marking modified versions — section 7(c).
+   Modified versions must carry a prominent notice stating that they were
+   modified, together with the date of the modification.
+
+3. No misrepresentation of origin — section 7(c).
+   You may not present a modified version as the original project, imply that it
+   is authored or endorsed by on1felix, or remove or hide the notices described
+   above.
+
+4. Project name and logo — section 7(e).
+   No rights are granted to use the names "Claude Code Manager", "CCM", the
+   project logo, or the author's name in a way that suggests endorsement.
+   Forks and modified versions must use a different name and icon.
+
+These terms do not restrict the freedoms granted by the GPL: they only preserve
+attribution and prevent misrepresentation, exactly as section 7 allows.
+
+THIRD-PARTY COMPONENTS
+----------------------
+This application uses PySide6 / Qt (LGPL v3) and other open-source libraries.
+Their licenses and copyright notices apply to those components. PySide6/Qt
+libraries are bundled unmodified; their source is available from the Qt Project
+(https://www.qt.io) and from PyPI.
+
+NO WARRANTY
+-----------
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU GPL v3 for details.

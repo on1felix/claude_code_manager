@@ -15,6 +15,8 @@ No installation. Windows 10/11, 64-bit.
 
 Docs, screenshots and updates: [claude-code-manager.netlify.app](https://claude-code-manager.netlify.app)
 
+**License:** GNU GPL v3.0 or later, with additional attribution terms — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
 ## Modes
 
 Four provider modes, switched in the left sidebar — the app rewrites the Claude Code config for you:
@@ -63,6 +65,24 @@ python claude_code_manager.pyw
 ```
 
 Build the exe: `build.bat` (needs PyInstaller — `pip install pyinstaller`).
+The build embeds author and license metadata into the executable and writes
+`dist/SHA256SUMS.txt` next to it.
+
+## License and attribution
+
+Claude Code Manager is free software under the **GNU GPL v3.0 or later**, with
+additional terms under section 7 of the license. The full text, including those
+terms, is in [LICENSE](LICENSE); a short summary is in [NOTICE](NOTICE).
+
+In plain words:
+
+- you can read, run, fork and modify this code;
+- you must keep the copyright and credit "Claude Code Manager by on1felix";
+- modified versions must be marked as modified, with a date;
+- a fork must use a different name and icon and must not pretend to be the original project.
+
+If you see a copy that hides who wrote this project, please report it:
+Telegram [@on1felix001](https://t.me/on1felix001).
 
 ## Notes
 
@@ -71,5 +91,5 @@ Build the exe: `build.bat` (needs PyInstaller — `pip install pyinstaller`).
 
 ---
 
-By [on1felix](https://github.com/on1felix). Open source, free, no ads.
+By [on1felix](https://github.com/on1felix). Open source under GPL-3.0, free, no ads.
 Questions: Telegram [@on1felix001](https://t.me/on1felix001).
