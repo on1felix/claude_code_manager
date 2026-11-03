@@ -254,7 +254,7 @@ def _apply_vector_icon(label, glyph, rgb, size=50, inset=0.16):
         pass
 
 
-APP_VERSION = "6.1.1"  # Для обновлений
+APP_VERSION = "6.1.2"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -1655,6 +1655,7 @@ TRANSLATIONS = {
     "подключён": "connected",
     "Нет совпадений": "No matches",
     "Каталог провайдеров загружается…": "Loading provider catalog…",
+    "Каталог провайдеров недоступен": "Provider catalog unavailable",
     "Каталог провайдеров недоступен": "Provider catalog unavailable",
     "Все провайдеры каталога уже подключены": "All catalog providers are already connected",
     "Подключение провайдера": "Connect provider",
@@ -33145,6 +33146,27 @@ class _HoverGlowFrame(_OcClickFrame):
             % (br, bg, bb, self._radius))
 
 
+def _oc_slim_catalog(data):
+    """Каталог провайдеров models.dev → облегчённый словарь для окна:
+    {provider_id: {name, npm, env, models_count, models}}."""
+    slim = {}
+    try:
+        for pid, meta in (data or {}).items():
+            if not isinstance(meta, dict):
+                continue
+            models = meta.get("models")
+            slim[str(pid)] = {
+                "name": str(meta.get("name") or pid),
+                "npm": str(meta.get("npm") or ""),
+                "env": list(meta.get("env") or []),
+                "models_count": len(models) if isinstance(models, dict) else 0,
+                "models": dict(models) if isinstance(models, dict) else {},
+            }
+    except Exception:
+        return {}
+    return slim
+
+
 class _OcCatalogLoader(QThread):
     """Фоновая загрузка глобального каталога провайдеров opencode
     (~/.cache/opencode/models.json — кэш каталога models.dev). Если файла
@@ -33171,9 +33193,11 @@ class _OcCatalogLoader(QThread):
             try:
                 exe = shutil.which("opencode")
                 if exe:
+                    # Не ждём дольше 20 с: файл нам нужен только как
+                    # быстрый источник, иначе идём в models.dev.
                     subprocess.run(
                         ["cmd", "/c", exe, "models"],
-                        capture_output=True, timeout=90,
+                        capture_output=True, timeout=20,
                         creationflags=subprocess.CREATE_NO_WINDOW,
                     )
             except Exception:
@@ -33181,20 +33205,23 @@ class _OcCatalogLoader(QThread):
         slim = {}
         try:
             with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            for pid, meta in data.items():
-                if not isinstance(meta, dict):
-                    continue
-                models = meta.get("models")
-                slim[str(pid)] = {
-                    "name": str(meta.get("name") or pid),
-                    "npm": str(meta.get("npm") or ""),
-                    "env": list(meta.get("env") or []),
-                    "models_count": len(models) if isinstance(models, dict) else 0,
-                    "models": dict(models) if isinstance(models, dict) else {},
-                }
+                slim = _oc_slim_catalog(json.load(f))
         except Exception:
             slim = {}
+        if not slim:
+            # opencode v2 больше не пишет ~/.cache/opencode/models.json:
+            # `opencode models` отдаёт список, но файл не создаёт. Без
+            # запасного источника секция «Доступные провайдеры» навсегда
+            # оставалась бы в состоянии «Каталог загружается…».
+            try:
+                req = Request(
+                    "https://models.dev/api.json",
+                    headers={"User-Agent": "ClaudeManager/%s" % APP_VERSION})
+                with urlopen(req, timeout=15) as resp:
+                    slim = _oc_slim_catalog(
+                        json.loads(resp.read().decode("utf-8", "replace")))
+            except Exception:
+                slim = {}
         self.loaded.emit(slim)
         # v2: аккаунты живут в SQLite сервиса — тянем их тем же потоком.
         accounts = {}
@@ -33552,6 +33579,7 @@ class OpencodeProvidersDialog(QDialog):
         self.empty_label = QLabel(tr("Провайдеров не найдено"))
         self.empty_label.setFont(QFont("Segoe UI", 10))
         self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setWordWrap(True)
         self.empty_label.setStyleSheet("color: #6a6d78; background: transparent; border: none;")
         layout.addWidget(self.empty_label)
         self.empty_label.hide()
@@ -33661,7 +33689,14 @@ class OpencodeProvidersDialog(QDialog):
         self._catalog_loader = _OcCatalogLoader(self)
         self._catalog_loader.loaded.connect(self._on_catalog_loaded)
         self._catalog_loader.accounts_loaded.connect(self._on_accounts_loaded)
+        self._catalog_loader.finished.connect(self._on_catalog_finished)
         self._catalog_loader.start()
+
+    def _on_catalog_finished(self):
+        """Поток завершился: пересобираем список, чтобы подпись не осталась
+        в «Каталог загружается…», если каталог так и не пришёл."""
+        self.refresh()
+        self._maybe_hide_busy()
 
     def _on_catalog_loaded(self, slim):
         self._catalog = slim or {}
@@ -33689,6 +33724,19 @@ class OpencodeProvidersDialog(QDialog):
         if changed:
             self.refresh()
         self._maybe_hide_busy()
+
+    def _catalog_is_loading(self):
+        """Идёт ли загрузка каталога: своя (автономное окно) или из
+        главного окна. Нужна, чтобы не писать «загружается» вечно, когда
+        каталог уже не грузится, а просто пуст."""
+        try:
+            owner = self._cache_owner
+            if owner is not None:
+                return bool(getattr(owner, "_oc_catalog_loading", False))
+            loader = getattr(self, "_catalog_loader", None)
+            return bool(loader is not None and loader.isRunning())
+        except Exception:
+            return False
 
     def _set_busy(self, on):
         """Показать/скрыть затемнение со спиннером, пока идут фоновые данные."""
@@ -33809,8 +33857,13 @@ class OpencodeProvidersDialog(QDialog):
                                  records[pid].get("base_url"))]
 
         if not records and not self._catalog:
-            # Каталог ещё грузится либо недоступен.
+            # Каталог ещё грузится либо недоступен — подпись должна
+            # отличать эти два состояния, иначе «загрузка» висит вечно.
             self._build_queue = []
+            self.empty_label.setText(
+                tr("Каталог провайдеров загружается…")
+                if self._catalog_is_loading()
+                else tr("Каталог провайдеров недоступен"))
             self.empty_label.show()
             self.scroll.hide()
             return
@@ -33840,8 +33893,10 @@ class OpencodeProvidersDialog(QDialog):
                                      (120, 160, 235))))
         if not self._catalog:
             if not no_match:
-                queue.append(
-                    ("label", (tr("Каталог провайдеров загружается…"), 9)))
+                queue.append(("label", (
+                    tr("Каталог провайдеров загружается…")
+                    if self._catalog_is_loading()
+                    else tr("Каталог провайдеров недоступен"), 9)))
         elif not avail:
             if not no_match:
                 queue.append(("label", (
