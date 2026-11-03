@@ -23657,7 +23657,16 @@ def _oc_build_ccm_tui(settings):
 
 _OC_PUSH_TITLE = "Claude Code Manager"
 _OC_PUSH_AUMID = "On1Felix.ClaudeCodeManager"
-_OC_PUSH_LNK_NAME = "Claude Code Manager.lnk"
+_OC_PUSH_LNK_NAME = "ClaudeCodeManager.lnk"
+# Папка в «Пуске» — только для файла иконки. Сам ярлык один и лежит в корне
+# «Программ»; второй мы не создаём.
+_OC_PUSH_LNK_DIR = "Claude code Manager.lnk"
+# Прежние имена этой папки — чистим, чтобы не оставалось дублей.
+_OC_PUSH_LNK_DIR_OLD = ("Claude Code Manager",)
+_OC_PUSH_LNK_ICON = "Claude Code Manager.ico"
+# Старый push-ярлык лежал в корне под другим именем, а наш прошлый вариант —
+# внутри папки. Оба убираем, чтобы остался один ярлык.
+_OC_PUSH_LNK_OLD = ("Claude Code Manager.lnk",)
 _OC_PUSH_CONFIG_NAME = "ccm-notify.json"
 
 _OC_PUSH_JS_TEMPLATE = """// Claude Code Manager — push-уведомления opencode.
@@ -24647,37 +24656,50 @@ def _oc_push_target():
 _OC_PUSH_SHORTCUT_STATE = "ccm-shortcut.json"
 
 
-def _oc_push_icon_file():
-    """Стабильный источник иконки для ярлыка тостов (AppUserModelID).
+def _oc_push_icon_file(dest_dir=None):
+    """Иконка ярлыка тостов (AppUserModelID) — файл .ico рядом с ярлыком.
 
     Нельзя брать файл из распакованной onefile-папки `_MEIxxxx`: она
     удаляется при выходе, и Windows рисует в шапке тоста серый «лист»
-    вместо иконки приложения. Для собранного exe иконка вшита в сам файл —
-    путь к нему стабилен. Для запуска из .pyw кладём копию .ico рядом с
-    плагином: папка настроек переживает обновления и чистки."""
+    вместо иконки приложения. Поэтому копируем вшитый в сборку `icon.ico`
+    в папку ярлыка в «Пуске» — она живёт постоянно.
+
+    `dest_dir` — папка ярлыка. Без неё функция только находит исходник
+    (совместимость со старыми вызовами)."""
+    src = ""
     try:
-        target = _oc_push_target()
-        if target.lower().endswith(".exe") and os.path.exists(target):
-            return target
-    except Exception:
-        pass
-    try:
-        src = _oc_app_icon()
+        cand = _oc_app_icon() or ""
+        if cand.lower().endswith(".ico") and os.path.exists(cand):
+            src = cand
     except Exception:
         src = ""
-    if not src or not src.lower().endswith(".ico"):
+    if not src:
+        # Крайний случай: своей .ico нет — показываем вшитую иконку exe.
+        try:
+            target = _oc_push_target()
+            if target.lower().endswith(".exe") and os.path.exists(target):
+                return target
+        except Exception:
+            pass
         return ""
-    d = _oc_push_dir()
-    if not d:
-        return ""
+    if not dest_dir:
+        return src
     try:
-        os.makedirs(d, exist_ok=True)
+        os.makedirs(dest_dir, exist_ok=True)
     except Exception:
         return src
-    dst = os.path.join(d, "ccm-app.ico")
+    dst = os.path.join(dest_dir, _OC_PUSH_LNK_ICON)
     try:
-        same = (os.path.exists(dst)
-                and os.path.getsize(dst) == os.path.getsize(src))
+        same = False
+        if os.path.exists(dst):
+            try:
+                with open(src, "rb") as f:
+                    a = f.read()
+                with open(dst, "rb") as f:
+                    b = f.read()
+                same = (a == b)
+            except Exception:
+                same = False
         if not same:
             with open(src, "rb") as f:
                 data = f.read()
@@ -24756,14 +24778,35 @@ def _oc_push_shortcut_locked():
                                  "Microsoft", "Windows", "Start Menu", "Programs")
         except Exception:
             return ""
+        icon_dir = os.path.join(progs, _OC_PUSH_LNK_DIR)
+        icon = _oc_push_icon_file(icon_dir)
+        # Один ярлык: существующий ClaudeCodeManager.lnk в корне «Программ».
         lnk = os.path.join(progs, _OC_PUSH_LNK_NAME)
+        # Дубли прошлых версий: старый push-ярлык в корне и ярлык внутри
+        # папки с иконкой. Оставляем только файл иконки.
+        stale = [os.path.join(progs, n) for n in _OC_PUSH_LNK_OLD]
+        stale.append(os.path.join(icon_dir, _OC_PUSH_LNK_NAME))
+        for old in stale:
+            try:
+                if os.path.exists(old):
+                    os.remove(old)
+            except Exception:
+                pass
+        # Прежние папки с иконкой (другие имена) — убираем целиком.
+        for old_dir in _OC_PUSH_LNK_DIR_OLD:
+            try:
+                p = os.path.join(progs, old_dir)
+                if p != icon_dir and os.path.isdir(p):
+                    import shutil as _sh
+                    _sh.rmtree(p, ignore_errors=True)
+            except Exception:
+                pass
         d = _oc_push_dir()
         if not d:
             return ""
         target = _oc_push_target()
         if not target:
             return ""
-        icon = _oc_push_icon_file()
         # Существующий .lnk сам по себе ничего не значит: окно проверки было
         # «файл есть — значит готово», и однажды созданный битый ярлык
         # (цель — теневая копия, иконка — удалённый `_MEIxxxx`) жил вечно,
