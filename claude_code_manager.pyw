@@ -24644,6 +24644,92 @@ def _oc_push_target():
     return ""
 
 
+_OC_PUSH_SHORTCUT_STATE = "ccm-shortcut.json"
+
+
+def _oc_push_icon_file():
+    """Стабильный источник иконки для ярлыка тостов (AppUserModelID).
+
+    Нельзя брать файл из распакованной onefile-папки `_MEIxxxx`: она
+    удаляется при выходе, и Windows рисует в шапке тоста серый «лист»
+    вместо иконки приложения. Для собранного exe иконка вшита в сам файл —
+    путь к нему стабилен. Для запуска из .pyw кладём копию .ico рядом с
+    плагином: папка настроек переживает обновления и чистки."""
+    try:
+        target = _oc_push_target()
+        if target.lower().endswith(".exe") and os.path.exists(target):
+            return target
+    except Exception:
+        pass
+    try:
+        src = _oc_app_icon()
+    except Exception:
+        src = ""
+    if not src or not src.lower().endswith(".ico"):
+        return ""
+    d = _oc_push_dir()
+    if not d:
+        return ""
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        return src
+    dst = os.path.join(d, "ccm-app.ico")
+    try:
+        same = (os.path.exists(dst)
+                and os.path.getsize(dst) == os.path.getsize(src))
+        if not same:
+            with open(src, "rb") as f:
+                data = f.read()
+            with open(dst, "wb") as f:
+                f.write(data)
+        return dst
+    except Exception:
+        return src
+
+
+def _oc_push_shortcut_state_path():
+    d = _oc_push_dir()
+    return os.path.join(d, _OC_PUSH_SHORTCUT_STATE) if d else ""
+
+
+def _oc_push_shortcut_sig(lnk):
+    """Дешёвый отпечаток файла ярлыка: размер + mtime. Позволяет заметить,
+    что .lnk переписали в обход приложения, не запуская PowerShell."""
+    try:
+        st = os.stat(lnk)
+        return [int(st.st_size), int(st.st_mtime_ns)]
+    except Exception:
+        return None
+
+
+def _oc_push_shortcut_matches(lnk, target, icon):
+    """Годен ли уже существующий ярлык.
+
+    Раньше проверялось только наличие .lnk: один раз созданный битый ярлык
+    (цель — теневая копия, иконка — удалённый `_MEIxxxx`) больше никогда не
+    пересоздавался, и тост терял иконку приложения навсегда."""
+    try:
+        if not lnk or not os.path.exists(lnk) or not target:
+            return False
+        if not os.path.exists(target):
+            return False
+        if icon and icon.lower().endswith(".ico") and not os.path.exists(icon):
+            return False
+        sp = _oc_push_shortcut_state_path()
+        with open(sp, "r", encoding="utf-8") as f:
+            st = json.load(f)
+        if str(st.get("target") or "").lower() != target.lower():
+            return False
+        if str(st.get("icon") or "").lower() != (icon or "").lower():
+            return False
+        if st.get("lnk_sig") != _oc_push_shortcut_sig(lnk):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 _PUSH_SHORTCUT_LOCK = threading.Lock()
 
 
@@ -24671,20 +24757,33 @@ def _oc_push_shortcut_locked():
         except Exception:
             return ""
         lnk = os.path.join(progs, _OC_PUSH_LNK_NAME)
-        if os.path.exists(lnk):
-            return lnk
         d = _oc_push_dir()
         if not d:
             return ""
-        marker = os.path.join(d, ".noshortcut")
-        try:
-            if os.path.exists(marker) and (time.time() - os.path.getmtime(marker)) < 86400:
-                return ""
-        except Exception:
-            pass
         target = _oc_push_target()
         if not target:
             return ""
+        icon = _oc_push_icon_file()
+        # Существующий .lnk сам по себе ничего не значит: окно проверки было
+        # «файл есть — значит готово», и однажды созданный битый ярлык
+        # (цель — теневая копия, иконка — удалённый `_MEIxxxx`) жил вечно,
+        # а тост терял иконку приложения. Сверяем цель и иконку со state.
+        if _oc_push_shortcut_matches(lnk, target, icon):
+            return lnk
+        marker = os.path.join(d, ".noshortcut")
+        try:
+            if not os.path.exists(lnk) and os.path.exists(marker) \
+                    and (time.time() - os.path.getmtime(marker)) < 86400:
+                return ""
+        except Exception:
+            pass
+        # Битый или устаревший ярлык удаляем: ps1 создаёт .lnk заново, а
+        # поверх чужого/сломанного ярлыка настройки AUMID могут не лечь.
+        if os.path.exists(lnk):
+            try:
+                os.remove(lnk)
+            except Exception:
+                return ""
         try:
             os.makedirs(d, exist_ok=True)
         except Exception:
@@ -24700,13 +24799,6 @@ def _oc_push_shortcut_locked():
                     f.write(_OC_PUSH_REGISTER_PS1)
         except Exception:
             return ""
-        icon = ""
-        try:
-            cand = _oc_app_icon() or ""
-            if cand.lower().endswith((".ico", ".exe", ".dll")) and os.path.exists(cand):
-                icon = cand
-        except Exception:
-            icon = ""
         ok = False
         try:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -24723,6 +24815,14 @@ def _oc_push_shortcut_locked():
             if ok:
                 if os.path.exists(marker):
                     os.remove(marker)
+                sp = _oc_push_shortcut_state_path()
+                if sp:
+                    try:
+                        with open(sp, "w", encoding="utf-8") as f:
+                            json.dump({"target": target, "icon": icon or "",
+                                       "lnk_sig": _oc_push_shortcut_sig(lnk)}, f)
+                    except Exception:
+                        pass
             else:
                 with open(marker, "w", encoding="utf-8") as f:
                     f.write("1")
