@@ -28243,11 +28243,14 @@ class OcSettingsDialog(QDialog):
 # БЕСПЛАТНЫЕ МОДЕЛИ OPCODE: история появления/убирания.
 # Снапшот списка хранится в oc_free_state.json рядом с настройками.
 # При каждом приходе свежего списка он сравнивается со снапшотом:
-# новички получают пометку NEW, а убранные и свежие релизы — общую
-# плашку изменений над списком «Бесплатные модели». У каждой красной
+# убранные получают время убирания, а новички — время первого появления
+# (known[id], нужно только для сравнения состава). Жёлтый индикатор
+# «есть новое» и зелёные чипы плашки над списком «Бесплатные модели»
+# считаются по release_date из каталога opencode. У каждой красной
 # записи свой срок — _OC_FREE_REMOVED_TTL_DAYS (24 часа) с момента
-# убирания; снимаются по одной, новые записи срок старым не продлевают. Пометка NEW живёт
-# _OC_FREE_TTL_DAYS (4 дня) от даты релиза из каталога.
+# убирания; снимаются по одной, новые записи срок старым не продлевают.
+# Пометка NEW в карточке живёт _OC_FREE_TTL_DAYS (4 дня) от даты релиза
+# из каталога.
 # ============================================================
 
 _OC_FREE_STATE_FILE = os.path.join(SETTINGS_DIR, "oc_free_state.json")
@@ -28263,9 +28266,11 @@ _OC_FREE_FUTURE_TS_SLACK = 3600.0
 
 
 def _oc_free_state_load():
-    """Читает снапшот бесплатных моделей: {"known": {id: ""},
-    "removed": {id: ts}, "ack": ts} — отметка последнего «ознакомления»
-    (открытия окна моделей), от которой зависит жёлтый индикатор кнопки."""
+    """Читает снапшот бесплатных моделей: {"known": {id: ts},
+    "removed": {id: ts}, "ack": ts, "seen": {id: ts}}. ack — отметка
+    последнего «ознакомления» для красных записей, seen — модели,
+    которые уже видели в открытом окне (для жёлтого индикатора).
+    В known хранится состав прошлого списка."""
     try:
         with open(_OC_FREE_STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -28275,10 +28280,12 @@ def _oc_free_state_load():
         return {}
     known = data.get("known")
     removed = data.get("removed")
+    seen = data.get("seen")
     return {
         "known": dict(known) if isinstance(known, dict) else {},
         "removed": dict(removed) if isinstance(removed, dict) else {},
         "ack": data.get("ack"),
+        "seen": dict(seen) if isinstance(seen, dict) else {},
     }
 
 
@@ -28303,6 +28310,40 @@ def _oc_free_state_ack():
     """Отметка «ознакомился» (последнее открытие окна моделей).
     0.0 — ещё не ознакомился ничего/файл только создался."""
     return _oc_free_state_ts(_oc_free_state_load().get("ack")) or 0.0
+
+
+def _oc_free_state_seen():
+    """Модели, которые пользователь уже видел в окне (id → ts открытия).
+    Пусто — окно ещё не открывали, тогда всё из плашки считается новым."""
+    return dict(_oc_free_state_load().get("seen") or {})
+
+
+def _oc_free_release_items(free_ids, meta_map, now=None):
+    """Модели, которые попадают в плашку «Добавленные»: дата релиза из
+    каталога opencode не старше _OC_FREE_TTL_DAYS. Возвращает
+    [(id, released)], новее сверху. Единый источник и для плашки, и для
+    жёлтого индикатора — чтобы они не расходились."""
+    now = time.time() if now is None else float(now)
+    ttl = _OC_FREE_TTL_DAYS * 86400.0
+    items = []
+    for mid in free_ids or []:
+        mid = str(mid)
+        meta = (meta_map or {}).get(mid) or {}
+        t = _oc_free_state_ts(meta.get("released"))
+        if (t is not None
+                and t <= now + _OC_FREE_FUTURE_TS_SLACK
+                and (now - t) < ttl):
+            items.append((mid, t))
+    items.sort(key=lambda kv: kv[1], reverse=True)
+    return items
+
+
+def _oc_free_unseen_ids(free_ids, meta_map, now=None):
+    """Бесплатные модели из плашки, которые пользователь ещё не видел
+    в открытом окне, — по ним зажигается жёлтый индикатор кнопки."""
+    seen = _oc_free_state_seen()
+    return [mid for mid, _t in _oc_free_release_items(
+        free_ids, meta_map, now) if mid not in seen]
 
 
 def _oc_free_state_set_ack(ts):
@@ -28369,15 +28410,15 @@ def _oc_free_state_diff(free_ids):
     Возвращает removed_view {id: ts} — убранные для красного виджета,
     по _OC_FREE_REMOVED_TTL_DAYS (24 часа) на запись, каждая снимается
     независимо по своему времени убирания (убранная позже держится
-    дольше). Даты «когда добавлено» локально НЕ хранятся и не
-    изобретаются: они берутся из каталога самого opencode
-    (release_date → meta "released" в _oc_meta_from_catalog_item).
-    Локальному снапшоту остаётся только состав прошлого списка (known)
-    и время убирания (removed) — иначе убранные не отличить: opencode
-    об удалении задним числом не сообщает. Первый запуск просто
-    запоминает список и ставит ack «ознакомления» (жёлтый индикатор
-    кнопки не беспокоит юзера стартовой пачкой). Пустой текущий список
-    (сбой CLI) не сравнивается — не плодим ложных «убранных».
+    дольше). В known[id] хранится состав прошлого списка (для времени
+    первого появления), по нему же определяются убранные. Жёлтый
+    индикатор кнопки и даты «когда добавлено» в плашке берутся из
+    каталога самого opencode (release_date → meta "released" в
+    _oc_meta_from_catalog_item).
+    Первый запуск просто запоминает список и ставит ack «ознакомления»
+    (жёлтый индикатор кнопки не беспокоит юзера стартовой пачкой).
+    Пустой текущий список (сбой CLI) не сравнивается — не плодим ложных
+    «убранных».
     """
     state = _oc_free_state_load()
     known = state.get("known") or {}
@@ -28411,18 +28452,25 @@ def _oc_free_state_diff(free_ids):
     for mid in known:
         if mid not in present and mid not in removed:
             removed[mid] = now
-    # Снапшот состава: только факт «была в списке», без дат.
+    # Снапшот состава: новую модель запоминаем, чтобы потом заметить её
+    # убирание. На жёлтый индикатор кнопки это не влияет — он считается
+    # по release_date, как и плашка.
     for mid in current:
         if mid not in known:
-            known[mid] = ""
-    # Отметка «ознакомился»: персистим как есть; при самом первом посеве
-    # считаем всё увиденным — индикатор не зажигаем молнией данных.
+            known[mid] = now
+    # Отметка «ознакомился»: персистим как есть. При самом первом посеве
+    # ставим ack=now, а seen — весь стартовый список: стартовая пачка не
+    # должна выглядеть как «есть новое» (точка загорится на следующие).
     ack = _oc_free_state_ts(state.get("ack"))
     if ack is None and was_seed:
         ack = now
+    seen = dict(state.get("seen") or {})
+    if was_seed and not seen:
+        seen = {mid: now for mid in current}
     _oc_free_state_save(
         {"known": known, "removed": removed,
-         "ack": ack if ack is not None else 0.0})
+         "ack": ack if ack is not None else 0.0,
+         "seen": seen})
     removed_view = {}
     for rid, ts in removed.items():
         t = _oc_free_state_ts(ts)
@@ -28499,8 +28547,9 @@ class OcModelDialog(QDialog):
         self._provider_failed = bool(provider_failed) and not self._endpoint
         self._meta = _oc_normalize_meta_map(model_meta)
         # Пометки бесплатных моделей: убранные (красный виджет под шапкой
-        # секции). Даты «когда добавлено» приходят прямо в мете моделей
-        # из каталога opencode (released), локально не хранятся.
+        # секции). Даты «когда добавлено» в плашке приходят из меты моделей
+        # (released); отдельно в снапшоте хранится лишь время первого
+        # появления — по нему зажигается индикатор на кнопке.
         self._set_free_maps(free_removed)
 
         outer = QVBoxLayout(self)
@@ -29000,17 +29049,12 @@ class OcModelDialog(QDialog):
         прежние чипы: зелёные «добавлена <дата>» и красные «удалена».
         Цвета самих чипов не меняются. Плашка появляется, если есть
         хотя бы одна свежая запись. Добавленные — новее сверху, удалённые —
-        по времени убирания. Даты добавления — только release_date из
-        каталога, локально не хранятся."""
+        по времени убирания. Даты добавления — release_date из каталога.
+        Список добавленных общий с жёлтым индикатором кнопки
+        (_oc_free_release_items), чтобы точка и плашка не расходились."""
         now = time.time()
-        ttl_new = _OC_FREE_TTL_DAYS * 86400.0
         ttl_removed = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
-        added = []
-        for mid in list(free_ids or []):
-            meta = self._meta.get(str(mid)) or {}
-            t = _oc_free_state_ts(meta.get("released"))
-            if t is not None and (now - t) < ttl_new:
-                added.append((str(mid), t))
+        added = _oc_free_release_items(free_ids, self._meta, now)
         removed = []
         for mid, ts in dict(removed_map or {}).items():
             t = _oc_free_state_ts(ts)
@@ -29018,7 +29062,6 @@ class OcModelDialog(QDialog):
                 removed.append((str(mid), t))
         if not added and not removed:
             return
-        added.sort(key=lambda kv: kv[1], reverse=True)
         removed.sort(key=lambda kv: kv[1])
         box = QFrame()
         box.setObjectName("ocNoticePanel")
@@ -42203,8 +42246,8 @@ class ClaudeManager(QMainWindow):
             self._oc_model_ids = []
             self._oc_free_ids = []
             # Пометки бесплатных: {id: ts} убранных (окно моделей, красный
-            # виджет). Даты добавлений приходят из каталога opencode
-            # (release_date → meta "released"), локально не хранятся.
+            # виджет). Состав прошлого списка хранится в oc_free_state.json
+            # (known[id]) — по нему же определяются убранные.
             self._oc_free_removed = {}
             self._oc_model_meta = {}
             self._oc_info_dlg = None
@@ -42441,15 +42484,16 @@ class ClaudeManager(QMainWindow):
             return
         # Жёлтый индикатор на кнопке: только если пользователь ещё НЕ
         # ознакомился (не открывал окно моделей, отметка ack) — при этом
-        # есть удалённые (ts позже ack) или свежие релизы NEW (дата релиза
-        # позже ack; срок пометки NEW — 4 дня). После открытия окна
-        # моделей отметка «ознакомился» сохраняется — индикатор не вернётся,
-        # пока не случится новое изменение в бесплатных.
+        # есть удалённые (ts позже ack) или модели из плашки «Добавленные»
+        # (release_date в пределах TTL), которых ещё не было в открытом
+        # окне. Плашка и точка считаются по одному списку, чтобы не
+        # расходиться. После открытия окна моделей показанные модели
+        # запоминаются — индикатор не вернётся, пока не появится новое
+        # изменение.
         try:
             ack = _oc_free_state_ack()
             now_ts = time.time()
             ttl_rm = _OC_FREE_REMOVED_TTL_DAYS * 86400.0
-            ttl_new = _OC_FREE_TTL_DAYS * 86400.0
             alerted = False
             for iid, ts in dict(getattr(self, "_oc_free_removed", {})
                                 or {}).items():
@@ -42458,13 +42502,10 @@ class ClaudeManager(QMainWindow):
                     alerted = True
                     break
             if not alerted:
-                meta_map = getattr(self, "_oc_model_meta", {}) or {}
-                for mid in list(getattr(self, "_oc_free_ids", []) or []):
-                    t = _oc_free_state_ts(
-                        (meta_map.get(str(mid)) or {}).get("released"))
-                    if t is not None and t > ack and (now_ts - t) < ttl_new:
-                        alerted = True
-                        break
+                free_now = list(getattr(self, "_oc_free_ids", []) or [])
+                free_meta = dict(getattr(self, "_oc_model_meta", {}) or {})
+                if _oc_free_unseen_ids(free_now, free_meta, now_ts):
+                    alerted = True
             btn.set_alert(alerted)
         except Exception:
             pass
@@ -42541,9 +42582,20 @@ class ClaudeManager(QMainWindow):
     def _oc_free_mark_seen(self):
         """Открыли окно моделей — «ознакомился» с изменениями в бесплатных:
         жёлтый индикатор на кнопке гаснет и не вернётся, пока не появится
-        новое изменение (убирание или свежий релиз после этого момента)."""
+        новое изменение (убирание или свежий релиз после этого момента).
+        Запоминаем состав показанных моделей — точка зажигается только на
+        то, чего в этом списке не было."""
         try:
             _oc_free_state_set_ack(time.time())
+        except Exception:
+            pass
+        try:
+            now = time.time()
+            seen = {str(mid): now
+                    for mid in (getattr(self, "_oc_free_ids", []) or [])}
+            state = _oc_free_state_load()
+            state["seen"] = seen
+            _oc_free_state_save(state)
         except Exception:
             pass
         btn = getattr(self, "oc_info_btn", None)
