@@ -254,7 +254,7 @@ def _apply_vector_icon(label, glyph, rgb, size=50, inset=0.16):
         pass
 
 
-APP_VERSION = "6.1.2"  # Для обновлений
+APP_VERSION = "6.1.3"  # Для обновлений
 SETTINGS_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "ClaudeManager")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Бэкапы настроек: перед КАЖДЫМ изменением в управлении ключами (add/delete/
@@ -28538,9 +28538,11 @@ class OcModelDialog(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setModal(True)
         self._endpoint = list(endpoint_models or [])
-        # Модели, попавшие и в эндпоинт, из «Бесплатных» убираются,
-        # чтобы не показывать их дважды.
-        self._free = [m for m in (free_models or []) if m not in self._endpoint]
+        # Секция «Бесплатные модели» показывает весь каталог opencode.
+        # Модель может совпадать по ID с моделью эндпоинта — она остаётся
+        # и здесь, и в «Моделях провайдера». Счётчик на кнопке считает
+        # тот же полный список, поэтому числа не расходятся.
+        self._free = list(free_models or [])
         self._provider_name = provider_name
         # Провайдер задан, но своих моделей не отдал: вместо списка — цветной
         # виджет с причиной. Бесплатные при этом остаются сверху.
@@ -28638,7 +28640,14 @@ class OcModelDialog(QDialog):
                 padding: 8px;
             }
         """)
-        self.search_edit.textChanged.connect(self._apply_filter)
+        # Живой поиск с коротким дебаунсом: при ~900 моделях пересчёт
+        # видимости на каждое нажатие заметно подтормаживает ввод.
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self._apply_filter_from_timer)
+        self.search_edit.textChanged.connect(
+            lambda _text: self._search_timer.start())
         search_row.addWidget(self.search_edit, 1)
         self.refresh_btn = StyledButton(tr("Обновить"))
         self.refresh_btn.setFixedHeight(36)
@@ -29184,7 +29193,9 @@ class OcModelDialog(QDialog):
         """Перестраивает карточки моделей, когда фоновый loader принёс свежие
         данные (установка/удаление/обновление opencode и т.п.)."""
         self._endpoint = list(endpoint_models or [])
-        self._free = [m for m in (free_models or []) if m not in self._endpoint]
+        # Полный каталог бесплатных: без вычитания моделей эндпоинта,
+        # чтобы список и счётчик кнопки всегда совпадали.
+        self._free = list(free_models or [])
         self._provider_name = provider_name or ""
         if provider_failed is None:
             self._provider_failed = self._provider_failed and not self._endpoint
@@ -29423,55 +29434,76 @@ class OcModelDialog(QDialog):
         self._apply_filter(self.search_edit.text())
         self._schedule_notice_expiry()
 
+    def _apply_filter_from_timer(self):
+        self._apply_filter(self.search_edit.text())
+
     def _apply_filter(self, text):
         """Живой поиск: прячет строки, не совпавшие с запросом, подзаголовки
         семейств и шапки секций, где не осталось ни одной строки; если не
-        совпало ничего, показывает плашку «Нет совпадений»."""
+        совпало ничего, показывает плашку «Нет совпадений».
+        Видимость меняется только у элементов, чьё состояние действительно
+        изменилось, а перерисовка списка на время пересчёта выключена:
+        иначе на ~900 моделях Qt пересчитывает layout после каждой строки."""
         query = (text or "").strip().lower()
         any_visible = False
-        for section in getattr(self, "_filter_sections", []):
-            visible = 0
-            for sub in section.get("subs", []):
-                sub_visible = 0
-                for row, haystack in sub["rows"]:
-                    match = (not query) or (query in haystack)
-                    row.setVisible(match)
-                    if match:
-                        sub_visible += 1
-                sub["count"].setText(str(sub_visible))
-                sub["host"].setVisible(sub_visible > 0)
-                visible += sub_visible
-            for row, haystack in section["rows"]:
-                match = (not query) or (query in haystack)
-                row.setVisible(match)
-                # Плашка изменений участвует в поиске как строка,
-                # но в счётчике моделей секции не значится.
-                if match and not getattr(row, "is_notice", False):
-                    visible += 1
-            section["count"].setText(
-                str(section.get("count_prefix", "")) + str(visible))
-            # Виджет ошибки провайдера виден только без поискового запроса;
-            # секция при этом остаётся видимой, даже когда строк моделей
-            # нет — иначе объяснение причины исчезало бы.
-            error_widget = section.get("error_widget")
-            if error_widget is not None:
-                try:
-                    error_widget.setVisible(not query)
-                except RuntimeError:
-                    pass
-            section_visible = visible > 0 or (error_widget is not None
-                                              and not query)
-            section["host"].setVisible(section_visible)
-            if section_visible:
-                any_visible = True
-        label = getattr(self, "_no_results", None)
-        if label is not None:
+
+        def show_row(row, visible):
             try:
-                label.setVisible(
-                    bool(getattr(self, "_filter_sections", []))
-                    and not any_visible)
+                if row.isHidden() == visible:
+                    row.setVisible(visible)
             except RuntimeError:
                 pass
+
+        host = getattr(self, "_cards_host", None)
+        layout = getattr(self, "_cards_layout", None)
+        if host is not None:
+            host.setUpdatesEnabled(False)
+        if layout is not None:
+            # Пока идёт пересчёт, раскладка не пересобирается после каждой
+            # строки: иначе 900 setVisible дают ~1 с фриза.
+            layout.setEnabled(False)
+        try:
+            for section in getattr(self, "_filter_sections", []):
+                visible = 0
+                for sub in section.get("subs", []):
+                    sub_visible = 0
+                    for row, haystack in sub["rows"]:
+                        match = (not query) or (query in haystack)
+                        show_row(row, match)
+                        if match:
+                            sub_visible += 1
+                    sub["count"].setText(str(sub_visible))
+                    show_row(sub["host"], sub_visible > 0)
+                    visible += sub_visible
+                for row, haystack in section["rows"]:
+                    match = (not query) or (query in haystack)
+                    show_row(row, match)
+                    # Плашка изменений участвует в поиске как строка,
+                    # но в счётчике моделей секции не значится.
+                    if match and not getattr(row, "is_notice", False):
+                        visible += 1
+                section["count"].setText(
+                    str(section.get("count_prefix", "")) + str(visible))
+                # Виджет ошибки провайдера виден только без поискового запроса;
+                # секция при этом остаётся видимой, даже когда строк моделей
+                # нет — иначе объяснение причины исчезало бы.
+                error_widget = section.get("error_widget")
+                if error_widget is not None:
+                    show_row(error_widget, not query)
+                section_visible = visible > 0 or (error_widget is not None
+                                                  and not query)
+                show_row(section["host"], section_visible)
+                if section_visible:
+                    any_visible = True
+        finally:
+            if layout is not None:
+                layout.setEnabled(True)
+            if host is not None:
+                host.setUpdatesEnabled(True)
+        label = getattr(self, "_no_results", None)
+        if label is not None:
+            show_row(label, bool(getattr(self, "_filter_sections", []))
+                     and not any_visible)
 
     def set_loading(self, loading):
         """Оверлей «Обновляем модели…»: окно затемнено, спиннер крутится,
@@ -42264,8 +42296,10 @@ class ClaudeManager(QMainWindow):
         self._oc_provider_name = host
         # Отображаемое имя — хост как написан (с точками, без слешей):
         # для окна моделей и кнопки. Слаг выше остаётся для конфига/CLI.
+        # Без Base URL имя пустое: иначе окно рисует фиктивного провайдера
+        # «custom» с ошибкой загрузки.
         self._oc_provider_display = (
-            re.sub(r"^https?://", "", base_url).split("/")[0].strip() or "custom"
+            re.sub(r"^https?://", "", base_url).split("/")[0].strip()
         )
         api_key = self.settings.get("oc_api_key", "")
         self._oc_loader_url = base_url
@@ -42423,17 +42457,16 @@ class ClaudeManager(QMainWindow):
 
     def _oc_provider_display_name(self):
         """Имя провайдера как в эндпоинте (хост из Base URL): для чипа
-        провайдера и шапки секции в окне моделей."""
-        name = str(getattr(self, "_oc_provider_display", "") or "").strip()
-        if name:
-            return name
+        провайдера и шапки секции в окне моделей. Без Base URL провайдера
+        нет — возвращаем пустую строку, иначе окно показывало бы фиктивный
+        «custom» с ошибкой загрузки."""
         try:
             base = (self.settings.get("oc_base_url", "") or "").strip()
-            if base:
-                return (re.sub(r"^https?://", "", base).split("/")[0] or "").strip()
         except Exception:
-            pass
-        return ""
+            base = ""
+        if not base:
+            return ""
+        return (re.sub(r"^https?://", "", base).split("/")[0] or "").strip()
 
     def _oc_refresh_open_info(self):
         """Перестраивает открытое информационное окно моделей свежими данными
@@ -42464,6 +42497,10 @@ class ClaudeManager(QMainWindow):
         Учитывает и случай, когда флаг не успел выставиться (окно открыли
         сразу после неудачной загрузки)."""
         try:
+            # Без Base URL провайдера нет — «ошибки загрузки» быть не может,
+            # даже если флаг остался с прошлой настройки.
+            if not (self.settings.get("oc_base_url", "") or "").strip():
+                return False
             if bool(getattr(self, "_oc_models_failed", False)):
                 return True
             host = self._oc_provider_display_name()
